@@ -163,11 +163,7 @@ textarea {
 .brand-icon {
   width: 35px;
   height: 35px;
-  display: grid;
-  place-items: center;
-  background: #23523f;
-  color: #d9edb9;
-  border-radius: 10px;
+  display: block;
 }
 .nav-separator {
   height: 22px;
@@ -1483,10 +1479,6 @@ main {
   .brand-icon {
     width: 31px;
     height: 31px;
-  }
-  .brand-icon svg {
-    width: 22px;
-    height: 22px;
   }
   .nav-separator {
     display: none;
