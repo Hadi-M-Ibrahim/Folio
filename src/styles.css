@@ -19,7 +19,6 @@
   --muted: #645f58;
   --line: #ddd9d2;
   --paper: #f6f4f1;
-  --mint: #8eeba5;
   --serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
   --gutter: clamp(20px, 5vw, 80px);
   font-family: 'DM Sans', Arial, sans-serif;
@@ -378,7 +377,7 @@ h1 {
   overflow-wrap: anywhere;
 }
 .support blockquote {
-  border-left-color: var(--mint);
+  border-left-color: #71816d;
 }
 .counter blockquote {
   border-left-color: #e6c570;

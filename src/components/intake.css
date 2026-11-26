@@ -50,7 +50,7 @@
 }
 
 .intake-steps li[data-complete='true'] {
-  border-color: var(--mint);
+  border-color: var(--ink);
 }
 
 .intake-step-number {
@@ -66,9 +66,9 @@
 
 .intake-steps li[aria-current='step'] .intake-step-number,
 .intake-steps li[data-complete='true'] .intake-step-number {
-  color: #17271b;
-  background: var(--mint);
-  border-color: var(--mint);
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
 }
 
 .intake h1 {
@@ -356,11 +356,12 @@
 .intake-primary {
   flex: 0 0 auto;
   margin-left: auto;
-  background: var(--mint);
+  color: var(--paper);
+  background: var(--ink);
 }
 
 .intake-primary:hover:enabled {
-  background: #7edd95;
+  background: #383832;
 }
 
 .intake-error {
