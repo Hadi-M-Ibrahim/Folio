@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from api._review.model import model_review
+from api._review.model import ProviderUnavailable, model_review
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit, network_key
 from api._review.search import MAX_CRITERIA, InvalidRequest, validate
 
@@ -39,9 +39,10 @@ def review(payload, *, local_operator=False):
     findings, notice, planner = model_review(payload, criteria, pages, local_operator)
     criterion_limit_reached = mode == "guide" and len(findings) == MAX_CRITERIA
     if criterion_limit_reached:
-        notice += f" This section reached the {MAX_CRITERIA}-criterion limit. Check the guide for additional requirements."
+        notice = (notice + f" This section reached the {MAX_CRITERIA}-criterion limit. Check the guide for additional requirements.").strip()
+    used_model = planner == "anthropic" or any(f["analysisEngine"] == "anthropic" for f in findings)
     return {
-        "mode": mode, "engine": "anthropic" if any(f["analysisEngine"] == "anthropic" for f in findings) else "local",
+        "mode": mode, "engine": "anthropic" if used_model else "local",
         "notice": notice, "findings": findings, "planningEngine": planner, "criterionLimitReached": criterion_limit_reached,
         "reviewScope": {"documents": len(payload["documents"]), "pages": len(pages), "criteria": len(findings)},
     }
@@ -93,6 +94,9 @@ class handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "A nonempty JSON request body is required."})
         if length > MAX_BODY:
             return self.reply(413, {"error": f"The review request exceeds {MAX_BODY:,} bytes. Split it into smaller batches."})
+        self.review_body(length, local_operator)
+
+    def review_body(self, length, local_operator):
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, RecursionError):
@@ -101,6 +105,8 @@ class handler(BaseHTTPRequestHandler):
             result = review(payload, local_operator=local_operator)
         except InvalidRequest as exc:
             return self.reply(422, {"error": str(exc)})
+        except ProviderUnavailable as exc:
+            return self.reply(503, {"error": str(exc)})
         return self.reply(200, result)
 
     def do_GET(self):

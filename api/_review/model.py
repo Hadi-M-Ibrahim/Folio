@@ -34,7 +34,7 @@ Before assigning counterevidence, independently compare (1) the actor who owes t
 
 For each possible counter, ask whether following a procedure the passage permits or prescribes would breach the requirement for an overlapping case. A discretionary exception can conflict with a mandatory rule even if staff could choose to comply. For seemingly related procedures, check whether they govern independent actions that can both be carried out without violating either instruction. If so, omit the unrelated passage from counter. For instance, a supplier can confirm receipt of an order by phone and still send a written invoice after delivery. Saying the receipt confirmation is exclusively verbal says nothing about invoicing. Conversely, a next-day deadline and a same-day deadline for the identical required referral conflict when the instruction schedules the referral specifically for the following day. Here the underlying activity is the SAME referral, even though its timing differs. Classify only the evidence retained after this compatibility check.
 
-Use the record_review tool exactly once. Return one assessment per criterion ID. Supply passage IDs and exact, consecutive quotations, copied with original spacing/punctuation, for every factual conclusion. Do not use ellipses or paraphrases as quotations. Put directly supporting quotations in supporting and conflicting quotations in counter. Keep the answer to one or two sentences and identify any unresolved scope. A conclusion without adequate evidence must be insufficient or needs_review."""
+Use the record_review tool exactly once. Return one assessment per criterion ID. If no passages were retrieved for a criterion, report insufficient with empty citation arrays. Supply passage IDs and exact, consecutive quotations, copied with original spacing/punctuation, for every factual conclusion. Do not use ellipses or paraphrases as quotations. Put directly supporting quotations in supporting and conflicting quotations in counter. Keep the answer to one or two sentences and identify any unresolved scope. A conclusion without adequate evidence must be insufficient or needs_review."""
 
 CITATION = {
     "type": "object",
@@ -202,6 +202,8 @@ def verify(finding, assessment, candidates, pages):
     answer = assessment.get("answer")
     if not isinstance(answer, str) or not 1 <= len(answer.strip()) <= 1500:
         return finding
+    if not all(isinstance(assessment.get(side), list) for side in ("supporting", "counter")):
+        return finding
     supporting, support_ok = check_citations(assessment.get("supporting"), candidates, pages)
     counter, counter_ok = check_citations(assessment.get("counter"), candidates, pages, require_scope=True)
     status = assessment["status"]
@@ -218,7 +220,8 @@ def verify(finding, assessment, candidates, pages):
         answer = "Verified passages both support and conflict with this criterion. Review their scope and any exceptions."
     elif status in ("insufficient", "needs_review") and not (supporting or counter):
         # Unsupported model prose cannot introduce facts into a finding.
-        answer = "The reviewed passages provide insufficient evidence to resolve this criterion."
+        answer = ("The reviewed passages provide insufficient evidence to resolve this criterion."
+                  if candidates else finding["answer"])
     return {**finding, "status": status, "answer": answer.strip(),
             "supporting": supporting, "counter": counter, "analysisEngine": "anthropic"}
 
@@ -292,10 +295,6 @@ def assess_batch(findings, pages, key, deadline, *, allow_followup=True):
 
 
 def assess_findings(findings, pages, key, deadline, *, allow_followup=True):
-    with_evidence = [finding for finding in findings if finding["candidates"]]
-    if not with_evidence:
-        return findings, "No policy passages matched the search terms for these criteria."
-
     # Each completed batch replaces those local findings, preserving original criterion order.
     by_id = {row["id"]: row for row in findings}
     def assess(rows, *, permit_lookup):
@@ -306,14 +305,14 @@ def assess_findings(findings, pages, key, deadline, *, allow_followup=True):
                 break
             by_id.update((row["id"], row) for row in batch)
 
-    assess(with_evidence, permit_lookup=allow_followup)
+    assess(findings, permit_lookup=allow_followup)
     # Give all criteria their first assessment before spending another model call.
     pending = [row for row in by_id.values() if row.get("followup", {}).get("passages")]
     assess(pending, permit_lookup=False)
     reviewed = list(by_id.values())
     assessed = sum(row["analysisEngine"] == "anthropic" for row in reviewed)
     if assessed == len(findings):
-        notice = "Anthropic reviewed the ranked passages. Folio checked the cited quotations against their source pages."
+        notice = ""
     elif assessed:
         notice = f"Anthropic assessed {assessed} of {len(findings)} criteria. Review the remaining criteria using their search results."
     else:
@@ -321,30 +320,25 @@ def assess_findings(findings, pages, key, deadline, *, allow_followup=True):
     return reviewed, notice
 
 
-def local_review(criteria, pages, reason=""):
+def local_review(criteria, pages):
     if not criteria:
-        message = "Local extraction found no explicit review criterion. Select a guide section stating the duty or checklist."
-        raise InvalidRequest((reason + " " + message).strip())
+        raise InvalidRequest("Local extraction found no explicit review criterion. Select a guide section stating the duty or checklist.")
     summary = ("Review the ranked policy passages for each criterion." if pages
                else "Folio extracted guide clauses for review. No policies were supplied for comparison.")
-    return retrieve(pages, basic_plan(criteria)), (reason + " " + summary).strip(), "local"
+    return retrieve(pages, basic_plan(criteria)), summary, "local"
 
 
 def model_review(payload, criteria, pages, local_operator=False):
-    if not payload.get("allowModel", False):
+    sharing_consent = payload.get("modelSharingConsent", payload.get("publicInputConsent", False))
+    if not (payload.get("allowModel") and sharing_consent):
         return local_review(criteria, pages)
-    hosted = os.environ.get("VERCEL")
-    if hosted:
-        sharing_consent = payload.get("modelSharingConsent", payload.get("publicInputConsent", False))
-        if hosted != "1" or not sharing_consent:
-            return local_review(criteria, pages, "Enable Anthropic for this review to share selected text with the model.")
-    elif not (local_operator and os.environ.get("REVIEW_ALLOW_CUSTOM_MODEL") == "1"):
-        return local_review(criteria, pages, "Model review requires an enabled local operator server.")
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    if os.environ.get("VERCEL") != "1" and not local_operator:
+        raise ProviderUnavailable("Model review requires the hosted service or the loopback development server.")
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not key:
-        return local_review(criteria, pages, "Anthropic is not configured.")
+        raise ProviderUnavailable("The review service is missing its Anthropic API key. Retry after the service is configured.")
     if not SLOTS.acquire(blocking=False):
-        return local_review(criteria, pages, "Model capacity is busy.")
+        raise ProviderUnavailable("The model review service is busy. Try again shortly.")
 
     try:
         return review_with_provider(payload, criteria, pages, key)
@@ -363,13 +357,15 @@ def review_with_provider(payload, criteria, pages, key):
         planner = "anthropic"
     except ProviderUnavailable:
         if not criteria or not pages:
-            return local_review(criteria, pages, "The model planner was unavailable.")
+            raise ProviderUnavailable("Anthropic could not complete the search plan. Try again.") from None
         plan = basic_plan(criteria)
         planner = "local"
     findings = retrieve(pages, plan)
     if not pages:
-        return findings, "Anthropic extracted requirements from the guide. No policies were supplied for comparison.", planner
+        return findings, "", planner
     reviewed, notice = assess_findings(findings, pages, key, deadline)
+    if not any(row["analysisEngine"] == "anthropic" for row in reviewed):
+        raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.")
     if planner == "local":
-        notice = "The model planner was unavailable. Search used terms from the original criteria. " + notice
+        notice = ("The model planner was unavailable. Search used terms from the original criteria. " + notice).strip()
     return reviewed, notice, planner

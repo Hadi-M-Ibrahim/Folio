@@ -13,7 +13,7 @@ from api._review.search import InvalidRequest
 
 def questionnaire(label):
     return {
-        "mode": "questionnaire", "allowModel": True, "publicInputConsent": True,
+        "mode": "questionnaire", "allowModel": True, "modelSharingConsent": True,
         "questions": [f"Who keeps the {label} register?"],
         "documents": [{"id": label, "title": label, "pages": [
             {"number": 4, "text": f"The {label} clerk keeps the register."},
@@ -23,7 +23,7 @@ def questionnaire(label):
 
 GUIDE = {
     "mode": "guide", "guide": "The office must keep a register.", "documents": [],
-    "allowModel": True, "publicInputConsent": True,
+    "allowModel": True, "modelSharingConsent": True,
 }
 
 
@@ -83,11 +83,8 @@ class ConcurrentReviewTests(unittest.TestCase):
                 self.assertTrue(planning.wait(3), "Second review never reached planning")
 
                 for _ in range(2):
-                    busy = pool.submit(api.review, overflow).result(timeout=3)
-                    self.assertEqual(busy["engine"], "local")
-                    self.assertEqual(busy["planningEngine"], "local")
-                    self.assertIn("busy", busy["notice"])
-                    self.assertEqual(busy["findings"][0]["candidates"][0]["documentId"], "renewal")
+                    with self.assertRaisesRegex(model.ProviderUnavailable, "busy"):
+                        pool.submit(api.review, overflow).result(timeout=3)
                 self.assertEqual(send.call_count, 3, "Overflow contacted the model")
 
                 finish_assessment.set()
@@ -103,13 +100,14 @@ class ConcurrentReviewTests(unittest.TestCase):
             self.assertEqual(guide.result(timeout=3)["planningEngine"], "anthropic")
 
     def test_guide_releases_model_capacity_after_return_or_exception(self):
-        # Leave one slot available. A leak on any exit path makes the next real review fall back.
+        # Leave one slot available. A leak on any exit path blocks the next real review.
         self.assertTrue(model.SLOTS.acquire(blocking=False))
         self.addCleanup(model.SLOTS.release)
         plan = {"criteria": [{"sourceId": "s1", "question": GUIDE["guide"], "searchTerms": ["register"]}]}
         with patch.object(model, "open_provider_request") as send:
             send.side_effect = TimeoutError
-            self.assertEqual(api.review(GUIDE)["planningEngine"], "local")
+            with self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
+                api.review(GUIDE)
 
             send.side_effect = None
             send.return_value = tool_response("record_search_plan", {"exceedsLimit": True})
@@ -124,7 +122,7 @@ class ConcurrentReviewTests(unittest.TestCase):
             for _ in range(2):
                 self.assertEqual(api.review(GUIDE)["planningEngine"], "anthropic")
 
-    def test_invalid_assessment_preserves_search_and_frees_capacity(self):
+    def test_invalid_assessment_reports_an_error_and_frees_capacity(self):
         self.assertTrue(model.SLOTS.acquire(blocking=False))
         self.addCleanup(model.SLOTS.release)
         payload = questionnaire("intake")
@@ -138,6 +136,10 @@ class ConcurrentReviewTests(unittest.TestCase):
             "truncated": tool_response("record_review", assessment, stop_reason="max_tokens"),
             "unexpected tool": tool_response("other_tool", assessment),
             "invalid assessments": tool_response("record_review", {"assessments": {}}),
+            "missing assessments": tool_response("record_review", {"assessments": []}),
+            "missing citation arrays": tool_response("record_review", {"assessments": [{
+                "id": "q1", "status": "supported", "answer": quote,
+            }]}),
             "duplicate calls": io.BytesIO(json.dumps({
                 "stop_reason": "tool_use",
                 "content": [{"type": "tool_use", "name": "record_review", "input": assessment}] * 2,
@@ -149,14 +151,9 @@ class ConcurrentReviewTests(unittest.TestCase):
             with self.subTest(label), patch.object(model, "open_provider_request", side_effect=[
                 tool_response("record_search_plan", plan), response,
             ]) as send:
-                result = api.review(payload)
+                with self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
+                    api.review(payload)
                 self.assertEqual(send.call_count, 2)
-                self.assertEqual(result["planningEngine"], "anthropic")
-                self.assertEqual(result["engine"], "local")
-                finding, = result["findings"]
-                self.assertEqual(finding["candidates"][0]["documentId"], "intake")
-                self.assertEqual(finding["supporting"], [])
-                self.assertEqual(finding["counter"], [])
 
         with patch.object(model, "open_provider_request", side_effect=[
             tool_response("record_search_plan", plan), tool_response("record_review", assessment),

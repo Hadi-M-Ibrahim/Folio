@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, ChevronDown, FileSearch, FileText, Plus, Search, SquareArrowOutUpRight } from 'lucide-react';
-import { assessmentLabel, samePassage, type Evidence, type Finding, type Policy } from '../review/model';
+import { samePassage, type Evidence, type Finding, type Policy } from '../review/model';
 
 type EvidenceControls = {
   citations: Evidence[];
@@ -43,6 +43,23 @@ function EvidenceCard({ evidence, kind, rank, citations, onOpen, onCite }: Evide
         )}
       </div>
     </article>
+  );
+}
+
+function EvidenceGroup({ passages, kind, ...controls }: EvidenceControls & {
+  passages: Evidence[];
+  kind: 'support' | 'counter';
+}) {
+  const [first, ...more] = passages;
+  if (!first) return null;
+  return (
+    <>
+      <EvidenceCard evidence={first} kind={kind} {...controls} />
+      {more.length > 0 && <details className="additional-evidence">
+        <summary>{more.length} more {kind === 'support' ? 'supporting' : 'conflicting'} {more.length === 1 ? 'passage' : 'passages'}</summary>
+        {more.map((passage, i) => <EvidenceCard key={i} evidence={passage} kind={kind} {...controls} />)}
+      </details>}
+    </>
   );
 }
 
@@ -136,18 +153,11 @@ export function PolicyEvidence({ finding, documents, isGuide, ...controls }: Evi
   return (
     <>
       <div className="assessment">
-        <small>
-          {isGuide && 'Existing policy · '}
-          {assessmentLabel(finding)}
-        </small>
+        <h3>{finding.analysisEngine === 'anthropic' ? (isGuide ? 'Policy coverage' : 'Suggested answer') : 'Keyword search'}</h3>
         <p>{finding.answer}</p>
       </div>
-      {finding.supporting.map((evidence, i) => (
-        <EvidenceCard key={i} evidence={evidence} kind="support" {...controls} />
-      ))}
-      {finding.counter.map((evidence, i) => (
-        <EvidenceCard key={i} evidence={evidence} kind="counter" {...controls} />
-      ))}
+      <EvidenceGroup passages={finding.supporting} kind="support" {...controls} />
+      <EvidenceGroup passages={finding.counter} kind="counter" {...controls} />
       {leadMatch && !showSearch && <EvidenceCard evidence={leadMatch} kind="candidate" rank={1} {...controls} />}
       {!evidenceCount && !leadMatch && (
         <div className="empty-inline">

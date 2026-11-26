@@ -60,7 +60,7 @@ class GuideExtractionTests(unittest.TestCase):
         self.assertEqual(result["planningEngine"], "anthropic")
         self.assertEqual(result["findings"][0]["criterionSource"], duty)
 
-    def test_narrative_only_guide_allows_source_anchored_discovery_and_honest_local_fallback(self):
+    def test_narrative_only_guide_allows_source_anchored_discovery_and_reports_planner_failure(self):
         implied = "On receipt, the clerk photographs the seal."
         guide = "The office opened in 1986. " + implied
         payload = guide_input(guide, allowModel=True, publicInputConsent=True)
@@ -84,5 +84,5 @@ class GuideExtractionTests(unittest.TestCase):
                  self.assertRaisesRegex(InvalidRequest, "No reviewable obligation"):
                 api.review(payload)
             with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable), \
-                 self.assertRaisesRegex(InvalidRequest, "planner was unavailable.*no explicit review criterion"):
+                 self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
                 api.review(payload)

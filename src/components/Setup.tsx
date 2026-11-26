@@ -8,7 +8,7 @@ import {
 } from '../review/model';
 import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
 import { SourceFields, type IntakeSource } from './SourceFields';
-import { preparedGuide, preparedSelection } from './SourceRange';
+import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
 import { questionsFromPdf } from './intakeQuestions';
 import './intake.css';
 
@@ -23,16 +23,16 @@ const intakeCopy = {
   guide: {
     sourceLabel: 'Regulatory guide',
     sourceTitle: 'Review a new policy guide',
-    sourceIntro: 'Upload the regulatory guide or paste the section you want to review.',
-    policyIntro: 'Policies are optional. Add them to check coverage, or continue to the guide’s obligations.',
+    sourceIntro: 'Start with the regulatory guide or the section you want to review.',
+    policyIntro: 'Add policies to compare with the guide, or review its obligations on their own.',
     submit: 'Review obligations',
     submitting: 'Reviewing obligations…',
   },
   questionnaire: {
     sourceLabel: 'State questions',
     sourceTitle: 'Answer a questionnaire',
-    sourceIntro: 'Upload the state questionnaire or paste the questions you need to answer.',
-    policyIntro: 'Add the policies you want to search for evidence for each question.',
+    sourceIntro: 'Start with the state questionnaire or a single question you need to answer.',
+    policyIntro: 'Add at least one policy. Folio will search it for passages you can cite in your answers.',
     submit: 'Find evidence',
     submitting: 'Finding evidence…',
   },
@@ -53,11 +53,13 @@ async function readPreparedReview(file: File) {
     const text = input.guide!;
     const pages = input.selection?.guidePages;
     const document = preparedGuide(input.sourceDocument, text, pages);
+    const selection = preparedSelection(pages, 'page');
     source = {
       text,
       name: document && input.sourceDocument ? document.title : '',
       document,
-      selection: preparedSelection(pages, 'page'),
+      selection,
+      range: document && document.pages.length > 1 ? { unit: 'page', items: document.pages, original: document, originalSelection: selection } : undefined,
     };
   } else {
     const questions = input.questions!;
@@ -65,6 +67,7 @@ async function readPreparedReview(file: File) {
       text: questions.map((question) => question.replace(/\s+/g, ' ')).join('\n'),
       name: '',
       questions,
+      range: questionnaireRange(questions, undefined, input.selection?.questionNumbers),
       selection: preparedSelection(input.selection?.questionNumbers, 'question'),
     };
   }
@@ -91,7 +94,6 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const [documents, setDocuments] = useState<Policy[]>([]);
   const [scope, setScope] = useState<Scope>();
   const [draft, setDraft] = useState(emptyPolicyDraft);
-  const [allowModel, setAllowModel] = useState(false);
   const [lastError, setLastError] = useState({ step: 1, message: '' });
   const [busy, setBusy] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
@@ -99,7 +101,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const request = useRef<AbortController | null>(null);
   const isGuide = mode === 'guide';
   const copy = intakeCopy[mode];
-  const questions = useMemo(() => source.questions ?? (isGuide ? [] : source.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [source, isGuide]);
+  const questions = useMemo(() => source.questions ?? (isGuide ? [] : source.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [source.questions, source.text, isGuide]);
   const sourcePath = '#/new/' + initialMode;
   const validationError = sourceError(mode, source.text, questions);
   const step = policyStep && !validationError ? 2 : 1;
@@ -127,8 +129,6 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
       mode,
       documents: policies,
       ...(isGuide ? { guide: source.text.trim() } : { questions }),
-      allowModel,
-      ...(!isLoopback && allowModel ? { modelSharingConsent: true } : {}),
     };
   }
 
@@ -148,9 +148,9 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         setSource(prepared.source);
         setDocuments(prepared.documents);
         setScope(prepared.scope);
-        setAllowModel(false);
         setDraft(emptyPolicyDraft);
       } else if (kind === 'source') {
+        if (files.length > 1) throw Error('Choose one source file for this review.');
         const file = files[0];
         const doc = await readDocument(file);
         const text = doc.pages.map((page) => page.text).join('\n\n');
@@ -200,7 +200,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
       const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
       const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
       if (!policies.length && !isGuide) throw Error('Upload a policy file or paste a policy to continue.');
-      const input = inputWith(policies);
+      const input = { ...inputWith(policies), allowModel: true, modelSharingConsent: true };
       const controller = new AbortController();
       request.current = controller;
       setBusy(copy.submitting);
@@ -239,60 +239,69 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
       >
         <ArrowLeft size={15} aria-hidden="true" /> Back
       </button>
-      <ol className="intake-steps" aria-label="Review steps">
-        {[copy.sourceLabel, 'Existing policies'].map((label, index) => (
-          <li key={label} aria-current={step === index + 1 ? 'step' : undefined} data-complete={index + 1 < step}>
-            <span className="intake-step-number" aria-hidden="true">
-              {index + 1 < step ? <Check size={12} /> : index + 1}
-            </span>
-            {label}
-          </li>
-        ))}
-      </ol>
-      <h1 id="intake-title" ref={heading} tabIndex={-1}>
-        {step === 1 ? copy.sourceTitle : 'Add existing policies'}
-      </h1>
-      <p className="intake-intro">
-        {step === 1 ? copy.sourceIntro : copy.policyIntro}
-      </p>
-      <form onSubmit={(event) => void submit(event)}>
-        <fieldset disabled={Boolean(busy)} className="intake-fields">
-          <legend className="intake-sr-only">{step === 1 ? copy.sourceLabel : 'Existing policies'}</legend>
-          {step === 1 ? (
-            <SourceFields
-              isGuide={isGuide}
-              source={source}
-              questions={questions}
-              onFiles={importFiles}
-              onChange={(value) => { setSource(value); setError(''); }}
-            />
-          ) : (
-            <PolicyFields
-              documents={documents}
-              draft={draft}
-              allowModel={allowModel}
-              onDraft={setDraft}
-              onAllowModelChange={setAllowModel}
-              onFiles={(files) => void importFiles(files, 'policies')}
-              onAdd={(policy) => acceptAddedPolicies([...documents, policy])}
-              onRemove={removePolicy}
-              onError={setError}
-            />
-          )}
-          {source.selection && <output className="intake-help">{source.selection}</output>}
-          {scope && (
-            <output className="intake-help">This review searches {scope.selectedPages.toLocaleString()} selected {scope.selectedPages === 1 ? 'page' : 'pages'} from {scope.sourcePages.toLocaleString()} source pages.</output>
-          )}
-        </fieldset>
-        {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
-        <div className="intake-actions">
-          <button type="submit" className="intake-primary" disabled={Boolean(busy)}>
-            <span>{busy || (step === 1 ? 'Continue' : copy.submit)}</span>
-            {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
-          </button>
+      <div className="intake-layout">
+        <ol className="intake-steps" aria-label="Review steps">
+          {[copy.sourceLabel, 'Existing policies'].map((label, index) => (
+            <li key={label} aria-current={step === index + 1 ? 'step' : undefined} data-complete={index + 1 < step}>
+              <span className="intake-step-number" aria-hidden="true">
+                {index + 1 < step ? <Check size={12} /> : index + 1}
+              </span>
+              <span className="intake-step-text">
+                {label}
+                {index === 0 && step === 2 && <small>{source.name || (isGuide ? 'Guide text' : questions.length + (questions.length === 1 ? ' question' : ' questions'))}</small>}
+                {index === 1 && <small>{isGuide ? 'Optional' : 'Required'}</small>}
+              </span>
+            </li>
+          ))}
+        </ol>
+        <div className="intake-sheet">
+          <h1 id="intake-title" ref={heading} tabIndex={-1}>
+            {step === 1 ? copy.sourceTitle : 'Add existing policies'}
+          </h1>
+          <p className="intake-intro">
+            {step === 1 ? copy.sourceIntro : copy.policyIntro}
+          </p>
+          <form onSubmit={(event) => void submit(event)}>
+            <fieldset disabled={Boolean(busy)} className="intake-fields">
+              <legend className="intake-sr-only">{step === 1 ? copy.sourceLabel : 'Existing policies'}</legend>
+              {step === 1 ? (
+                <SourceFields
+                  isGuide={isGuide}
+                  source={source}
+                  questions={questions}
+                  onFiles={importFiles}
+                  onChange={(value) => { setSource(value); setError(''); }}
+                />
+              ) : (
+                <PolicyFields
+                  documents={documents}
+                  draft={draft}
+                  onDraft={setDraft}
+                  onFiles={(files) => void importFiles(files, 'policies')}
+                  onAdd={(policy) => acceptAddedPolicies([...documents, policy])}
+                  onRemove={removePolicy}
+                  onError={setError}
+                />
+              )}
+              {source.selection && <output className="intake-selection">{source.selection}</output>}
+              {scope && step === 2 && (
+                <output className="intake-help">This review searches {scope.selectedPages.toLocaleString()} selected {scope.selectedPages === 1 ? 'page' : 'pages'} from {scope.sourcePages.toLocaleString()} source pages.</output>
+              )}
+            </fieldset>
+            {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
+            <div className="intake-actions">
+              {step === 2 && <p className="intake-disclosure" id="intake-sharing">
+                Submitting sends your {isGuide ? 'guide' : 'questions'} and relevant policy text to Anthropic.
+              </p>}
+              <button type="submit" className="intake-primary" disabled={Boolean(busy)} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
+                <span>{busy || (step === 1 ? 'Continue to policies' : copy.submit)}</span>
+                {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+              </button>
+            </div>
+            <output className="intake-sr-only">{busy}</output>
+          </form>
         </div>
-        <output className="intake-sr-only">{busy}</output>
-      </form>
+      </div>
     </section>
   );
 }

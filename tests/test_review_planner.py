@@ -98,10 +98,10 @@ class PlannerTests(unittest.TestCase):
                 planner.plan_criteria("guide", " A guide clause.", [("A guide clause.", 0)], "test-key", 100)
         invoke.assert_not_called()
 
-    def test_guide_only_model_extracts_obligations_without_assessing_them(self):
+    def test_guide_only_requires_a_model_plan_and_preserves_the_source_anchors(self):
         clause = "The operator shall retain the forms and publish the fees."
         questions = ["Does the operator retain the forms?", "Does the operator publish the fees?"]
-        payload = {"mode": "guide", "guide": clause, "documents": [], "allowModel": True, "publicInputConsent": True}
+        payload = {"mode": "guide", "guide": clause, "documents": [], "allowModel": True, "modelSharingConsent": True}
         proposed = {"criteria": [
             {"sourceId": "s1", "question": questions[0], "searchTerms": ["forms"]},
             {"sourceId": "s1", "question": questions[1], "searchTerms": ["fees"]},
@@ -111,18 +111,17 @@ class PlannerTests(unittest.TestCase):
                 result = api.review(payload)
                 invoke.assert_called_once()
                 self.assertEqual(invoke.call_args.args[1]["name"], "record_search_plan")
-            self.assertEqual((result["planningEngine"], result["engine"]), ("anthropic", "local"))
+            self.assertEqual((result["planningEngine"], result["engine"]), ("anthropic", "anthropic"))
+            self.assertEqual(result["notice"], "")
             self.assertEqual([row["question"] for row in result["findings"]], questions)
             for row in result["findings"]:
                 self.assertEqual((row["criterionStart"], row["criterionEnd"], row["criterionSource"]), (0, len(clause), clause))
                 self.assertEqual(row["status"], "needs_review")
                 self.assertEqual(row["candidates"] + row["supporting"] + row["counter"] + row["searchProof"], [])
-            with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable) as invoke:
-                fallback = api.review(payload)
-                invoke.assert_called_once()
-            self.assertEqual(fallback["planningEngine"], "local")
-            self.assertEqual(fallback["findings"][0]["criterionSource"], clause)
-            self.assertIn("unavailable", fallback["notice"])
+            with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable) as invoke, \
+                 self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
+                api.review(payload)
+            invoke.assert_called_once()
 
     def test_guide_planner_reports_overflow_instead_of_returning_partial_extraction(self):
         guide = "1. The operator must keep records.\n2. The operator must approve filings."

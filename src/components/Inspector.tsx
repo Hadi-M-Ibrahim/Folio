@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, SquareArrowOutUpRight } from 'lucide-react';
+import { BookOpen, SquareArrowOutUpRight } from 'lucide-react';
 import { samePassage, statusLabels, type Decision, type Evidence, type Mode, type Policy, type ReviewRow } from '../review/model';
 import { PolicyActionEditor, ResponseEditor } from './DecisionEditor';
 import { PolicyEvidence } from './PolicyEvidence';
@@ -6,6 +6,7 @@ import './Inspector.css';
 
 export function Inspector({
   row: { finding, index, decision },
+  total,
   mode,
   documents,
   onOpen,
@@ -14,6 +15,7 @@ export function Inspector({
   guideCitation,
 }: {
   row: ReviewRow;
+  total: number;
   mode: Mode;
   documents: Policy[];
   onOpen: (e: Evidence, term?: boolean) => void;
@@ -47,21 +49,15 @@ export function Inspector({
       <header>
         <div className="inspector-meta">
           <span className="item-id">
-            {isGuide ? 'Obligation' : 'Question'} {index + 1}
+            {isGuide ? 'Obligation' : 'Question'} {index + 1} of {total}
           </span>
           {hasPolicyReview && <span className={'badge ' + finding.status}><i />{statusLabels[finding.status]}</span>}
         </div>
         <h2>{finding.question}</h2>
-        {isGuide && finding.criterionSource && finding.criterionSource !== finding.question && (
-          <details className="guide-origin">
-            <summary>Guide passage <ChevronDown size={14} /></summary>
-            <blockquote>{finding.criterionSource}</blockquote>
-          </details>
-        )}
-        {guideCitation && (
+        {isGuide && (
           <button className="text-link guide-link" onClick={onGuide}>
             <BookOpen size={14} />
-            {guideCitation}
+            {guideCitation ?? 'Read guide passage'}
             <SquareArrowOutUpRight size={12} />
           </button>
         )}
@@ -79,7 +75,7 @@ export function Inspector({
       <div className="decision-footer">
         {isGuide
           ? <PolicyActionEditor decision={decision} onChange={updateDecision} />
-          : <ResponseEditor decision={decision} onChange={updateDecision} onOpen={onOpen} onRemoveCitation={toggleCitation} />}
+          : <ResponseEditor finding={finding} decision={decision} onChange={updateDecision} onOpen={onOpen} onRemoveCitation={toggleCitation} />}
       </div>
     </section>
   );

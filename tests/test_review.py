@@ -98,17 +98,21 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(row["candidates"], [])
         self.assertEqual(row["searchProof"][0]["totalHits"], 0)
 
-    def test_opted_in_search_with_no_matches_skips_assessment_and_reports_negative_evidence(self):
-        payload = sample(questions=["Xylophones?"], allowModel=True, publicInputConsent=True)
+    def test_consented_review_with_no_matches_assesses_empty_evidence(self):
+        payload = sample(questions=["Xylophones?"], allowModel=True, modelSharingConsent=True)
         plan = {"criteria": [{"sourceId": "s1", "searchTerms": ["xylophones"]}]}
+        assessment = {"assessments": [{"id": "q1", "status": "insufficient", "answer": "A claim without sources.",
+                                       "supporting": [], "counter": []}]}
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True), \
-             patch.object(model, "invoke_tool", return_value=plan) as invoke:
+             patch.object(model, "invoke_tool", side_effect=[plan, assessment]) as invoke:
             result = api.review(payload)
-        invoke.assert_called_once()
+        self.assertEqual(invoke.call_count, 2)
+        self.assertEqual(invoke.call_args.args[1]["name"], "record_review")
+        self.assertEqual(invoke.call_args.args[2][0]["passages"], [])
         finding, = result["findings"]
-        self.assertEqual(result["planningEngine"], "anthropic")
-        self.assertIn("No policy passages", result["notice"])
-        self.assertEqual((finding["analysisEngine"], finding["status"]), ("local", "insufficient"))
+        self.assertEqual((result["engine"], result["notice"]), ("anthropic", ""))
+        self.assertIn("no source passages", finding["answer"])
+        self.assertEqual((finding["analysisEngine"], finding["status"]), ("anthropic", "insufficient"))
         self.assertEqual(finding["searchProof"][0]["totalHits"], 0)
 
     def test_validation_no_silent_truncation_or_duplicate_page_ids(self):
@@ -170,12 +174,10 @@ class ReviewTests(unittest.TestCase):
         raw["counter"] = [{"passage": conflict_id, "quote": refs[conflict_id]["quote"], "scope": scope}]
         self.assertEqual(model.verify(row, raw, refs, pages)["status"], "mixed")
 
-    def test_no_key_returns_usable_evidence(self):
-        with patch.dict(os.environ, {"VERCEL": "1"}, clear=True):
-            result = api.review(sample(allowModel=True, publicInputConsent=True))
-        self.assertEqual(result["engine"], "local")
-        self.assertIn("not configured", result["notice"])
-        self.assertTrue(result["findings"][0]["candidates"])
+    def test_a_consented_review_requires_a_server_key(self):
+        with patch.dict(os.environ, {"VERCEL": "1"}, clear=True), \
+             self.assertRaisesRegex(model.ProviderUnavailable, "missing its Anthropic API key"):
+            api.review(sample(allowModel=True, modelSharingConsent=True))
 
     def test_verifier_rejects_neighboring_workflow_stage_as_counterevidence(self):
         data = sample(questions=["Does the agency send an approval letter when the permit is issued?"],
@@ -198,15 +200,27 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(checked["supporting"]), 1)
         self.assertEqual(checked["counter"], [])
 
-    def test_provider_failure_still_returns_full_local_results(self):
+    def test_provider_failure_attempts_assessment_with_local_terms_then_reports_failure(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True):
             with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable) as provider:
-                result = api.review(sample(allowModel=True, publicInputConsent=True))
+                with self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
+                    api.review(sample(allowModel=True, modelSharingConsent=True))
         self.assertEqual(provider.call_count, 2)
-        self.assertEqual(result["engine"], "local")
-        self.assertEqual(result["planningEngine"], "local")
-        self.assertEqual(len(result["findings"]), len(sample()["questions"]))
-        self.assertIn("could not complete", result["notice"])
+
+    def test_model_assessment_can_succeed_after_planner_failure(self):
+        question = "Who records the inspections?"
+        quote = "The office records the inspections."
+        payload = sample(questions=[question], allowModel=True, modelSharingConsent=True, documents=[
+            {"id": "office", "title": "Office policy", "pages": [{"number": 2, "text": quote}]},
+        ])
+        assessment = {"assessments": [{"id": "q1", "status": "supported", "answer": "The office.",
+                                       "supporting": [{"passage": "p1", "quote": quote}], "counter": []}]}
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True), \
+             patch.object(model, "invoke_tool", side_effect=[model.ProviderUnavailable, assessment]):
+            result = api.review(payload, local_operator=True)
+        self.assertEqual((result["engine"], result["planningEngine"]), ("anthropic", "local"))
+        self.assertIn("planner was unavailable", result["notice"])
+        self.assertEqual(result["findings"][0]["supporting"][0]["page"], 2)
 
     def test_interrupted_assessment_keeps_completed_batch_and_all_remaining_criteria(self):
         questions = [f"What does procedure {n} require?" for n in range(12)]
@@ -223,19 +237,25 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual([row["question"] for row in result["findings"]], questions)
         self.assertEqual([row["analysisEngine"] for row in result["findings"]],
                          ["anthropic"] * model.BATCH_SIZE + ["local"] * (len(questions) - model.BATCH_SIZE))
+        self.assertIn(f"assessed {model.BATCH_SIZE} of {len(questions)}", result["notice"])
 
-    def test_private_model_review_requires_loopback_opt_in_and_consent_together(self):
+    def test_loopback_key_enables_only_consented_reviews(self):
         private = sample(questions=["Are urgent grievances escalated?"], allowModel=True)
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True):
-            with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable) as provider:
-                api.review({**private, "publicInputConsent": True}, local_operator=True)
-                with patch.dict(os.environ, {"REVIEW_ALLOW_CUSTOM_MODEL": "1"}):
-                    api.review({**private, "publicInputConsent": True})
-                    api.review({**private, "allowModel": False}, local_operator=True)
-                    provider.assert_not_called()
-                    result = api.review(private, local_operator=True)
-                    self.assertEqual(result["engine"], "local")
-                    self.assertEqual(provider.call_count, 2)
+            plan = {"criteria": [{"sourceId": "s1", "searchTerms": ["escalated"]}]}
+            assessment = {"assessments": [{"id": "q1", "status": "insufficient", "answer": "Unclear.",
+                                           "supporting": [], "counter": []}]}
+            with patch.object(model, "invoke_tool", side_effect=[plan, assessment]) as provider:
+                consented = {**private, "modelSharingConsent": True}
+                with self.assertRaisesRegex(model.ProviderUnavailable, "loopback development server"):
+                    api.review(consented)
+                for flags in ({}, {"allowModel": False, "modelSharingConsent": True}, {"modelSharingConsent": False},
+                              {"modelSharingConsent": False, "publicInputConsent": True}):
+                    self.assertEqual(api.review({**private, **flags}, local_operator=True)["engine"], "local")
+                provider.assert_not_called()
+                result = api.review(consented, local_operator=True)
+                self.assertEqual((result["planningEngine"], result["engine"]), ("anthropic", "anthropic"))
+                self.assertEqual(provider.call_count, 2)
 
     def test_provider_call_cannot_start_after_deadline_and_uses_remaining_budget(self):
         with patch.object(model.time, "monotonic", return_value=100), patch.object(model, "open_provider_request") as send:
