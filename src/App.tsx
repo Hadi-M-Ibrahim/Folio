@@ -1,22 +1,15 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
-  BookOpenText,
   Check,
   Download,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
-  ClipboardList,
-  FileStack,
   FileText,
   Flag,
-  FolderOpen,
-  Grid2X2,
   History,
   LibraryBig,
-  ListChecks,
-  Plus,
   Search,
   SlidersHorizontal,
   X,
@@ -56,90 +49,12 @@ type Entry = {
   reviewTitle: string;
   decision: Decision;
 };
-const colors: Record<Status, string> = {
-  supported: '#a7d4af',
-  mixed: '#e7bb73',
-  contradicted: '#e39988',
-  insufficient: '#aebabe',
-  needs_review: '#c6c3de',
-};
-const currentNav = { workspace: Grid2X2, documents: LibraryBig, log: History };
 const navLabels = {
   workspace: 'Workspace',
   documents: 'Documents',
   log: 'Review log',
 };
 
-function Overview({ review }: { review: Review }) {
-  const { result, input } = review;
-  const counts = statusOrder
-    .map((s) => ({
-      s,
-      n: result.findings.filter((f) => f.status === s).length,
-    }))
-    .filter((o) => o.n);
-  let pos = 0;
-  const gradient = counts
-    .map(({ s, n }) => {
-      const start = pos;
-      pos += (n / result.findings.length) * 100;
-      return `${colors[s]} ${start}% ${Math.max(start, pos - 1)}%, #1d4e40 ${Math.max(start, pos - 1)}% ${pos}%`;
-    })
-    .join(',');
-  return (
-    <section className="overview" aria-label="Review overview">
-      <div className="paper-art" aria-hidden="true">
-        {Array.from({ length: 18 }, (_, i) => (
-          <i style={{ '--i': i } as CSSProperties} key={i} />
-        ))}
-      </div>
-      <div className="overview-main">
-        <div className="overview-label">
-          <FolderOpen size={15} />
-          Active review
-          <span className="overview-marker">{review.sample ? 'Synthetic sample' : 'Custom materials'}</span>
-        </div>
-        <h2>{review.title}</h2>
-        <div className="overview-sub">
-          <span>
-            <FileText />
-            {input.documents.length} {input.documents.length === 1 ? 'policy document' : 'policy documents'}
-          </span>
-          <i />
-          <span>
-            {result.engine === 'example'
-              ? 'Prepared example'
-              : result.engine === 'anthropic'
-                ? 'Claude assessment'
-                : 'Keyword retrieval'}
-          </span>
-        </div>
-      </div>
-      <div className="distribution">
-        <div
-          className="ring"
-          style={{
-            background: gradient ? 'conic-gradient(' + gradient + ')' : '#739385',
-          }}
-        >
-          <div>
-            <strong>{result.findings.length}</strong>
-            <small>findings</small>
-          </div>
-        </div>
-        <div className="legend">
-          {counts.map(({ s, n }) => (
-            <div key={s}>
-              <i style={{ background: colors[s] }} />
-              <span>{statusLabels[s]}</span>
-              <b>{n}</b>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
 function SourceDialog({ location, onClose }: { location: SourceLocation; onClose: () => void }) {
   const [pageNumber, setPageNumber] = useState(location.page);
   const paperRef = useRef<HTMLDivElement>(null);
@@ -159,9 +74,10 @@ function SourceDialog({ location, onClose }: { location: SourceLocation; onClose
         ? searchRanges(page.text, location.quote)
         : (() => {
             const offset = location.exactOffset;
-            const start = offset !== undefined && page.text.startsWith(location.quote, offset)
-              ? offset
-              : page.text.indexOf(location.quote);
+            const start =
+              offset !== undefined && page.text.startsWith(location.quote, offset)
+                ? offset
+                : page.text.indexOf(location.quote);
             return start >= 0 ? [{ start, end: start + location.quote.length }] : [];
           })();
   let lastEnd = 0;
@@ -241,6 +157,7 @@ export default function App() {
     [filter, setFilter] = useState<Status | 'all'>('all'),
     [filters, setFilters] = useState(false);
   const [entries, setEntries] = useState<Entry[]>(readDecisions);
+  const [showQueue, setShowQueue] = useState(false);
   const detailRef = useRef<HTMLDivElement>(null);
   const review = reviews[mode],
     findings = review.result.findings;
@@ -260,6 +177,7 @@ export default function App() {
     setSearch('');
     setFilter('all');
     setFilters(false);
+    setShowQueue(false);
   }
   function switchMode(m: Mode) {
     if (m !== mode) {
@@ -327,81 +245,61 @@ export default function App() {
             <img className="brand-icon" src="/folio.svg" width="35" height="35" alt="" />
             Folio
           </a>
-          <div className="nav-separator" />
           <nav aria-label="Primary">
-            {(Object.keys(navLabels) as (keyof typeof navLabels)[]).map((n) => {
-              const Icon = currentNav[n];
-              return (
-                <button
-                  key={n}
-                  className={n === nav ? 'active' : ''}
-                  aria-current={n === nav ? 'page' : undefined}
-                  onClick={() => setNav(n)}
-                >
-                  <Icon size={16} />
-                  {navLabels[n]}
-                </button>
-              );
-            })}
+            {(Object.keys(navLabels) as (keyof typeof navLabels)[]).map((n) => (
+              <button key={n} aria-current={n === nav ? 'page' : undefined} onClick={() => setNav(n)}>
+                {navLabels[n]}
+              </button>
+            ))}
           </nav>
-          <div className="header-end">
-            <span className="brand-dot" />
-            Compliance workspace
-          </div>
-        </div>
-      </header>
-      <main id="main">
-        <div className="page-heading">
-          <div>
-            <div className="crumb">
-              <img src="/folio.svg" width="16" height="16" alt="" />
-              Folio <ChevronRight size={12} />
-              {navLabels[nav]}
-            </div>
-            <h1>
-              {nav === 'workspace'
-                ? 'Policy review'
-                : nav === 'documents'
-                  ? 'Source documents'
-                  : 'Review log'}
-            </h1>
-            <p>
-              {nav === 'workspace'
-                ? 'Trace each requirement to the policy language behind it.'
-                : nav === 'documents'
-                  ? 'Read the policy pages included in the active review.'
-                  : 'Inspect the latest decision recorded for each finding.'}
-            </p>
-          </div>
           <button className="primary new-review" onClick={() => setSetup(true)}>
-            <Plus size={17} />
             New review
           </button>
         </div>
-        {nav !== 'log' && (
-          <div className="mode-tabs" aria-label="Review mode">
-            {(['questionnaire', 'guide'] as const).map((m) => {
-              const Icon = m === 'guide' ? BookOpenText : ClipboardList;
-              return (
-                <button
-                  key={m}
-                  className={m === mode ? 'selected' : ''}
-                  aria-pressed={m === mode}
-                  onClick={() => switchMode(m)}
-                >
-                  <Icon size={16} />
+      </header>
+      <main id="main">
+        <header className="page-heading">
+          <h1>
+            {nav === 'workspace' ? review.title : nav === 'documents' ? 'Source documents' : 'Review log'}
+          </h1>
+          <p>
+            {nav === 'workspace'
+              ? [
+                  review.result.engine === 'example'
+                    ? 'Prepared sample'
+                    : review.sample
+                      ? 'Fictional sample'
+                      : 'Custom review',
+                  review.result.engine === 'example'
+                    ? null
+                    : review.result.engine === 'anthropic'
+                      ? 'Model-assisted'
+                      : 'Keyword retrieval',
+                  `${review.input.documents.length} policy ${review.input.documents.length === 1 ? 'document' : 'documents'}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : review.title}
+          </p>
+        </header>
+        <div className="review-toolbar">
+          {nav !== 'log' && (
+            <div className="mode-tabs" aria-label="Review mode">
+              {(['questionnaire', 'guide'] as const).map((m) => (
+                <button key={m} aria-pressed={m === mode} onClick={() => switchMode(m)}>
                   {modeLabels[m]}
                 </button>
-              );
-            })}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+          <button className="report-link" onClick={() => exportReview(review, byKey)}>
+            <Download size={15} /> Download report
+          </button>
+        </div>
         {nav === 'workspace' && (
           <>
-            <Overview review={review} />
             {review.result.engine !== 'example' && (
               <div className="run-notice">
-                <FileStack size={16} />
                 <span>
                   {review.result.notice}
                   {review.scope &&
@@ -410,117 +308,113 @@ export default function App() {
               </div>
             )}
             <div className="work-grid">
-              <aside className="queue panel">
-                <div className="queue-head">
-                  <div className="section-title">
-                    <ListChecks size={19} />
-                    <h2>Review queue</h2>
-                    <span className="count">{findings.length}</span>
-                  </div>
-                  <div className="queue-controls">
-                    <label className="queue-search">
-                      <Search size={15} />
-                      <input
-                        aria-label="Search findings"
-                        placeholder="Search findings…"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                      />
-                      {search && (
-                        <button aria-label="Clear search" onClick={() => setSearch('')}>
-                          <X size={13} />
-                        </button>
-                      )}
-                    </label>
-                    <button
-                      className={'filter-button ' + (filters || filter !== 'all' ? 'active' : '')}
-                      aria-label="Filter by finding status"
-                      aria-expanded={filters}
-                      onClick={() => setFilters(!filters)}
-                    >
-                      <SlidersHorizontal size={16} />
-                    </button>
-                  </div>
-                  {filters && (
-                    <label className="filter-select">
-                      Status
-                      <select value={filter} onChange={(e) => setFilter(e.target.value as Status | 'all')}>
-                        <option value="all">All statuses</option>
-                        {statusOrder.map((s) => (
-                          <option key={s} value={s}>
-                            {statusLabels[s]}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                </div>
-                <div className="queue-items">
-                  {visible.map(({ f, i }) => {
-                    const decision = byKey.get(review.key + '/' + f.id)?.decision;
-                    return (
+              <aside className="queue" aria-label="Review queue" data-expanded={showQueue}>
+                <button
+                  className="mobile-queue"
+                  aria-expanded={showQueue}
+                  aria-controls="review-queue"
+                  onClick={() => setShowQueue(!showQueue)}
+                >
+                  {mode === 'guide' ? 'Obligations' : 'Questions'} ({findings.length})
+                  <span>{showQueue ? 'Hide list' : 'Show list'}</span>
+                </button>
+                <div id="review-queue">
+                  <div className="queue-head">
+                    <div className="section-title">
+                      <h2>{mode === 'guide' ? 'Obligations' : 'Questions'}</h2>
+                      <span>
+                        {reviewed}/{findings.length} reviewed
+                      </span>
+                    </div>
+                    <div className="queue-controls">
+                      <label className="queue-search">
+                        <Search size={15} />
+                        <input
+                          aria-label="Search findings"
+                          placeholder="Search findings…"
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                        />
+                        {search && (
+                          <button aria-label="Clear search" onClick={() => setSearch('')}>
+                            <X size={13} />
+                          </button>
+                        )}
+                      </label>
                       <button
-                        className={'queue-row ' + (i === currentRow?.i ? 'selected' : '')}
-                        key={f.id}
-                        aria-pressed={i === currentRow?.i}
-                        onClick={() => {
-                          setSelected(i);
-                          if (window.matchMedia('(max-width: 760px)').matches)
-                            requestAnimationFrame(() =>
-                              detailRef.current?.scrollIntoView({
-                                behavior: 'smooth',
-                                block: 'start',
-                              }),
-                            );
-                        }}
+                        className={'filter-button ' + (filters || filter !== 'all' ? 'active' : '')}
+                        aria-label="Filter by finding status"
+                        aria-expanded={filters}
+                        onClick={() => setFilters(!filters)}
                       >
-                        <span className="row-top">
-                          <span className="short-id">
-                            {mode === 'questionnaire' ? 'Q' : 'R'}-{String(i + 1).padStart(2, '0')}
-                          </span>
-                          <span className={'row-status ' + f.status}>
-                            <i />
-                            {statusLabels[f.status]}
-                          </span>
-                          {decision &&
-                            (decision.value === 'confirmed' ? (
-                              <Check size={13} aria-label="Confirmed" />
-                            ) : (
-                              <Flag size={13} aria-label="Flagged" />
-                            ))}
-                        </span>
-                        <span className="row-name">{findingTitle(f)}</span>
+                        <SlidersHorizontal size={16} />
                       </button>
-                    );
-                  })}
-                  {!visible.length && (
-                    <div className="empty-list">
-                      <Search size={20} />
-                      <p>No matching findings</p>
-                      {(search || filter !== 'all') && (
+                    </div>
+                    {filters && (
+                      <label className="filter-select">
+                        Status
+                        <select value={filter} onChange={(e) => setFilter(e.target.value as Status | 'all')}>
+                          <option value="all">All statuses</option>
+                          {statusOrder.map((s) => (
+                            <option key={s} value={s}>
+                              {statusLabels[s]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                  <div className="queue-items">
+                    {visible.map(({ f, i }) => {
+                      const decision = byKey.get(review.key + '/' + f.id)?.decision;
+                      return (
                         <button
-                          className="text-link"
+                          className={'queue-row ' + (i === currentRow?.i ? 'selected' : '')}
+                          key={f.id}
+                          aria-pressed={i === currentRow?.i}
                           onClick={() => {
-                            setSearch('');
-                            setFilter('all');
+                            setSelected(i);
+                            setShowQueue(false);
+                            if (window.matchMedia('(max-width: 760px)').matches)
+                              requestAnimationFrame(() => {
+                                detailRef.current
+                                  ?.querySelector<HTMLElement>('#finding-detail')
+                                  ?.focus({ preventScroll: true });
+                                detailRef.current?.scrollIntoView({ block: 'start' });
+                              });
                           }}
                         >
-                          Clear filters
+                          <span className="row-top">
+                            <span className="row-name">{findingTitle(f)}</span>
+                            {decision &&
+                              (decision.value === 'confirmed' ? (
+                                <Check size={13} aria-label="Confirmed" />
+                              ) : (
+                                <Flag size={13} aria-label="Flagged" />
+                              ))}
+                          </span>
+                          <span className={'row-status ' + f.status}>{statusLabels[f.status]}</span>
                         </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="queue-footer">
-                  <ClipboardCheck size={15} />
-                  {reviewed} of {findings.length} reviewed
-                  <span className="progress">
-                    <i
-                      style={{
-                        width: (reviewed / Math.max(findings.length, 1)) * 100 + '%',
-                      }}
-                    />
-                  </span>
+                      );
+                    })}
+                    {!visible.length && (
+                      <div className="empty-list">
+                        <Search size={20} />
+                        <p>No matching findings</p>
+                        {(search || filter !== 'all') && (
+                          <button
+                            className="text-link"
+                            onClick={() => {
+                              setSearch('');
+                              setFilter('all');
+                            }}
+                          >
+                            Clear filters
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </aside>
               <div ref={detailRef} className="detail-wrap">
@@ -535,7 +429,6 @@ export default function App() {
                     index={currentRow.i}
                     decision={byKey.get(review.key + '/' + current.id)?.decision}
                     decide={decide}
-                    prepared={review.result.engine === 'example'}
                   />
                 ) : (
                   <div className="panel empty-list">
@@ -628,16 +521,6 @@ export default function App() {
             </p>
           </section>
         )}
-        <footer className="app-footer">
-          <span>
-            <img src="/folio.svg" width="18" height="18" alt="" />
-            Folio
-          </span>
-          <button className="text-link" onClick={() => exportReview(review, byKey)}>
-            <Download size={14} />
-            Download current report
-          </button>
-        </footer>
       </main>
       {setup && <Setup initialMode={mode} onClose={() => setSetup(false)} onDone={acceptReview} />}{' '}
       {source && <SourceDialog location={source} onClose={() => setSource(null)} />}

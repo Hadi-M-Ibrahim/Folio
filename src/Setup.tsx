@@ -172,7 +172,6 @@ export function Setup({
   return (
     <Modal
       title="New review"
-      subtitle="Choose your requirements and the policies to check."
       onClose={onClose}
     >
       <div className="modal-body setup">
