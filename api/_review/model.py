@@ -7,7 +7,16 @@ import time
 from http.client import HTTPException
 from urllib import error, request
 
-from .search import MAX_PASSAGE_CHARS, WORD, InvalidRequest, basic_plan, retrieve
+from .search import (
+    MAX_PASSAGE_CHARS,
+    STOP,
+    WORD,
+    InvalidRequest,
+    basic_plan,
+    followup_lookup,
+    literal_matches,
+    retrieve,
+)
 
 MODEL = "claude-sonnet-5-5"
 SLOTS = threading.BoundedSemaphore(2)
@@ -72,6 +81,28 @@ TOOL = {
     },
 }
 
+LOOKUP_REASONS = ("cross_reference", "definition", "apparent_conflict")
+LOOKUP_INSTRUCTION = """
+If a material question still depends on an unresolved cross-reference, undefined term, or apparent conflict, request one literal lookup by including followup in that assessment. Name the passage where the issue arose and copy a short, distinctive search term from it (e.g. a section number, named classification, or exception title). Supply your verified evidence so far and mark the finding needs_review. Use this only when another passage could change the answer. Omit followup when the supplied passages settle the issue, even when they already show a genuine conflict."""
+LOOKUP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reason": {"type": "string", "enum": list(LOOKUP_REASONS)},
+        "passage": {"type": "string"},
+        "term": {"type": "string", "minLength": 2, "maxLength": 80},
+    },
+    "required": ["reason", "passage", "term"], "additionalProperties": False,
+}
+LOOKUP_TOOL = {
+    **TOOL, "input_schema": {
+        **TOOL["input_schema"], "properties": {"assessments": {"type": "array", "items": {
+            **ASSESSMENT, "properties": {**ASSESSMENT["properties"], "followup": LOOKUP_SCHEMA},
+        }}},
+    },
+}
+FINAL_INSTRUCTION = """
+The literal lookup is complete. Assess the original and newly found passages together. A matching term alone does not establish that a passage defines or modifies this duty. Check document identity and scope. Cite the passages that establish the rule and any applicable exception. If the reference is still unresolved, mark needs_review or insufficient. This is the final pass."""
+
 
 class ProviderUnavailable(Exception):
     pass
@@ -119,8 +150,13 @@ def invoke_tool(system, tool, input_data, key, deadline, max_tokens=3800):
         raise ProviderUnavailable from None
 
 
-def call_provider(model_input, key, deadline):
-    result = invoke_tool(SYSTEM, TOOL, model_input, key, deadline)
+def call_provider(model_input, key, deadline, *, allow_followup=False):
+    system = SYSTEM
+    if allow_followup:
+        system += LOOKUP_INSTRUCTION
+    elif any("lookup" in row for row in model_input):
+        system += FINAL_INSTRUCTION
+    result = invoke_tool(system, LOOKUP_TOOL if allow_followup else TOOL, model_input, key, deadline)
     if not isinstance(result.get("assessments"), list):
         raise ProviderUnavailable
     return result["assessments"]
@@ -187,39 +223,93 @@ def verify(finding, assessment, candidates, pages):
             "supporting": supporting, "counter": counter, "analysisEngine": "anthropic"}
 
 
-def assess_batch(findings, pages, key, deadline):
-    assignments = []
-    evidence_by_id = {}
-    for finding in findings:
-        refs = {f"p{i}": c for i, c in enumerate(finding["candidates"], 1)}
-        evidence_by_id[finding["id"]] = refs
-        assignments.append({
-            "id": finding["id"], "criterion": finding["question"], "criterionSource": finding["criterionSource"],
-            "passages": [{"passage": pid, "quote": item["quote"]} for pid, item in refs.items()],
-        })
-    outputs = call_provider(assignments, key, deadline)
+def lookup_source(requested, evidence):
+    if not isinstance(requested, dict) or requested.get("reason") not in LOOKUP_REASONS:
+        return None
+    pid = requested.get("passage")
+    source = evidence.get(pid) if isinstance(pid, str) else None
+    term = requested.get("term")
+    if not source or not isinstance(term, str) or not 2 <= len(term) <= 80 or not term.isprintable():
+        return None
+    tokens = WORD.findall(term.casefold())
+    if not 1 <= len(tokens) <= 10 or all(token in STOP for token in tokens):
+        return None
+    match = next(literal_matches(term.strip())(source["quote"]), None)
+    return (source, " ".join(match.group().split())) if match else None
+
+
+def review_row(finding, assessment, refs, pages, allow_followup, deadline):
+    reviewed = verify(finding, assessment, refs, pages)
+    if reviewed is finding or "followup" not in assessment:
+        return reviewed
+    # A lookup request declares a material gap. Keep verified quotes, and withhold
+    # the provisional verdict even when the request is malformed or times out.
+    pending = {**reviewed, "status": "needs_review",
+               "answer": "The reviewer could not resolve this question from the cited passages."}
+    requested = assessment["followup"]
+    anchor = lookup_source(requested, refs) if allow_followup else None
+    if not anchor or time.monotonic() >= deadline:
+        return pending
+    source, term = anchor
+    lookup = followup_lookup(pages, term, finding["candidates"])
+    pending["followup"] = {**lookup, "reason": requested["reason"], "source": source}
+    pending["answer"] = ("Review the additional passages before deciding." if lookup["passages"] else
+                         "The follow-up search found no additional passage to resolve this question.")
+    return pending
+
+
+def assessment_input(finding):
+    lookup = finding.get("followup")
+    passages = finding["candidates"] + (lookup["passages"] if lookup else [])
+    refs = {f"p{i}": passage for i, passage in enumerate(passages, 1)}
+    assignment = {
+        "id": finding["id"], "criterion": finding["question"], "criterionSource": finding["criterionSource"],
+        "passages": [{"passage": pid, "quote": item["quote"]} for pid, item in refs.items()],
+    }
+    if lookup:
+        assignment["lookup"] = {
+            "reason": lookup["reason"], "term": lookup["proof"]["term"],
+            "originPassage": next(pid for pid, item in refs.items() if item == lookup["source"]),
+        }
+        for item in assignment["passages"]:
+            source = refs[item["passage"]]
+            item.update(documentId=source["documentId"], title=source["title"], page=source["page"],
+                        newlyFound=source in lookup["passages"])
+    return assignment, refs
+
+
+def assess_batch(findings, pages, key, deadline, *, allow_followup=True):
+    inputs = {finding["id"]: assessment_input(finding) for finding in findings}
+    outputs = call_provider([row for row, _ in inputs.values()], key, deadline, allow_followup=allow_followup)
     by_id = {}
     for item in outputs:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
             item_id = item["id"]
             # Duplicate assignments are ambiguous. Keep the local finding for that criterion.
             by_id[item_id] = None if item_id in by_id else item
-    return [verify(f, by_id.get(f["id"]), evidence_by_id[f["id"]], pages) for f in findings]
+    return [review_row(finding, by_id.get(finding["id"]), inputs[finding["id"]][1], pages, allow_followup, deadline)
+            for finding in findings]
 
 
-def assess_findings(findings, pages, key, deadline):
+def assess_findings(findings, pages, key, deadline, *, allow_followup=True):
     with_evidence = [finding for finding in findings if finding["candidates"]]
     if not with_evidence:
         return findings, "No policy passages matched the search terms for these criteria."
 
     # Each completed batch replaces those local findings, preserving original criterion order.
     by_id = {row["id"]: row for row in findings}
-    for offset in range(0, len(with_evidence), BATCH_SIZE):
-        try:
-            batch = assess_batch(with_evidence[offset:offset + BATCH_SIZE], pages, key, deadline)
-        except ProviderUnavailable:
-            break
-        by_id.update((row["id"], row) for row in batch)
+    def assess(rows, *, permit_lookup):
+        for offset in range(0, len(rows), BATCH_SIZE):
+            try:
+                batch = assess_batch(rows[offset:offset + BATCH_SIZE], pages, key, deadline, allow_followup=permit_lookup)
+            except ProviderUnavailable:
+                break
+            by_id.update((row["id"], row) for row in batch)
+
+    assess(with_evidence, permit_lookup=allow_followup)
+    # Give all criteria their first assessment before spending another model call.
+    pending = [row for row in by_id.values() if row.get("followup", {}).get("passages")]
+    assess(pending, permit_lookup=False)
     reviewed = list(by_id.values())
     assessed = sum(row["analysisEngine"] == "anthropic" for row in reviewed)
     if assessed == len(findings):

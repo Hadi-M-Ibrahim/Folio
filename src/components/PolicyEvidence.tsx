@@ -8,22 +8,23 @@ type EvidenceControls = {
   onCite?: (evidence: Evidence) => void;
 };
 
+const passageLabels = {
+  support: 'Supporting evidence',
+  counter: 'Counterevidence',
+  source: 'Originating passage',
+  followup: 'New passage from follow-up',
+};
+
 function EvidenceCard({ evidence, kind, rank, citations, onOpen, onCite }: EvidenceControls & {
   evidence: Evidence;
-  kind: 'support' | 'counter' | 'candidate';
+  kind: keyof typeof passageLabels | 'candidate';
   rank?: number;
 }) {
   const cited = citations.some((citation) => samePassage(citation, evidence));
   return (
     <article className={'evidence-card ' + kind}>
       <div className="evidence-label">
-        <strong>
-          {kind === 'support'
-            ? 'Supporting evidence'
-            : kind === 'counter'
-              ? 'Counterevidence'
-              : 'Ranked match ' + rank}
-        </strong>
+        <strong>{kind === 'candidate' ? 'Ranked match ' + rank : passageLabels[kind]}</strong>
       </div>
       <blockquote>“{evidence.quote}”</blockquote>
       <div className="evidence-tools">
@@ -49,6 +50,7 @@ const termOriginLabels = new Map([
   ['model', 'Model-planned term'],
   ['related_form', 'Related word form'],
   ['criterion', 'Requirement term'],
+  ['followup', 'Follow-up term'],
 ]);
 
 function TermProof({ proof, documents, onOpen }: {
@@ -62,7 +64,7 @@ function TermProof({ proof, documents, onOpen }: {
     <div className="proof-term">
       <strong>{proof.term}</strong>
       <small>
-        {termOriginLabels.get(proof.origin ?? '') ?? 'Search term'} · {hits} hits across {pages} pages
+        {termOriginLabels.get(proof.origin ?? '') ?? 'Search term'} · {hits} {hits === 1 ? 'hit' : 'hits'} across {pages} {pages === 1 ? 'page' : 'pages'}
       </small>
       {pages > proof.matches.length && <small>Showing {proof.matches.length} pages with the most hits</small>}
       {proof.matches.map(({ documentId, page, count }) => {
@@ -81,6 +83,39 @@ function TermProof({ proof, documents, onOpen }: {
       })}
       {!proof.matches.length && <small>No exact matches</small>}
     </div>
+  );
+}
+
+type Followup = NonNullable<Finding['followup']>;
+
+const followupReasons: Record<Followup['reason'], string> = {
+  cross_reference: 'Followed a cross-reference in the originating passage.',
+  definition: 'Searched for a definition used in the originating passage.',
+  apparent_conflict: 'Checked an apparent conflict involving the originating passage.',
+};
+
+function FollowupTrail({ followup, documents, ...controls }: EvidenceControls & {
+  followup: Followup;
+  documents: Policy[];
+}) {
+  const { reason, source, proof, passages, totalNewPassages } = followup;
+  return (
+    <section aria-labelledby="followup-heading">
+      <div className="search-heading">
+        <Search size={15} />
+        <h3 id="followup-heading">Follow-up search</h3>
+      </div>
+      <p>{followupReasons[reason]}</p>
+      <EvidenceCard evidence={source} kind="source" {...controls} />
+      <TermProof proof={proof} documents={documents} onOpen={controls.onOpen} />
+      {totalNewPassages === 0 && <p className="muted-note">This search found no new passages.</p>}
+      {totalNewPassages > passages.length && (
+        <p className="muted-note">Showing {passages.length} of {totalNewPassages} new passages.</p>
+      )}
+      {passages.map((evidence, i) => (
+        <EvidenceCard key={i} evidence={evidence} kind="followup" {...controls} />
+      ))}
+    </section>
   );
 }
 
@@ -162,6 +197,9 @@ export function PolicyEvidence({ finding, documents, isGuide, ...controls }: Evi
               <p>No terms recorded.</p>
             )}
           </details>
+          {finding.followup && (
+            <FollowupTrail followup={finding.followup} documents={documents} {...controls} />
+          )}
           <div className="search-heading">
             <FileSearch size={15} />
             <h3>Ranked passages</h3>

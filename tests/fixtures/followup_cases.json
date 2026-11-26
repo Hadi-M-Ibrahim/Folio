@@ -1,0 +1,124 @@
+[
+  {
+    "id": "direct-support",
+    "payload": {
+      "mode": "questionnaire",
+      "questions": ["Must the intake clerk place a green stamp on every crate before release?"],
+      "documents": [{"id": "intake", "title": "Crate intake", "pages": [
+        {"number": 1, "text": "The intake clerk must place a green stamp on every crate before release."}
+      ]}]
+    },
+    "expected": {
+      "statuses": ["supported"],
+      "supporting": [{"documentId": "intake", "page": 1, "anchors": ["green stamp", "before release"]}],
+      "counter": []
+    }
+  },
+  {
+    "id": "guide-linked-exception",
+    "lookupCheck": {"term": "Schedule Cobalt", "newPages": [["dispatch", 7]]},
+    "payload": {
+      "mode": "guide",
+      "guide": "The archive clerk must bind every parcel with cotton cord before dispatch.",
+      "documents": [{"id": "dispatch", "title": "Dispatch manual", "pages": [
+        {"number": 1, "text": "The archive clerk binds every parcel with cotton cord before dispatch. For restoration consignments use Schedule Cobalt."},
+        {"number": 7, "text": "Schedule Cobalt. Restoration consignments travel untied. Loose packing prevents surface abrasion."}
+      ]}]
+    },
+    "expected": {
+      "statuses": ["mixed"],
+      "supporting": [{"documentId": "dispatch", "page": 1, "anchors": ["cotton cord", "before dispatch"]}],
+      "counter": [{"documentId": "dispatch", "page": 7, "anchors": ["restoration consignments", "untied"]}],
+      "exception": true
+    }
+  },
+  {
+    "id": "questionnaire-cross-document-exception",
+    "lookupCheck": {"term": "Annex Heron", "newPages": [["packing", 1]]},
+    "payload": {
+      "mode": "questionnaire",
+      "questions": ["Must the gallery attendant attach a red tag to every loan before shipment?"],
+      "documents": [
+        {"id": "loans", "title": "Loan desk manual", "pages": [
+          {"number": 1, "text": "The gallery attendant attaches a red tag to every loan before shipment. For chilled pieces apply Annex Heron."}
+        ]},
+        {"id": "packing", "title": "Packing annexes", "pages": [
+          {"number": 1, "text": "Annex Heron. Chilled pieces depart untagged. Adhesive discolors the finish."}
+        ]}
+      ]
+    },
+    "expected": {
+      "statuses": ["mixed"],
+      "supporting": [{"documentId": "loans", "page": 1, "anchors": ["red tag", "before shipment"]}],
+      "counter": [{"documentId": "packing", "page": 1, "anchors": ["chilled pieces", "untagged"]}],
+      "exception": true
+    }
+  },
+  {
+    "id": "unrelated-return-duty",
+    "lookupCheck": {"term": "Memo Violet", "newPages": [["movements", 8]]},
+    "payload": {
+      "mode": "questionnaire",
+      "questions": ["Must the dispatcher record each outbound measurement in the brass ledger before departure?"],
+      "documents": [{"id": "movements", "title": "Instrument movements", "pages": [
+        {"number": 1, "text": "The dispatcher records each outbound measurement in the brass ledger before departure. Returned instruments are governed by Memo Violet."},
+        {"number": 8, "text": "Memo Violet. On return, technicians enter readings in the silver notebook only."}
+      ]}]
+    },
+    "expected": {
+      "statuses": ["supported"],
+      "supporting": [{"documentId": "movements", "page": 1, "anchors": ["brass ledger", "before departure"]}],
+      "counter": []
+    }
+  },
+  {
+    "id": "guide-definition",
+    "payload": {
+      "mode": "guide",
+      "guide": "The route clerk must attach a routing slip to every outbound mist tube.",
+      "documents": [{"id": "routing", "title": "Tube routing", "pages": [
+        {"number": 1, "text": "The route clerk attaches a routing slip to every outbound tube. See Index Alder for tube-family terminology."},
+        {"number": 4, "text": "Index Alder. A mist tube is a brass container with a frosted lid. The word mist describes the finish only."}
+      ]}]
+    },
+    "expected": {
+      "statuses": ["supported"],
+      "supporting": [{"documentId": "routing", "page": 1, "anchors": ["routing slip", "outbound tube"]}],
+      "optionalSupporting": [{"documentId": "routing", "page": 4, "anchors": ["mist"]}],
+      "counter": []
+    }
+  },
+  {
+    "id": "unresolved-annex",
+    "lookupCheck": {"term": "Annex Juniper", "newPages": []},
+    "payload": {
+      "mode": "questionnaire",
+      "questions": ["Must every transfer receipt bear a blue triangle?"],
+      "documents": [{"id": "marks", "title": "Records and bins", "pages": [
+        {"number": 1, "text": "Transfer receipt markings are specified in Annex Juniper. Consult Annex Juniper for the required symbol and ink color."},
+        {"number": 9, "text": "A blue triangle marks cellar bins selected for cleaning."}
+      ]}]
+    },
+    "expected": {
+      "statuses": ["insufficient", "needs_review"],
+      "supporting": [],
+      "optionalSupporting": [{"documentId": "marks", "page": 1, "anchors": ["Annex Juniper"]}],
+      "counter": []
+    }
+  },
+  {
+    "id": "direct-contradiction",
+    "payload": {
+      "mode": "guide",
+      "guide": "The archivist must issue a paper voucher for every admission.",
+      "documents": [{"id": "admissions", "title": "Admissions manual", "pages": [
+        {"number": 1, "text": "The archivist issues each admission voucher electronically. Paper vouchers are prohibited."}
+      ]}]
+    },
+    "expected": {
+      "statuses": ["contradicted"],
+      "supporting": [],
+      "counter": [{"documentId": "admissions", "page": 1, "anchors": ["paper vouchers are prohibited"]}]
+    }
+  }
+]
