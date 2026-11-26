@@ -1,6 +1,6 @@
 # <img src="public/folio.svg" alt="" width="40" height="40" align="absmiddle"> Folio
 
-Folio helps a compliance analyst answer a state questionnaire or turn a new policy guide into a list of requirements to review. Each finding links back to the policy language on a specific page. The analyst can inspect supporting and conflicting passages, open the literal search results, and record a decision. The review log can export the findings and citations as Markdown.
+Folio helps a compliance analyst answer a state questionnaire or turn a new policy guide into a list of requirements to review. Each finding links back to the policy language on a specific page. The analyst can inspect supporting and conflicting passages, open the literal search results, and record a decision. Use Download report to export the findings and citations as Markdown.
 
 ## Try it
 

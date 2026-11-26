@@ -1,5 +1,5 @@
 {
-  "name": "folio-review-workspace",
+  "name": "folio",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.6",
-    "@fontsource/instrument-serif": "^5.2.6",
     "lucide-react": "^0.468.0",
     "pdfjs-dist": "6.2.108",
     "react": "^19.2.0",
