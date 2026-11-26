@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { ChevronDown, ClipboardPaste, FilePenLine, FolderOpen, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ChevronDown, ClipboardPaste, FilePenLine, FileText, FolderOpen, X } from 'lucide-react';
 import { isLoopback } from '../review/client';
 import type { Policy } from '../review/model';
 import { IntakeFile } from './IntakeFile';
@@ -98,18 +98,6 @@ function SourceText({ isGuide, source, questions, onChange }: Omit<SourceFieldsP
   );
 }
 
-function SourcePdf({ doc, file, source }: { doc: Policy; file: File; source: IntakeSource }) {
-  const pageNumbers = useMemo(() => doc.pages.map((page) => page.number), [doc.pages]);
-  return <>
-    <p className="intake-help">
-      {pdfScopeLabel(pageNumbers, Boolean(source.selection))}
-      {source.selection && source.range?.unit === 'question' && ' Other questions printed on ' +
-        (pageNumbers.length === 1 ? 'this page are' : 'these pages are') + ' visible to Anthropic.'}
-    </p>
-    <PdfViewer file={file} pages={pageNumbers} />
-  </>;
-}
-
 function uploadDetail(source: IntakeSource) {
   if (!source.name) return 'Drop a PDF, TXT or Markdown file here.';
   const original = source.range?.original ?? source.document;
@@ -117,20 +105,30 @@ function uploadDetail(source: IntakeSource) {
 }
 
 export function SourceFields({ isGuide, source, questions, onChange, onFiles }: SourceFieldsProps) {
+  const [previewId, setPreviewId] = useState<string>();
   const availableRange = useMemo(() => source.range ?? (isGuide || source.document?.pdfFile ? undefined : questionnaireRange(questions, source.document)),
     [isGuide, questions, source.range, source.document]);
   const doc = source.document;
+  const pdf = doc?.pdfFile;
+  const pageNumbers = useMemo(() => pdf ? doc.pages.map(page => page.number) : [], [doc, pdf]);
+  const previewOpen = Boolean(pdf && previewId === doc.id);
 
   return (
     <>
       <IntakeFile
         label={isGuide ? 'Upload regulatory guide' : 'Upload questionnaire'}
         fileName={source.name}
-        detail={uploadDetail(source)}
+        detail={pdf ? pdfScopeLabel(pageNumbers, Boolean(source.selection)) : uploadDetail(source)}
         onFiles={(files) => onFiles(files, 'source')}
       />
       <div className="intake-source-options">
-        {!doc?.pdfFile && <SourceText isGuide={isGuide} source={source} questions={questions} onChange={onChange} />}
+        {pdf ? (
+          <button type="button" className="intake-text-button" aria-expanded={previewOpen} aria-controls="source-pdf-preview"
+            onClick={() => setPreviewId(previewOpen ? undefined : doc.id)}>
+            <FileText size={16} aria-hidden="true" /> Preview PDF
+            <ChevronDown className="intake-chevron" size={14} aria-hidden="true" />
+          </button>
+        ) : <SourceText isGuide={isGuide} source={source} questions={questions} onChange={onChange} />}
         {availableRange && (
           <SourceRange
             key={availableRange.original?.id ?? 'pasted'}
@@ -145,7 +143,12 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
           requestAnimationFrame(() => document.getElementById('intake-source')?.focus());
         }}><X size={16} aria-hidden="true" /> Remove file</button>}
       </div>
-      {doc?.pdfFile && <SourcePdf doc={doc} file={doc.pdfFile} source={source} />}
+      {pdf && source.selection && source.range?.unit === 'question' && <p className="intake-help">
+        Other questions printed on {pageNumbers.length === 1 ? 'this page are' : 'these pages are'} visible to Anthropic.
+      </p>}
+      {pdf && <div id="source-pdf-preview" hidden={!previewOpen}>
+        {previewOpen && <PdfViewer file={pdf} pages={pageNumbers} />}
+      </div>}
       {isLoopback && (
         <label className="intake-bundle">
           <FolderOpen size={15} aria-hidden="true" /> Import a prepared review (.json)
