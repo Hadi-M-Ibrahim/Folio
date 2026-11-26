@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
+import { ArrowDown, ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
 import { ReviewWorkspace } from './components/ReviewWorkspace';
 import { Setup } from './components/Setup';
 import { modeLabels, type Decision, type Mode, type Review } from './review/model';
@@ -30,32 +30,46 @@ const workflows = [
 
 function Home({ reviews }: { reviews: Review[] }) {
   return (
-    <section className="review-home" aria-labelledby="home-title">
-      <h1 id="home-title" tabIndex={-1}>Start a review</h1>
-      <div className="workflow-list">
-        {workflows.map(({ mode, title, description, Icon }) => (
-          <a className="workflow-option" key={mode} href={'#/new/' + mode}>
-            <span aria-hidden="true" className={'workflow-icon ' + mode}><Icon size={25} /></span>
-            <span className="workflow-copy">
-              <span className="workflow-title">{title}</span>
-              <span className="workflow-description">{description}</span>
-            </span>
-            <ArrowRight aria-hidden="true" size={24} />
+    <>
+      <section className="opening" aria-labelledby="opening-title">
+        <img className="opening-landscape" src="/paper-landscape.webp" alt="" fetchPriority="high" />
+        <div className="opening-copy">
+          <h1 id="opening-title" tabIndex={-1}>Policy review</h1>
+          <p>Answer state inquiries and review new guidance against your existing policies.</p>
+          <a className="opening-link" href="#review-options">
+            Start a review <ArrowDown size={16} aria-hidden="true" />
           </a>
-        ))}
-      </div>
-      {reviews.length > 0 && (
-        <section className="session-reviews" aria-labelledby="session-title">
-          <h2 id="session-title">Reviews in this tab</h2>
-          {reviews.map((review) => (
-            <a className="session-review" key={review.key} href={'#/review/' + review.key}>
-              <span>{review.title}</span><small>{modeLabels[review.input.mode]}</small>
-              <ArrowRight aria-hidden="true" size={17} />
-            </a>
-          ))}
+        </div>
+      </section>
+      <div className="review-surface">
+        <section className="review-home" aria-labelledby="review-options">
+          <h2 id="review-options" tabIndex={-1}>Start a review</h2>
+          <div className="workflow-list">
+            {workflows.map(({ mode, title, description, Icon }) => (
+              <a className="workflow-option" key={mode} href={'#/new/' + mode}>
+                <span aria-hidden="true" className={'workflow-icon ' + mode}><Icon size={25} /></span>
+                <span className="workflow-copy">
+                  <span className="workflow-title">{title}</span>
+                  <span className="workflow-description">{description}</span>
+                </span>
+                <ArrowRight aria-hidden="true" size={24} />
+              </a>
+            ))}
+          </div>
+          {reviews.length > 0 && (
+            <section className="session-reviews" aria-labelledby="session-title">
+              <h2 id="session-title">Reviews in this tab</h2>
+              {reviews.map((review) => (
+                <a className="session-review" key={review.key} href={'#/review/' + review.key}>
+                  <span>{review.title}</span><small>{modeLabels[review.input.mode]}</small>
+                  <ArrowRight aria-hidden="true" size={17} />
+                </a>
+              ))}
+            </section>
+          )}
         </section>
-      )}
-    </section>
+      </div>
+    </>
   );
 }
 
@@ -67,11 +81,18 @@ export default function App() {
     path === '/new/' + mode || path === '/new/' + mode + '/policies',
   )?.mode;
   const review = reviews.find((item) => path === '/review/' + item.key);
+  const home = !setupMode && !review;
 
   useEffect(() => {
     const title = review?.title ?? (setupMode ? modeLabels[setupMode] : 'Policy review');
     document.title = title + ' · Folio';
-    window.scrollTo(0, 0);
+    if (path === 'review-options') {
+      const options = document.getElementById('review-options');
+      options?.focus({ preventScroll: true });
+      options?.scrollIntoView({ block: 'start' });
+      return;
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
     const heading = document.querySelector<HTMLElement>('main h1');
     heading?.focus({ preventScroll: true });
   }, [path, review, setupMode]);
@@ -104,9 +125,9 @@ export default function App() {
           </a>
         </div>
       </header>
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} className={home ? 'home-main' : undefined}>
         {setupMode ? (
-          <Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = '/'; }} onDone={openReview} />
+          <Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onDone={openReview} />
         ) : review ? (
           <ReviewWorkspace key={review.key} review={review} decisions={decisions} onDecisionChange={saveDecision} />
         ) : <Home reviews={reviews} />}

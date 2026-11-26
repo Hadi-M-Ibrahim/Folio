@@ -37,7 +37,11 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   const question = 'Who records the inspection date?';
   const policy = 'The facilities coordinator records the inspection date.';
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Start a review' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Policy review', exact: true })).toBeInViewport();
+  await page.getByRole('link', { name: 'Start a review', exact: true }).click();
+  const options = page.getByRole('heading', { name: 'Start a review', exact: true });
+  await expect(options).toBeFocused();
+  await expect(options).toBeInViewport();
   await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toHaveCount(0);
   await expect(page.getByRole('banner').getByRole('button', { name: 'Document privacy' })).toHaveCount(0);
   await page.getByRole('link', { name: 'Answer a questionnaire Find existing policy evidence for each state inquiry and prepare a cited response.', exact: true }).click();
@@ -68,6 +72,7 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   expect(output).toContain('Facilities.txt, p. 1');
   expect(output).toContain(policy);
   await page.getByRole('link', { name: 'All reviews' }).click();
+  await expect(options).toBeInViewport();
   await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toBeVisible();
   await page.locator('.session-review').click();
   await expect(page.getByLabel('Response for submission')).toHaveValue('The facilities coordinator.');
