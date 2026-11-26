@@ -53,7 +53,9 @@ class HostedSessions:
         # rejects its process-local fallback when the shared cache is unavailable.
         from vercel.cache import RuntimeCache
 
-        self.cache = RuntimeCache(strict=True)
+        # session_key already contains a SHA-256 digest. Preserve it instead of
+        # using the SDK's default 32-bit cache key hash.
+        self.cache = RuntimeCache(strict=True, key_hash_function=str)
 
     def call(self, method, *args):
         try:
@@ -68,14 +70,16 @@ class HostedSessions:
             raise SessionUnavailable
 
     def active(self, key):
-        return self.call(self.cache.get, key) == "active"
+        return (self.call(self.cache.get, key) == "active" and
+                self.call(self.cache.get, key + "-stop") != "cancelled")
 
     def cancel(self, key):
-        # Revoke in other regions as well. Confirm the local write because the
-        # SDK can report a failed write as a successful no-op.
+        # The tagged lease can read as missing during invalidation. An
+        # independent, untagged receipt confirms the stop even in that window.
         self.call(self.cache.expire_tag, key)
-        self.call(self.cache.set, key, "cancelled", {"ttl": SESSION_TTL})
-        if self.call(self.cache.get, key) != "cancelled":
+        receipt = key + "-stop"
+        self.call(self.cache.set, receipt, "cancelled", {"ttl": SESSION_TTL})
+        if self.call(self.cache.get, receipt) != "cancelled":
             raise SessionUnavailable
 
 

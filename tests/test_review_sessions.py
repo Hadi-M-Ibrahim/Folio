@@ -32,9 +32,20 @@ class ReviewSessionTests(unittest.TestCase):
             self.assertFalse(review.active(key))
             backend.expire_tag.assert_called_once_with(key)
             self.assertNotIn(token, str(backend.mock_calls))
-            self.assertEqual([args.args[1] for args in backend.set.call_args_list], ["active", "cancelled"])
+            self.assertEqual([call.args[:2] for call in backend.set.call_args_list],
+                             [(key, "active"), (key + "-stop", "cancelled")])
             for call in resolve.call_args_list:
                 self.assertTrue(call.kwargs["strict"])
+
+    def test_revocation_receipt_stops_work_before_tag_invalidation_arrives(self):
+        backend = Mock(wraps=InMemoryCache())
+        backend.expire_tag.side_effect = lambda key: None
+        with patch("vercel.cache.runtime_cache.resolve_cache", return_value=backend):
+            store = sessions.HostedSessions()
+            key = sessions.session_key(sessions.create_session(store))
+            store.cancel(key)
+            self.assertEqual(backend.get(key), "active")
+            self.assertFalse(store.active(key))
 
     def test_cache_misses_errors_and_silently_dropped_writes_fail_closed(self):
         backend = Mock()

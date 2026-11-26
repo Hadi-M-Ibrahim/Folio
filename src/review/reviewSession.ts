@@ -6,6 +6,14 @@ export function sessionHeaders(signal: AbortSignal): Record<string, string> {
   return token ? { 'X-Folio-Review-Token': token } : {};
 }
 
+async function revokeSession(token: string) {
+  const request = () => fetch('/api/review-session', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }), keepalive: true,
+  });
+  const response = await request().catch(() => undefined);
+  if (!response || response.status >= 500) await request().catch(() => {});
+}
+
 export async function openReviewSession(signal: AbortSignal): Promise<() => void> {
   signal.throwIfAborted();
   const response = await fetch('/api/review-session', {
@@ -16,9 +24,7 @@ export async function openReviewSession(signal: AbortSignal): Promise<() => void
   if (typeof token !== 'string' || !token) throw Error('The background review could not start.');
   function stop() {
     sessions.delete(signal);
-    void fetch('/api/review-session', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }), keepalive: true,
-    }).catch(() => {});
+    void revokeSession(token);
   }
   if (signal.aborted) {
     stop();
