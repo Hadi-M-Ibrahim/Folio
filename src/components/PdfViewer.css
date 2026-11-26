@@ -5,15 +5,24 @@
 .pdf-controls button { display: inline-grid; place-items: center; min-width: 32px; min-height: 34px; }
 .pdf-controls button:hover:enabled { background: var(--paper); }
 .pdf-controls select { margin: 0 2px; padding: 4px; min-height: 30px; border: 1px solid var(--line); background: white; font-size: 13px; }
+/* Reserve space for four-digit counts before the document opens. */
+.pdf-controls select[data-all-pages='true'] { min-width: 11ch; }
 .pdf-total, .pdf-zoom { white-space: nowrap; color: var(--muted); }
+.pdf-total { min-width: 6ch; }
 .pdf-zoom { min-width: 4ch; text-align: center; }
-.pdf-scroll { position: relative; max-height: min(62vh, 720px); min-height: 105px; padding: 9px; overflow: auto; background: #eae8e3; overscroll-behavior: contain; }
+.pdf-frame { position: relative; height: min(62svh, 720px); background: #eae8e3; }
+.pdf-scroll { height: 100%; padding: 9px; overflow: auto; scrollbar-gutter: stable; overflow-anchor: none; overscroll-behavior: contain; }
 .pdf-track { width: 100%; min-width: 0; }
 .pdf-sheet { position: relative; margin-inline: auto; background: white; box-shadow: 0 1px 4px #201c1829; }
 .pdf-sheet canvas { display: block; width: 100%; height: 100%; }
-.pdf-status, .pdf-download { display: block; padding: 10px 12px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.pdf-scroll > .pdf-status { position: sticky; left: 0; top: 0; z-index: 2; margin-bottom: 5px; background: white; }
-.pdf-download { width: fit-content; text-decoration: underline; text-underline-offset: 3px; }
+.pdf-status, .pdf-download-row { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.pdf-status, .pdf-download { padding: 10px 12px; }
+.pdf-status { position: absolute; inset: 8px 8px auto; width: fit-content; pointer-events: none; background: white; }
+.pdf-status[data-ready='true'] { width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+.pdf-status[data-updating='true'] { animation: pdf-pending 150ms 400ms backwards; }
+@keyframes pdf-pending { from { opacity: 0; } to { opacity: 1; } }
+.pdf-download-row { min-height: calc(1.5em + 20px); }
+.pdf-download { display: block; width: fit-content; text-decoration: underline; text-underline-offset: 3px; }
 .pdf-text-layer { position: absolute; left: 0; top: 0; overflow: clip; line-height: 1; text-align: initial; letter-spacing: normal; word-spacing: normal;
   -webkit-text-size-adjust: none; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0;
   --scale-round-x: 1px; --scale-round-y: 1px; --min-font-size: 1; }

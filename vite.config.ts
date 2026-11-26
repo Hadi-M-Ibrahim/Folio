@@ -1,10 +1,19 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { createElement } from 'react';
+import { renderToString } from 'react-dom/server';
+import { PageFrame } from './src/components/PageFrame';
 import pdfPackage from 'pdfjs-dist/package.json' with { type: 'json' };
 import deployment from './vercel.json';
 
 export default defineConfig({
   plugins: [react(), {
+    name: 'landing-html',
+    transformIndexHtml: {
+      order: 'pre',
+      handler: html => html.replace('<!--folio-landing-->', () => renderToString(createElement(PageFrame, {}))),
+    },
+  }, {
     name: 'pdf-reader-assets',
     apply: 'build',
     async generateBundle() {

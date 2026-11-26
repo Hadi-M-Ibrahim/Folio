@@ -8,20 +8,23 @@ function sheetColor(pageNumber) {
   return [20 + (73 * pageNumber) % 221, 30 + (57 * pageNumber) % 211, 40 + (79 * pageNumber) % 199];
 }
 
-async function printPdf(context, lines, { scanned = false, fontSize = 16 } = {}) {
+async function printPdf(context, lines, { scanned = false, fontSize = 16, portraitPages = [] } = {}) {
   const printer = await context.newPage();
   try {
     await printer.setContent(`<style>
       @page { size: 6in 4in; margin: 0; }
+      @page portrait { size: 4in 6in; margin: 0; }
+      section.portrait { page: portrait; }
       body { margin: 0; font: ${fontSize}px Arial, sans-serif; }
       section { padding: 32px; }
       section + section { break-before: page; }
       i { display: block; height: 48px; width: 48px; }
       p { margin: 12px 0 0; white-space: pre-line; }
     </style>`);
-    await printer.evaluate(async ({ lines, sheetColors, scanned }) => {
+    await printer.evaluate(async ({ lines, sheetColors, scanned, portraitPages }) => {
       for (const [index, text] of lines.entries()) {
         const sheet = document.createElement('section');
+        if (portraitPages.includes(index + 1)) sheet.className = 'portrait';
         const square = document.createElement('i');
         square.style.backgroundColor = 'rgb(' + sheetColors[index].join(',') + ')';
         const paragraph = document.createElement('p');
@@ -42,7 +45,7 @@ async function printPdf(context, lines, { scanned = false, fontSize = 16 } = {})
         sheet.append(square, paragraph);
         document.body.append(sheet);
       }
-    }, { lines, sheetColors: lines.map((_, i) => sheetColor(i + 1)), scanned });
+    }, { lines, sheetColors: lines.map((_, i) => sheetColor(i + 1)), scanned, portraitPages });
     return await printer.pdf({ preferCSSPageSize: true, printBackground: true });
   } finally {
     await printer.close();
@@ -68,13 +71,44 @@ async function expectPdfCanvas(viewer, title, number) {
   await expect.poll(() => canvas.evaluate((sheet, rgb) => {
     if (!sheet.width || !sheet.height) return false;
     const ctx = sheet.getContext('2d');
-    const pixel = ctx.getImageData(sheet.width / 12, sheet.height / 8, 1, 1).data;
+    const pixel = ctx.getImageData(sheet.width / 8, sheet.height / 8, 1, 1).data;
     return rgb.every((channel, i) => Math.abs(channel - pixel[i]) < 12);
   }, expected)).toBe(true);
   return canvas;
 }
 
-async function expectAttachedSheets(attachment, numbers) {
+async function watchPdfFrames(viewer) {
+  return viewer.evaluate(region => {
+    const measure = () => {
+      const stage = region.querySelector('.pdf-scroll').getBoundingClientRect();
+      const arrow = region.querySelector('[aria-label="Next PDF page"]').getBoundingClientRect();
+      const modal = region.closest('dialog');
+      return [scrollY, arrow.top, stage.height, modal?.scrollTop ?? 0].map(Math.round).join(', ');
+    };
+    const initial = measure();
+    const frames = new Set([initial]);
+    const sheets = [];
+    function sample() {
+      if (!region.isConnected) return;
+      frames.add(measure());
+      const sheet = region.querySelector('canvas')?.getAttribute('aria-label') ?? 'blank';
+      if (sheets.at(-1) !== sheet) sheets.push(sheet);
+      requestAnimationFrame(sample);
+    }
+    sample();
+    window.previewFrames = () => ({ positions: [...frames], sheets });
+    return initial;
+  });
+}
+
+async function expectPdfFrames(page, position, title, numbers) {
+  const sheets = numbers.map(number => `Page ${number} of ${title}`);
+  await expect.poll(() => page.evaluate(() => window.previewFrames()), {
+    message: 'Body scroll, arrow position, preview height, dialog scroll, and painted sheets in each frame',
+  }).toEqual({ positions: [position], sheets });
+}
+
+async function expectAttachedSheets(attachment, numbers, portraitPages = []) {
   expect(attachment.pages).toEqual(numbers);
   const bytes = Buffer.from(attachment.data, 'base64');
   const task = getDocument({ data: Uint8Array.from(bytes) });
@@ -84,7 +118,7 @@ async function expectAttachedSheets(attachment, numbers) {
     for (const [index, originalPage] of numbers.entries()) {
       const sheet = await pdf.getPage(index + 1);
       const viewport = sheet.getViewport({ scale: 1 });
-      expect([viewport.width, viewport.height]).toEqual([432, 288]);
+      expect([viewport.width, viewport.height]).toEqual(portraitPages.includes(originalPage) ? [288, 432] : [432, 288]);
       const target = pdf.canvasFactory.create(viewport.width, viewport.height);
       try {
         await sheet.render({ canvas: target.canvas, viewport }).promise;
@@ -93,7 +127,7 @@ async function expectAttachedSheets(attachment, numbers) {
           expect(Math.abs(data[channel] - value)).toBeLessThan(12);
         }
         // The body under the square still contains the printed words.
-        const body = target.context.getImageData(18, 62, 395, 110).data;
+        const body = target.context.getImageData(18, 62, viewport.width - 36, 110).data;
         expect(body.some((value, offset) => offset % 4 === 0 && value < 80)).toBe(true);
       } finally {
         pdf.canvasFactory.destroy(target);
@@ -143,6 +177,67 @@ async function submitReview(page, mode) {
   expect(received.request().postDataJSON()).toMatchObject({ mode, allowModel: true, modelSharingConsent: true });
   return received;
 }
+
+async function openWithEntryScriptHeld(page, path) {
+  const entry = '**/assets/index-*.js';
+  const requested = page.waitForRequest(entry);
+  const gate = Promise.withResolvers();
+  await page.route(entry, async (route) => {
+    await gate.promise;
+    await route.continue();
+  });
+  await page.goto(path, { waitUntil: 'commit' });
+  await requested;
+  return gate.resolve;
+}
+
+test('the cold landing page is painted before the application downloads and stays in place', async ({ page }, testInfo) => {
+  const release = await openWithEntryScriptHeld(page, '/');
+  const title = page.getByRole('heading', { name: 'Policy review', exact: true });
+  let before;
+  try {
+    await expect(title).toBeInViewport();
+    await expect(page.getByRole('link', { name: 'Start a review', exact: true })).toBeInViewport();
+    const landscape = page.locator('.opening-landscape');
+    await expect(landscape).toBeInViewport();
+    await landscape.evaluate(image => image.decode());
+    before = await page.screenshot();
+  } finally {
+    release();
+  }
+  await page.waitForLoadState('load');
+  const after = await page.screenshot();
+  if (!before.equals(after)) {
+    await testInfo.attach('before-hydration', { body: before, contentType: 'image/png' });
+    await testInfo.attach('after-hydration', { body: after, contentType: 'image/png' });
+  }
+  expect(after.equals(before), 'The visible landing page changed when React started').toBe(true);
+});
+
+test('a cold workflow deep link paints no landing hero', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.homeWasPainted = false;
+    function sample() {
+      const hero = document.querySelector('.opening');
+      if (hero?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
+        hero.getBoundingClientRect().top < innerHeight && hero.getBoundingClientRect().bottom > 0) {
+        window.homeWasPainted = true;
+      }
+      requestAnimationFrame(sample);
+    }
+    requestAnimationFrame(sample);
+  });
+  const release = await openWithEntryScriptHeld(page, '/#/new/guide');
+  try {
+    await expect(page.getByText('Opening review…', { exact: true })).toBeInViewport();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await page.evaluate(() => window.homeWasPainted)).toBe(false);
+  } finally {
+    release();
+  }
+  await expect(page.getByRole('heading', { name: 'Review a new policy guide', exact: true })).toBeFocused();
+  expect(await page.evaluate(() => window.homeWasPainted)).toBe(false);
+});
 
 test('a late font keeps the headline at its first painted width', async ({ page }) => {
   const fonts = Promise.withResolvers();
@@ -473,6 +568,55 @@ test('intake checks page limits and can read a PDF after rejecting a file', asyn
   await expect(added.getByRole('listitem')).toHaveCount(1);
 });
 
+test('PDF arrows keep the current sheet and document position through slow page turns', async ({ page, context }) => {
+  const title = 'Mixed sheets.pdf';
+  const pdf = await printPdf(context, ['Landscape one', 'Portrait two', 'Landscape three'], { portraitPages: [2] });
+  await page.goto('/#/new/guide');
+  await uploadPdf(page, 'Upload regulatory guide', title, pdf);
+  const viewer = page.getByRole('region', { name: 'PDF preview' });
+  const canvas = await expectPdfCanvas(viewer, title, 1);
+  const next = viewer.getByRole('button', { name: 'Next PDF page' });
+  await next.evaluate(button => window.scrollTo(0, scrollY + button.getBoundingClientRect().top - 90));
+  const position = await watchPdfFrames(viewer);
+  expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
+  const sheet = await canvas.boundingBox();
+  const clip = { x: Math.floor(sheet.x + sheet.width / 8), y: Math.floor(sheet.y + sheet.height / 8), width: 8, height: 8 };
+  const paintedSquare = await page.screenshot({ clip });
+
+  // Hold actual worker requests after the first sheet has painted. The arrow and zoom controls stay interactive.
+  await page.evaluate(() => {
+    const send = Worker.prototype.postMessage;
+    const queue = [];
+    Worker.prototype.postMessage = function (...args) { queue.push([this, args]); };
+    window.queuedPdfRequests = () => queue.length;
+    window.resumePdfWorker = () => {
+      Worker.prototype.postMessage = send;
+      for (const [worker, args] of queue) send.apply(worker, args);
+    };
+  });
+  try {
+    await next.click();
+    await expect(viewer.getByRole('combobox', { name: 'PDF page' })).toHaveValue('2');
+    await page.waitForFunction(() => window.queuedPdfRequests() > 0);
+    expect((await page.screenshot({ clip })).equals(paintedSquare), 'The previously visible sheet disappeared').toBe(true);
+    await expectPdfCanvas(viewer, title, 1);
+    await viewer.getByRole('button', { name: 'Zoom in' }).click();
+    await next.click();
+    await expect(viewer.getByRole('combobox', { name: 'PDF page' })).toHaveValue('3');
+    await expectPdfCanvas(viewer, title, 1);
+  } finally {
+    await page.evaluate(() => window.resumePdfWorker());
+  }
+  const last = await expectPdfCanvas(viewer, title, 3);
+  expect((await last.boundingBox()).width).toBeGreaterThan(sheet.width);
+  await expectPdfFrames(page, position, title, [1, 3]);
+  await viewer.getByRole('button', { name: 'Previous PDF page' }).click();
+  const portrait = await expectPdfCanvas(viewer, title, 2);
+  const portraitBox = await portrait.boundingBox();
+  expect(portraitBox.height).toBeGreaterThan(portraitBox.width);
+  await expectPdfFrames(page, position, title, [1, 3, 2]);
+});
+
 test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
   const first = '20. Who keeps the inspection log before the site closes?';
   const last = '30. Who receives the final inspection log?';
@@ -529,7 +673,7 @@ test('questionnaire items send the physical PDF pages they span and the selected
 
 test('non-contiguous guide pages reach the planner and open at the original citation', async ({ page, context }) => {
   const obligations = ['Staff must record inspection dates.', 'Supervisors must sign inspection reports.'];
-  const guide = await printPdf(context, [obligations[0], 'Unselected payroll instructions.', obligations[1]]);
+  const guide = await printPdf(context, [obligations[0], 'Unselected payroll instructions.', obligations[1]], { portraitPages: [1] });
   await page.goto('/#/new/guide');
   await uploadPdf(page, 'Upload regulatory guide', 'Audit.pdf', guide);
   await chooseRange(page, 'Choose guide pages', /Guide pages/, '1, 3');
@@ -542,7 +686,7 @@ test('non-contiguous guide pages reach the planner and open at the original cita
   expect(sent.guide).toBe(obligations.join('\n\n'));
   expect(sent.documents).toEqual([]);
   expect(sent.pdfAttachments).toHaveLength(1);
-  const source = await expectAttachedSheets(sent.pdfAttachments[0], [1, 3]);
+  const source = await expectAttachedSheets(sent.pdfAttachments[0], [1, 3], [1]);
   expect(source).toMatchObject({ role: 'source', title: 'Audit.pdf' });
   expect(await providerCalls(response)).toEqual([{ tool: 'record_search_plan', documents: [source] }]);
   await page.getByRole('button', { name: 'Next obligation' }).click();
@@ -550,6 +694,16 @@ test('non-contiguous guide pages reach the planner and open at the original cita
   const citedGuide = page.getByRole('dialog');
   await expectPdfCanvas(citedGuide, 'Audit.pdf', 3);
   await expect(citedGuide.locator('.pdf-text-layer mark').first()).toBeVisible();
+  const previous = citedGuide.getByRole('button', { name: 'Previous PDF page' });
+  await previous.scrollIntoViewIfNeeded();
+  const position = await watchPdfFrames(citedGuide);
+  await previous.click();
+  await expectPdfCanvas(citedGuide, 'Audit.pdf', 1);
+  await expectPdfFrames(page, position, 'Audit.pdf', [3, 1]);
+  await citedGuide.getByRole('button', { name: 'Next PDF page' }).click();
+  await expectPdfCanvas(citedGuide, 'Audit.pdf', 3);
+  await expect(citedGuide.locator('.pdf-text-layer mark').first()).toBeVisible();
+  await expectPdfFrames(page, position, 'Audit.pdf', [3, 1, 3]);
 });
 
 test('selecting one of two items on a shared page sends only visible page content and reviews one question', async ({ page, context }) => {
