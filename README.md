@@ -22,7 +22,7 @@ Keyword search is the default. On the hosted site, submit only public documents.
 | `api/` | Python review endpoint, retrieval, and citation verification |
 | `scripts/` | Private PDF preparation tool |
 | `tests/` | API tests, offline fixtures, and browser tests for both workflows |
-| `requirements/` | Python packages for linting and optional local PDF tools |
+| `requirements/` | Python packages for linting, test coverage, and local PDF tools |
 | `public/` | Icons and social preview artwork |
 | `Deliverables/` | Recorded walkthrough |
 
@@ -69,9 +69,10 @@ npm run build
 npx playwright install --only-shell chromium
 npm run test:e2e
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements/lint.txt
+.venv/bin/python -m pip install -r requirements/lint.txt -r requirements/test.txt
 .venv/bin/python -m ruff check api scripts tests
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m coverage run --branch --source=api -m unittest discover -s tests -v
+.venv/bin/python -m coverage report --show-missing --precision=1
 ```
 
-GitHub Actions runs Oxlint, TypeScript, the Vite build, desktop and mobile browser tests, Ruff, and the Python tests on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
+GitHub Actions runs Oxlint, TypeScript, the Vite build, desktop and mobile browser tests, Ruff, and the Python tests on pull requests and pushes to main. The backend job summary lists uncovered API lines and branches. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.

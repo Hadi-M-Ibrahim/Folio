@@ -8,6 +8,7 @@ node_modules/
 dist/
 __pycache__/
 .pytest_cache/
+.coverage
 .venv/
 *.tsbuildinfo
 /.local-review/
