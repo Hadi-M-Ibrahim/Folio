@@ -70,11 +70,15 @@ IMPERATIVE = re.compile(
 )
 LIST_MARK = r"(?:[-*•]|\(\d+\)|\d+[.)]|\([a-z]\)|[a-z][.)])"
 BULLET = re.compile(r"^\s*" + LIST_MARK + r"\s+", re.I)
-GUIDE_BLOCK = re.compile(r"\n\s*\n|\n(?=[^\S\n]*" + LIST_MARK + r"\s+)", re.I)
+GUIDE_BLOCK = re.compile(
+    r"\n\s*\n|\n(?=[^\S\n]*" + LIST_MARK + r"\s+)|"
+    r"^[ \t]*(?:\d+(?:\.\d+)*[.)]?[ \t]+)?(?P<index_title>[^\s.!?…](?:[^\r\n.!?…]{0,238}[^\s.!?…])?)"
+    r"[ \t]*(?:\.{3,}|…+|(?:\.[ \t]+){2,}\.)[ \t]*\d{1,4}[ \t]*\r?$", re.I | re.M,
+)
 LIST_LEAD = re.compile(r"\b(?:must|shall|include|provide|required|requirements|checklist|submit)\b", re.I)
 LIST_HEADING = re.compile(
     r"(?:(?:(?:application|filing|inspection|minimum|policy|reporting|submission|training) )?"
-    r"(?:requirements|checklist)|required (?:documents|attachments|records))", re.I,
+    r"(?:requirements|checklist)|required (?:documents|documentation|attachments|records))", re.I,
 )
 SENTENCE_END = re.compile(r"""(?<![.!?])[.!?]+["'’”)]*(?=\s|$)""")
 REFERENCE_ABBREVIATION = re.compile(
@@ -124,14 +128,26 @@ def is_list_lead(body):
     return LIST_LEAD.search(body, start) is not None
 
 
+def guide_blocks(guide):
+    start = 0
+    for boundary in GUIDE_BLOCK.finditer(guide):
+        title = boundary["index_title"]
+        if title is not None:
+            # Dot leaders followed by a page number identify contents entries.
+            # A complete action can also have a dotted numeric field on a form.
+            wording = re.sub(r"^(?:required|mandatory)\s+", "", title.strip(), flags=re.I)
+            if OBLIGATION.search(wording) or IMPERATIVE.match(title.strip()):
+                continue
+        yield guide[start:boundary.start()], start
+        start = boundary.end()
+    yield guide[start:], start
+
+
 def guide_criteria(guide, *, document_part=False):
     chosen = []
     has_narrative = False
     checklist = False
-    position = 0
-    for block in GUIDE_BLOCK.split(guide):
-        start = guide.find(block, position)
-        position = start + len(block)
+    for block, start in guide_blocks(guide):
         body = BULLET.sub("", block, count=1)
         body_start = start + len(block) - len(body)
         listed = body != block
@@ -143,7 +159,7 @@ def guide_criteria(guide, *, document_part=False):
                 continue
             has_narrative |= len(WORD.findall(clause)) >= 3
             # A list introducer supplies context to the items that follow it.
-            if LIST_HEADING.fullmatch(clause) or is_list_lead(clause):
+            if clause.casefold() in {"required", "mandatory"} or LIST_HEADING.fullmatch(clause) or is_list_lead(clause):
                 continue
             if (OBLIGATION.search(clause) or IMPERATIVE.match(clause) or clause.endswith("?")
                     or (listed and checklist and sentence_start == 0)):

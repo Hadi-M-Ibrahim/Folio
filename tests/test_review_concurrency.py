@@ -105,7 +105,7 @@ class ConcurrentReviewTests(unittest.TestCase):
         plan = {"criteria": [{"sourceId": "s1", "question": GUIDE["guide"], "searchTerms": ["register"]}]}
         with patch.object(model, "open_provider_request") as send:
             send.side_effect = TimeoutError
-            with self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
+            with self.assertRaisesRegex(model.ProviderUnavailable, "timed out while planning"):
                 api.review(GUIDE)
 
             send.side_effect = None
