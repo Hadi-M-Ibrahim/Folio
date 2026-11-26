@@ -84,7 +84,7 @@ class HttpContractTests(unittest.TestCase):
             status, headers, body = self.request(path=path)
             self.assertEqual((status, headers["Cache-Control"]), (201, "no-store"))
             self.assertRegex(body["token"], r"^[A-Za-z0-9_-]{43}$")
-            self.assertEqual(self.request(path=path)[0], 429)
+            self.assertEqual(self.request(path="/api/review?control=session")[0], 429)
             self.assertEqual(self.request(json.dumps(body), path=path)[0], 200)
             self.assertEqual(self.request(json.dumps(body), path=path)[0], 429)
             self.assertEqual(api.REVIEW_LIMIT.clients, {})

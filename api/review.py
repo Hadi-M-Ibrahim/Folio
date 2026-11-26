@@ -5,7 +5,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -91,7 +91,8 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        path = self.path.partition("?")[0].removesuffix("/")
+        route = urlsplit(self.path)
+        path = route.path.removesuffix("/")
         if path not in ("/api/review", "/api/review-session"):
             return self.reply(404, {"error": "Review endpoint not found."})
         local_operator = getattr(self.server, "local_operator", False)
@@ -99,7 +100,7 @@ class handler(BaseHTTPRequestHandler):
             return self.reply(403, {"error": "Open Folio to submit a review from this site."})
         peer = self.client_address[0] if self.client_address else None
         key = network_key(self.headers, peer, vercel=not local_operator and os.environ.get("VERCEL") == "1")
-        if path == "/api/review-session":
+        if path == "/api/review-session" or parse_qs(route.query).get("control") == ["session"]:
             if self.headers.get("Sec-Fetch-Site") == "same-site" or not same_origin(self.headers):
                 return self.reply(403, {"error": "Open Folio to manage a review session."})
             return self.session_body(key, local_operator)
