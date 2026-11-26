@@ -147,7 +147,7 @@ def guide_criteria(guide):
 def validate(payload):
     if not isinstance(payload, dict) or payload.get("mode") not in ("questionnaire", "guide"):
         raise InvalidRequest("Choose questionnaire or guide mode.")
-    for consent in ("allowModel", "publicInputConsent"):
+    for consent in ("allowModel", "modelSharingConsent", "publicInputConsent"):
         if type(payload.get(consent, False)) is not bool:
             raise InvalidRequest(f"{consent} must be true or false.")
     mode = payload["mode"]

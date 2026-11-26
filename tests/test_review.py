@@ -120,7 +120,7 @@ class ReviewTests(unittest.TestCase):
             {"guide": "\n".join(f"{i}. Employees must follow rule {i}." for i in range(1, 32)), "mode": "guide"},
             {"documents": [{"id": "x", "title": "x", "pages": [{"number": 1, "text": "yes"}] * 2}]},
             {"documents": [{"id": "x", "title": "x", "pages": [{"number": 1, "text": ""}]}]},
-            {"allowModel": "false"}, {"publicInputConsent": "true"}, {"publicInputConsent": 1},
+            {"allowModel": "false"}, {"modelSharingConsent": 1}, {"publicInputConsent": "true"}, {"publicInputConsent": 1},
         ):
             with self.subTest(changes=changes), self.assertRaises(InvalidRequest):
                 api.review(sample(**changes))
@@ -137,7 +137,8 @@ class ReviewTests(unittest.TestCase):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "REVIEW_ALLOW_CUSTOM_MODEL": "1", "VERCEL": "1"}, clear=True):
             with patch.object(model, "invoke_tool", side_effect=AssertionError("Unexpected provider call")):
                 for mode in ("guide", "questionnaire"):
-                    for flags in ({}, {"allowModel": True}, {"publicInputConsent": True},
+                    for flags in ({}, {"allowModel": True}, {"publicInputConsent": True}, {"modelSharingConsent": True},
+                                  {"allowModel": True, "publicInputConsent": True, "modelSharingConsent": False},
                                   {"allowModel": False, "publicInputConsent": True},
                                   {"allowModel": True, "publicInputConsent": False}):
                         with self.subTest(mode=mode, flags=flags):

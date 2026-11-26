@@ -68,7 +68,7 @@ export type ReviewInput = {
   guide?: string;
   documents: Policy[];
   allowModel?: boolean;
-  publicInputConsent?: boolean;
+  modelSharingConsent?: boolean;
 };
 export type Result = {
   mode: Mode;

@@ -163,8 +163,7 @@
 .intake-consent small,
 .intake-field-heading span,
 .intake-paste-fields label span,
-.intake-documents small,
-.intake-privacy {
+.intake-documents small {
   color: var(--muted);
   font-size: 13px;
   font-weight: 400;
@@ -349,16 +348,9 @@
 
 .intake-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
   margin-top: 21px;
   padding-top: 18px;
   border-top: 1px solid var(--line);
-}
-
-.intake-privacy {
-  max-width: 39ch;
 }
 
 .intake-primary {
@@ -393,12 +385,6 @@
   .intake-steps {
     gap: 8px;
     margin: 14px 0 22px;
-  }
-
-  .intake-actions {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
   }
 
   .intake-primary {
