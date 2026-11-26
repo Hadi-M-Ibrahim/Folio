@@ -56,6 +56,12 @@ function uploadPdf(page, label, name, buffer) {
   return page.getByLabel(label, { exact: true }).setInputFiles({ name, mimeType: 'application/pdf', buffer });
 }
 
+async function expectCompactPdf(page) {
+  await expect(page.getByRole('button', { name: 'Preview PDF', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('region', { name: 'PDF preview', includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continue to policies' })).toBeInViewport({ ratio: 1 });
+}
+
 async function chooseRange(page, action, label, value) {
   const toggle = page.getByRole('button', { name: action, exact: true });
   if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
@@ -553,7 +559,18 @@ test('intake checks page limits and can read a PDF after rejecting a file', asyn
 
   const pdf = await printPdf(context, ['Teams must record inspection dates.']);
   await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', pdf);
+  await expectCompactPdf(page);
+  const preview = page.getByRole('button', { name: 'Preview PDF', exact: true });
+  await preview.focus();
+  await preview.press('Enter');
   await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Guide.pdf', 1);
+  await preview.press('Space');
+  await expectCompactPdf(page);
+  await preview.click();
+  const replacement = await printPdf(context, ['New guide first page.', 'New guide second page.']);
+  await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', replacement);
+  await expect(page.getByText('All 2 PDF pages included.')).toBeVisible();
+  await expectCompactPdf(page);
   await expect(page.getByRole('textbox', { name: 'Guide text' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
 
@@ -573,6 +590,7 @@ test('PDF arrows keep the current sheet and document position through slow page 
   const pdf = await printPdf(context, ['Landscape one', 'Portrait two', 'Landscape three'], { portraitPages: [2] });
   await page.goto('/#/new/guide');
   await uploadPdf(page, 'Upload regulatory guide', title, pdf);
+  await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
   const canvas = await expectPdfCanvas(viewer, title, 1);
   const next = viewer.getByRole('button', { name: 'Next PDF page' });
@@ -617,6 +635,21 @@ test('PDF arrows keep the current sheet and document position through slow page 
   await expectPdfFrames(page, position, title, [1, 3, 2]);
 });
 
+test('Continue stays in reach on a short screen with a long PDF filename', async ({ page, context }) => {
+  await page.setViewportSize({ width: page.viewportSize().width, height: 568 });
+  const name = 'Annual State Licensing Questionnaire for Residential Care Providers and Facilities, Revised September 2026.pdf';
+  const form = await printPdf(context, ['1. Who records the inspection?', '2. Who approves the report?']);
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload questionnaire', name, form);
+  await expectCompactPdf(page);
+  const next = page.getByRole('button', { name: 'Continue to policies' });
+  await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), name, 1);
+  await expect(next).toBeInViewport({ ratio: 1 });
+  await next.click();
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
+});
+
 test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
   const first = '20. Who keeps the inspection log before the site closes?';
   const last = '30. Who receives the final inspection log?';
@@ -632,6 +665,7 @@ test('questionnaire items send the physical PDF pages they span and the selected
   });
   await page.goto('/#/new/questionnaire');
   await uploadPdf(page, 'Upload questionnaire', 'Intake.pdf', questions);
+  await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
   const firstCanvas = await expectPdfCanvas(viewer, 'Intake.pdf', 1);
   const width = (await firstCanvas.boundingBox()).width;
@@ -677,6 +711,7 @@ test('non-contiguous guide pages reach the planner and open at the original cita
   await page.goto('/#/new/guide');
   await uploadPdf(page, 'Upload regulatory guide', 'Audit.pdf', guide);
   await chooseRange(page, 'Choose guide pages', /Guide pages/, '1, 3');
+  await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
   await viewer.getByRole('button', { name: 'Next PDF page' }).click();
   await expectPdfCanvas(viewer, 'Audit.pdf', 3);
@@ -730,6 +765,7 @@ for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]
     await page.goto('/#/new/questionnaire');
     await uploadPdf(page, 'Upload questionnaire', 'Scanned form.pdf', questions);
     await chooseRange(page, 'Choose questionnaire pages', /Questionnaire pages/, '2');
+    await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
     await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Scanned form.pdf', 2);
     await page.getByRole('button', { name: 'Continue to policies' }).click();
     await uploadPdf(page, 'Upload policy files', 'Scanned policy.pdf', policy);
@@ -806,7 +842,7 @@ test('one submission reviews 65 native PDF questions in full and exports every r
   const policy = await printPdf(context, ['Car park hours vary.', policyQuote]);
   await page.goto('/#/new/questionnaire');
   await uploadPdf(page, 'Upload questionnaire', 'Register.pdf', form);
-  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Register.pdf', 1);
+  await expectCompactPdf(page);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
   await uploadPdf(page, 'Upload policy files', 'Records.pdf', policy);
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Records.pdf');
@@ -867,7 +903,7 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   const guide = await printPdf(context, sheets, { fontSize: 8 });
   await page.goto('/#/new/guide');
   await uploadPdf(page, 'Upload regulatory guide', 'Archive.pdf', guide);
-  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive.pdf', 1);
+  await expectCompactPdf(page);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
   const parts = await finishDocumentReview(page, 'guide');
 
@@ -930,7 +966,7 @@ test('a complete scanned form joins a question across transcription requests bef
   const form = await printPdf(context, printed, { scanned: true });
   await page.goto('/#/new/questionnaire');
   await uploadPdf(page, 'Upload questionnaire', 'Archive scan.pdf', form);
-  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive scan.pdf', 1);
+  await expectCompactPdf(page);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
   await addPolicy(page, 'Records.txt', 'The registrar keeps the inspection log after the archive closes.');
   const parts = await finishDocumentReview(page, 'questionnaire');
@@ -1031,7 +1067,7 @@ test('large questionnaire and policy originals are automatically sent as visible
   const policy = oversizedPdf(await printPdf(context, ['The registrar signs the inspection log.']));
   await page.goto('/#/new/questionnaire');
   await uploadPdf(page, 'Upload questionnaire', 'Complete form.pdf', form);
-  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Complete form.pdf', 1);
+  await expectCompactPdf(page);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
   await uploadPdf(page, 'Upload policy files', 'Signature policy.pdf', policy);
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Signature policy.pdf');

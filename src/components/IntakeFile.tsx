@@ -18,7 +18,7 @@ export function IntakeFile({ label, fileName, detail, multiple, onFiles }: Intak
         {fileName && <Check size={15} className="intake-file-check" />}
       </span>
       <span className="intake-file-info">
-        <strong>{fileName || label}</strong>
+        <strong title={fileName}>{fileName || label}</strong>
         <small>{detail || 'Drop a text-based PDF, TXT or Markdown file here.'}</small>
       </span>
       <span className="intake-browse" aria-hidden="true">
