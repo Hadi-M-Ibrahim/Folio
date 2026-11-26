@@ -675,6 +675,14 @@ main:focus, h1[tabindex='-1']:focus { outline: none; }
   padding: 0;
   isolation: isolate;
 }
+.entry-status { display: none; }
+.opening-review .entry-status {
+  display: block;
+  max-width: 1560px;
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+.opening-review .entry-status ~ * { display: none; }
 .opening {
   display: grid;
   justify-items: center;
@@ -693,6 +701,7 @@ main:focus, h1[tabindex='-1']:focus { outline: none; }
   z-index: -1;
   width: 100%;
   height: 100%;
+  background: center 62% / cover no-repeat url('./assets/paper-landscape-preview.webp');
   object-fit: cover;
   object-position: center 62%;
 }

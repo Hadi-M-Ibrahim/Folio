@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Maximize2, Minus, Plus } from 'lucide-react';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask, TextLayer } from 'pdfjs-dist';
 import { openPdf } from '../review/pdf';
@@ -43,9 +43,11 @@ function markText(container: HTMLElement, quote: string, term: boolean) {
     if (cursor > offset) run.append(value.slice(cursor - offset));
     offset = end;
   }
+}
+
+function revealMark(container: HTMLElement, scroll: HTMLElement) {
   const mark = container.querySelector('mark');
-  const scroll = container.closest<HTMLElement>('.pdf-scroll');
-  if (!mark || !scroll) return;
+  if (!mark) return;
   const markBox = mark.getBoundingClientRect(), scrollBox = scroll.getBoundingClientRect();
   if (markBox.top < scrollBox.top || markBox.bottom > scrollBox.bottom) {
     scroll.scrollTop += markBox.top - scrollBox.top - scroll.clientHeight / 3;
@@ -57,20 +59,29 @@ function PdfPage({ pdf, number, scale, fileName, highlight }: {
 }) {
   const track = useRef<HTMLDivElement>(null);
   const sheet = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLElement>(null);
+  const visible = useRef<{ canvas: HTMLCanvasElement; number: number; quote: string; term: boolean } | null>(null);
   const [width, setWidth] = useState(0);
-  const [status, setStatus] = useState('');
+  const [displayed, setDisplayed] = useState<number>();
+  const [error, setError] = useState('');
   const markedText = highlight?.page === number ? highlight.text : '';
   const term = Boolean(highlight?.term);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = track.current!;
     const observer = new ResizeObserver(([entry]) => setWidth(Math.floor(entry.contentRect.width)));
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      const previous = visible.current;
+      if (previous) previous.canvas.width = previous.canvas.height = 0;
+      visible.current = null;
+    };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!width) return;
     const paper = sheet.current!;
+    const scroll = scroller.current!;
     let active = true;
     let render: RenderTask | undefined;
     let layer: TextLayer | undefined;
@@ -83,7 +94,7 @@ function PdfPage({ pdf, number, scale, fileName, highlight }: {
     async function draw() {
       const { TextLayer } = await import('pdfjs-dist');
       if (!active) return;
-      setStatus('Rendering page ' + number + '…');
+      setError('');
       page = await pdf.getPage(number);
       if (!active) return;
       const unscaled = page.getViewport({ scale: 1 });
@@ -92,68 +103,100 @@ function PdfPage({ pdf, number, scale, fileName, highlight }: {
         Math.sqrt(8_000_000 / (viewport.width * viewport.height)));
       canvas.width = Math.max(1, Math.floor(viewport.width * density));
       canvas.height = Math.max(1, Math.floor(viewport.height * density));
+      render = page.render({ canvas, viewport, transform: [density, 0, 0, density, 0, 0] });
+      await render.promise;
+      render = undefined;
+      if (!active) return;
+      let textError = '';
+      try {
+        layer = new TextLayer({ textContentSource: page.streamTextContent(), container: textLayer, viewport });
+        await layer.render();
+        if (active && markedText) markText(textLayer, markedText, term);
+      } catch {
+        textError = 'Text is unavailable on page ' + number + '.';
+      }
+      if (!active) return;
+      const previous = visible.current;
+      const changedPage = previous?.number !== number;
+      // Commit the finished pixels and their dimensions together. The visible
+      // canvas belongs to the viewport until a newer render succeeds.
       paper.style.width = viewport.width + 'px';
       paper.style.height = viewport.height + 'px';
       paper.style.setProperty('--total-scale-factor', String(viewport.scale * page.userUnit));
-      render = page.render({ canvas, viewport, transform: [density, 0, 0, density, 0, 0] });
-      await render.promise;
-      if (!active) return;
       paper.replaceChildren(canvas, textLayer);
-      setStatus('');
-      layer = new TextLayer({ textContentSource: page.streamTextContent(), container: textLayer, viewport });
-      await layer.render();
-      if (active && markedText) markText(textLayer, markedText, term);
+      visible.current = { canvas, number, quote: markedText, term };
+      if (previous) previous.canvas.width = previous.canvas.height = 0;
+      if (changedPage) scroll.scrollTo(0, 0);
+      if (markedText && (changedPage || previous?.quote !== markedText || previous?.term !== term)) {
+        revealMark(textLayer, scroll);
+      }
+      setDisplayed(number);
+      setError(textError);
     }
     void draw().catch(() => {
       if (!active) return;
-      setStatus(canvas.isConnected ? 'Page text is unavailable.' : 'Could not display this PDF page. Download the original to view it.');
+      const showing = visible.current ? ' Showing page ' + visible.current.number + '.' : '';
+      setError('Could not display page ' + number + '.' + showing + ' Download the original to view it.');
+    }).finally(() => {
+      render = undefined;
+      layer = undefined;
+      page?.cleanup();
+      if (visible.current?.canvas !== canvas) canvas.width = canvas.height = 0;
     });
     return () => {
       active = false;
       render?.cancel();
       layer?.cancel();
-      page?.cleanup();
-      paper.replaceChildren();
-      canvas.width = canvas.height = 0;
     };
   }, [pdf, number, scale, fileName, width, markedText, term]);
 
-  // Explicit focus enables keyboard scrolling in browsers that skip scrollable regions.
-  // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex
-  return <section className="pdf-scroll" aria-label={'Page ' + number + ' preview'} tabIndex={0}>
-    {status && <output className="pdf-status">{status}</output>}
-    <div className="pdf-track" ref={track}><div className="pdf-sheet" ref={sheet} /></div>
-  </section>;
+  const busy = displayed !== number && !error;
+  const status = error || (busy ? 'Rendering page ' + number + '…' : 'Page ' + number + ' displayed.');
+  return <>
+    {/* Explicit focus enables keyboard scrolling in browsers that skip scrollable regions. */}
+    {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+    <section className="pdf-scroll" ref={scroller} tabIndex={0}
+      aria-label={'Page ' + (displayed ?? number) + ' preview'} aria-busy={busy}>
+      <div className="pdf-track" ref={track}><div className="pdf-sheet" ref={sheet} /></div>
+    </section>
+    <output className="pdf-status" data-ready={!busy && !error} data-updating={busy && !!displayed}>{status}</output>
+  </>;
 }
 
-function LoadedPdf({ pdf, file, pages, initialPage, onPageChange, highlight }: ViewerProps & { pdf: PDFDocumentProxy }) {
-  const numbers = pages ?? Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+function PdfPreview({ pdf, file, pages, initialPage, onPageChange, highlight, error }: ViewerProps & {
+  pdf?: PDFDocumentProxy; error?: string;
+}) {
+  const numbers = pages ?? Array.from({ length: pdf?.numPages ?? 1 }, (_, i) => i + 1);
   const [current, setCurrent] = useState(initialPage ?? numbers[0]);
   const [zoom, setZoom] = useState(fit);
   const number = numbers.includes(current) ? current : numbers[0];
   const index = numbers.indexOf(number);
   function go(target: number) { setCurrent(target); onPageChange?.(target); }
-  if (!numbers.length) return <p className="pdf-status">Choose pages to preview.</p>;
+  const enabled = Boolean(pdf && numbers.length);
   return <>
     <div className="pdf-toolbar">
       <div className="pdf-controls">
-        <button type="button" aria-label="Previous PDF page" disabled={index === 0} onClick={() => go(numbers[index - 1])}>
+        <button type="button" aria-label="Previous PDF page" disabled={!enabled || index === 0} onClick={() => go(numbers[index - 1])}>
           <ChevronLeft size={17} /></button>
-        <select aria-label="PDF page" value={number} onChange={(event) => go(Number(event.target.value))}>
+        <select aria-label="PDF page" disabled={!enabled} value={number} data-all-pages={!pages}
+          onChange={(event) => go(Number(event.target.value))}>
           {numbers.map((n) => <option key={n} value={n}>Page {n}</option>)}
         </select>
-        <span className="pdf-total">of {pdf.numPages}</span>
-        <button type="button" aria-label="Next PDF page" disabled={index >= numbers.length - 1} onClick={() => go(numbers[index + 1])}>
+        <span className="pdf-total">of {pdf?.numPages ?? '…'}</span>
+        <button type="button" aria-label="Next PDF page" disabled={!enabled || index >= numbers.length - 1} onClick={() => go(numbers[index + 1])}>
           <ChevronRight size={17} /></button>
       </div>
       <div className="pdf-controls">
-        <button type="button" aria-label="Zoom out" disabled={zoom === 0} onClick={() => setZoom(zoom - 1)}><Minus size={15} /></button>
+        <button type="button" aria-label="Zoom out" disabled={!enabled || zoom === 0} onClick={() => setZoom(zoom - 1)}><Minus size={15} /></button>
         <span className="pdf-zoom">{zoomLevels[zoom] * 100}%</span>
-        <button type="button" aria-label="Zoom in" disabled={zoom === zoomLevels.length - 1} onClick={() => setZoom(zoom + 1)}><Plus size={15} /></button>
-        <button type="button" aria-label="Fit to width" title="Fit to width" onClick={() => setZoom(fit)}><Maximize2 size={15} /></button>
+        <button type="button" aria-label="Zoom in" disabled={!enabled || zoom === zoomLevels.length - 1} onClick={() => setZoom(zoom + 1)}><Plus size={15} /></button>
+        <button type="button" aria-label="Fit to width" title="Fit to width" disabled={!enabled} onClick={() => setZoom(fit)}><Maximize2 size={15} /></button>
       </div>
     </div>
-    <PdfPage key={number} pdf={pdf} number={number} fileName={file.name} highlight={highlight} scale={zoomLevels[zoom]} />
+    <div className="pdf-frame">
+      {pdf && numbers.length > 0 ? <PdfPage pdf={pdf} number={number} fileName={file.name} highlight={highlight} scale={zoomLevels[zoom]} /> :
+        <output className="pdf-status">{error ?? (pdf ? 'Choose pages to preview.' : 'Opening PDF…')}</output>}
+    </div>
   </>;
 }
 
@@ -181,8 +224,9 @@ export function PdfViewer(props: ViewerProps) {
   }, [file]);
   const result = loaded?.file === file ? loaded : undefined;
   return <section className="pdf-viewer" aria-label="PDF preview">
-    {result?.pdf ? <LoadedPdf key={props.initialPage} {...props} pdf={result.pdf} /> :
-      <output className="pdf-status">{result?.error ?? 'Opening PDF…'}</output>}
-    {result && <a className="pdf-download" href={result.url} download={file.name}>Download original PDF</a>}
+    <PdfPreview key={(result?.url ?? '') + '/' + props.initialPage} {...props} pdf={result?.pdf} error={result?.error} />
+    <div className="pdf-download-row">
+      {result && <a className="pdf-download" href={result.url} download={file.name}>Download original PDF</a>}
+    </div>
   </section>;
 }

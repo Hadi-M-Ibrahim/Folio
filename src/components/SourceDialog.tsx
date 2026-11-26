@@ -48,11 +48,13 @@ function PdfSource({ location, file }: { location: SourceLocation; file: File })
   const text = location.doc.pages.find(item => item.number === page)?.text ?? '';
   const excerpt = marks?.length ? marks.map(mark => text.slice(mark.start, mark.end)).join(' … ')
     : page === location.page ? location.quote : '';
+  const citedPages = [...new Set(location.marks?.map(mark => mark.page))];
+  const citation = citedPages.length > 1 ? 'pp. ' + citedPages.join(', ') : 'p. ' + location.page;
   return (
     <>
-      {excerpt && <aside className="pdf-citation" aria-label={location.term ? 'Search term' : 'Cited passage'}>
-        <strong>{location.term ? 'Search term' : 'Cited passage'} · p. {page}</strong>
-        <blockquote>{excerpt}</blockquote>
+      {location.quote && <aside className="pdf-citation" aria-label={location.term ? 'Search term' : 'Cited passage'}>
+        <strong>{location.term ? 'Search term' : 'Cited passage'} · {citation}</strong>
+        <blockquote>{location.quote}</blockquote>
       </aside>}
       <PdfViewer file={file} pages={location.doc.pages.map(item => item.number)} initialPage={location.page}
         onPageChange={setPage} highlight={excerpt ? { page, text: excerpt, term: location.term } : undefined} />
