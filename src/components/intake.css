@@ -262,8 +262,10 @@
   background: white;
 }
 .intake-disclosure { max-width: 44ch; color: var(--muted); font-size: 13px; line-height: 1.55; }
-.intake-progress { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-.intake-progress svg { flex-shrink: 0; }
+.intake-review-status { display: grid; flex: 1; min-width: 0; gap: 10px; }
+.intake-review-status:empty { display: none; }
+.intake-ready { display: flex; align-items: center; gap: 7px; font-size: 14px; }
+.intake-changed { color: var(--muted); font-size: 13px; }
 .intake-primary {
   display: inline-flex;
   align-items: center;

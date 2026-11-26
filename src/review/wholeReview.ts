@@ -2,6 +2,7 @@ import { questionsFromPdfPages, type PdfQuestion } from '../components/intakeQue
 import { requestReview } from './client';
 import { MAX_PDF_ATTACHMENT_PAGES, ReviewSizeError, type Policy, type PdfAttachment, type Result, type ReviewInput } from './model';
 import { makePdfAttachment } from './pdf';
+import type { ReviewPhase, ReviewProgressState } from './reviewProgress';
 import { combineScanQuestions, divide, locateQuestions, pageSpans, pagesIn, questionSpans, sourceSpans, type Span, type Transcript } from './wholeReviewSource';
 
 type Options = {
@@ -12,7 +13,8 @@ type Options = {
   renderItemSubset?: boolean;
   policyAttachments: PdfAttachment[];
   signal: AbortSignal;
-  onProgress?: (message: string) => void;
+  onProgress?: (progress: ReviewProgressState) => void;
+  mayWaitForQuota?: () => boolean;
 };
 
 const questionsPerPart = 10;
@@ -62,14 +64,19 @@ type Section = {
   partial: boolean;
   input: ReviewInput;
   label: string;
+  work: Span & { phase: ReviewPhase; total: number };
 };
 
 async function send(options: Options, cache: Cache, section: Section, forceRender = false): Promise<Result> {
   options.signal.throwIfAborted();
   const prior = cache.completed.get(section.key);
   if (prior) return prior;
-  const { input, partial, numbers, label } = section;
-  if (partial) options.onProgress?.(label);
+  const { input, partial, numbers, label, work } = section;
+  const report = (completed: number, message = label) => {
+    options.signal.throwIfAborted();
+    options.onProgress?.({ phase: work.phase, message, completed, total: work.total });
+  };
+  report(work.start);
   const attachments = input.transcribeSourceOnly ? [] : [...options.policyAttachments];
   const doc = options.sourceOriginal ?? options.sourceDocument;
   if (doc?.pdfFile) {
@@ -79,6 +86,7 @@ async function send(options: Options, cache: Cache, section: Section, forceRende
     const key = (renderSelectedPages ? 'render/' : 'original/') + numbers.join(',');
     if (cache.lastPdf?.key !== key) {
       const attachment = await makePdfAttachment(doc, 'source', numbers, options.signal, { renderSelectedPages });
+      options.signal.throwIfAborted();
       cache.lastPdf = { key, attachment };
     }
     attachments.unshift(cache.lastPdf.attachment);
@@ -87,12 +95,17 @@ async function send(options: Options, cache: Cache, section: Section, forceRende
     ...input, ...(input.allowModel && { requireComplete: true }),
     ...(partial && { documentPart: true }), ...(attachments.length && { pdfAttachments: attachments }),
   };
-  const onRateLimit = (seconds: number) => options.onProgress?.('Review paused at the submission limit. Resuming in ' +
+  const onRateLimit = (seconds: number) => report(work.start, 'Review paused at the submission limit. Resuming in ' +
     Math.max(1, Math.ceil(seconds / 60)) + ' min…');
-  const result = await requestReview(wire, options.signal, partial ? { onRateLimit } : undefined);
+  options.signal.throwIfAborted();
+  const result = await requestReview(wire, options.signal, partial ? {
+    onRateLimit, onResume: () => report(work.start), mayWaitForQuota: options.mayWaitForQuota,
+  } : undefined);
+  options.signal.throwIfAborted();
   validatePart(input, numbers, result);
   cache.completed.set(section.key, result);
   savePolicyText(cache, result.policyPageText);
+  report(work.end);
   return result;
 }
 
@@ -113,6 +126,9 @@ function validatePart(input: ReviewInput, numbers: number[], result: Result) {
 
 type Series = {
   name: string;
+  phase: ReviewPhase;
+  phaseOffset?: number;
+  phaseTotal?: number;
   length: number;
   spans: Iterable<Span>;
   guide?: string;
@@ -128,12 +144,15 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
     const key = series.name + '/' + span.start + '/' + span.end;
     let parts: Span[] | undefined;
     if (!cache.subdivided.has(key)) {
-      const section = { ...series.section(span, partial), key, partial };
+      const offset = series.phaseOffset ?? 0;
+      const work = { phase: series.phase, start: offset + span.start, end: offset + span.end, total: series.phaseTotal ?? series.length };
+      const section = { ...series.section(span, partial), key, partial, work };
       try {
         const result = await send(options, cache, section);
         completed.push({ span, result });
         return;
       } catch (error) {
+        options.signal.throwIfAborted();
         if (!(error instanceof ReviewSizeError)) throw error;
         parts = divide(span, series.guide);
         if (!parts.length) {
@@ -192,11 +211,11 @@ function guideSeries(input: ReviewInput, source: Policy | undefined, cache: Cach
   const offset = pages.length ? pages.map(page => page.text).join('\n\n').indexOf(guide) : 0;
   if (offset < 0) throw Error('The submitted guide could not be matched to its original PDF pages.');
   const spans = pageSpans(pages, 2, offset);
-  return { name: 'guide', length: guide.length, spans: sourceSpans(guide.length, guideCharactersPerPart, guide), guide,
+  return { name: 'guide', phase: 'guide', length: guide.length, spans: sourceSpans(guide.length, guideCharactersPerPart, guide), guide,
     section: (span, partial) => ({
       input: { ...input, guide: guide.slice(span.start, span.end), documents: indexedPolicies(input, cache) },
       numbers: partial ? pagesIn(spans, span) : pages.map(page => page.number),
-      label: 'Reviewing guide · ' + Math.floor(100 * span.start / guide.length) + '% complete…',
+      label: 'Reviewing guide obligations…',
     }) };
 }
 
@@ -212,11 +231,11 @@ function questionSeries(input: ReviewInput, source: Policy | undefined, cache: C
       throw Error('A questionnaire prompt could not be located on its original PDF pages.');
     return [...new Set(selected.flat())].sort((a, b) => a - b);
   }
-  return { name: 'questions', length: questions.length, spans: questionSpans(questions, questionsPerPart, 16_000),
+  return { name: 'questions', phase: 'questions', length: questions.length, spans: questionSpans(questions, questionsPerPart, 16_000),
     section: (span, partial) => ({
       input: { ...input, questions: questions.slice(span.start, span.end), documents: indexedPolicies(input, cache) },
       numbers: relevantPages(span, partial),
-      label: 'Reviewing questions ' + (span.start + 1) + '–' + span.end + ' of ' + questions.length + '…',
+      label: 'Finding policy evidence…',
     }) };
 }
 
@@ -224,6 +243,11 @@ async function reviewText(options: Options, cache: Cache, input: ReviewInput, so
   questionPages?: Options['questionPages'], alwaysPart = false) {
   const series = input.mode === 'guide' ? guideSeries(input, source, cache) : questionSeries(input, source, cache, questionPages);
   const parts = await runSeries(options, cache, { ...series, alwaysPart });
+  options.signal.throwIfAborted();
+  if (series.guide && parts.at(-1)?.span.end !== series.length) {
+    // A final all-whitespace span is resolved locally without sending a request.
+    options.onProgress?.({ phase: 'guide', message: 'Reviewing guide obligations…', completed: series.length, total: series.length });
+  }
   return merge(input, parts, cache);
 }
 
@@ -232,6 +256,8 @@ async function readSource(options: Options, cache: Cache, source: Policy): Promi
   const missingText = source.pages.some(page => !page.text.trim());
   // An entirely indexed questionnaire explicitly requesting PDF reading has no usable prompt index.
   const needsReading = (page: Policy['pages'][number]) => !missingText || !page.text.trim();
+  const phaseTotal = source.pages.filter(needsReading).length;
+  let phaseOffset = 0;
   for (let start = 0; start < source.pages.length;) {
     const read = needsReading(source.pages[start]);
     let end = start + 1;
@@ -239,13 +265,15 @@ async function readSource(options: Options, cache: Cache, source: Policy): Promi
     const pages = source.pages.slice(start, end);
     if (read) {
       const completed = await runSeries(options, cache, {
-        name: 'transcribe-' + start, length: pages.length, spans: sourceSpans(pages.length, scanPagesPerPart), alwaysPart: true,
+        name: 'transcribe-' + start, phase: 'transcribing', phaseOffset, phaseTotal,
+        length: pages.length, spans: sourceSpans(pages.length, scanPagesPerPart), alwaysPart: true,
         section: span => ({
           input: { ...options.input, readSourcePdf: true, transcribeSourceOnly: true, documents: [] },
           numbers: pages.slice(span.start, span.end).map(p => p.number),
-          label: 'Reading PDF pages ' + pages[span.start].number + '–' + pages[span.end - 1].number + '…',
+          label: 'Transcribing scanned pages…',
         }),
       });
+      phaseOffset += pages.length;
       for (const { result } of completed) {
         const rows = result.sourcePages!;
         groups.push({ pages: rows, questions: locateQuestions(rows, result.questions ?? []) });
@@ -266,9 +294,11 @@ async function reviewScan(options: Options, cache: Cache, source: Policy): Promi
   if (count <= scanPagesPerPart && !cache.subdivided.has('scan')) {
     try {
       const result = await send(options, cache, { key: 'scan', numbers,
-        input, partial: false, label: '' });
+        input, partial: false, label: 'Reading and reviewing PDF…',
+        work: { phase: 'scan', start: 0, end: count, total: count } });
       return result;
     } catch (error) {
+      options.signal.throwIfAborted();
       if (!(error instanceof ReviewSizeError)) throw error;
     }
     cache.subdivided.add('scan');
@@ -302,6 +332,7 @@ export async function executeWholeReview(options: Options): Promise<Result> {
   } else {
     result = await reviewText(options, cache, input, sourceDocument, options.questionPages);
   }
-  retries.delete(input);
+  options.signal.throwIfAborted();
+  if (retries.get(input) === cache) retries.delete(input);
   return result;
 }

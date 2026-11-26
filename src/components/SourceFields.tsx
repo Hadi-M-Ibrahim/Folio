@@ -63,7 +63,8 @@ type SourceFieldsProps = {
   source: IntakeSource;
   questions: string[];
   onChange: (source: IntakeSource) => void;
-  onFiles: (files: File[], kind: 'source' | 'bundle') => void;
+  onFiles: (files: File[], kind: 'source' | 'bundle') => Promise<boolean>;
+  onEditRange?: () => void;
 };
 
 function SourceText({ isGuide, source, questions, onChange }: Omit<SourceFieldsProps, 'onFiles'>) {
@@ -104,7 +105,7 @@ function uploadDetail(source: IntakeSource) {
   return original ? original.pages.length + (original.pages.length === 1 ? ' page' : ' pages') : 'Edited text';
 }
 
-export function SourceFields({ isGuide, source, questions, onChange, onFiles }: SourceFieldsProps) {
+export function SourceFields({ isGuide, source, questions, onChange, onFiles, onEditRange }: SourceFieldsProps) {
   const [previewId, setPreviewId] = useState<string>();
   const availableRange = useMemo(() => source.range ?? (isGuide || source.document?.pdfFile ? undefined : questionnaireRange(questions, source.document)),
     [isGuide, questions, source.range, source.document]);
@@ -118,6 +119,8 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
       <IntakeFile
         label={isGuide ? 'Upload regulatory guide' : 'Upload questionnaire'}
         fileName={source.name}
+        describedBy="intake-intro"
+        attachedFiles={[pdf]}
         detail={pdf ? pdfScopeLabel(pageNumbers, Boolean(source.selection)) : uploadDetail(source)}
         onFiles={(files) => onFiles(files, 'source')}
       />
@@ -135,6 +138,7 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
             source={availableRange}
             pageKind={isGuide ? 'guide' : 'questionnaire'}
             appliedValue={source.rangeValue}
+            onEdit={onEditRange}
             onApply={(items, description, rangeValue) => onChange(applyRange(source, availableRange, items, isGuide, description, rangeValue))}
           />
         )}
@@ -155,10 +159,11 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
           <input
             type="file"
             accept=".json"
+            aria-describedby="intake-intro"
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];
               event.currentTarget.value = '';
-              if (file) onFiles([file], 'bundle');
+              if (file) void onFiles([file], 'bundle');
             }}
           />
         </label>

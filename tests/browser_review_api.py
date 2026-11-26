@@ -128,6 +128,7 @@ if __name__ == "__main__":
         patch.dict(os.environ, config),
         patch.object(model, "open_provider_request", provider_reply),
         patch.object(review, "REVIEW_LIMIT", review.ReviewRateLimit(limit=1000)),
+        patch.object(review, "SESSION_LIMIT", review.ReviewRateLimit(limit=1000)),
     ):
         port = int(os.environ.get("FOLIO_TEST_API_PORT", "4178"))
         with ThreadingHTTPServer(("127.0.0.1", port), BrowserReviewHandler) as server:

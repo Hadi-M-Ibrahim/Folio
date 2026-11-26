@@ -1,6 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
+  "rewrites": [
+    { "source": "/api/review-session", "destination": "/api/review?control=session" }
+  ],
   "functions": {
     "api/review.py": {
       "maxDuration": 180

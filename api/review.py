@@ -5,7 +5,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,10 +19,31 @@ from api._review.search import (
     ReviewPartTooLarge,
     validate,
 )
+from api._review.sessions import (
+    ReviewCancelled,
+    SessionUnavailable,
+    create_session,
+    review_session,
+    session_key,
+    session_store,
+)
 
 MAX_BODY = MAX_REQUEST_BYTES
 MAX_RESPONSE = MAX_RESULT_BYTES
 REVIEW_LIMIT = ReviewRateLimit()
+SESSION_LIMIT = ReviewRateLimit(limit=60)
+INVALID_BODY = object()
+
+
+def same_origin(headers):
+    origin = headers.get("Origin")
+    if origin is None:
+        return True
+    try:
+        source = urlsplit(origin)
+        return source.scheme in ("http", "https") and source.netloc.lower() == headers.get("Host", "").lower()
+    except ValueError:
+        return False
 
 
 def allowed_local_request(headers):
@@ -31,11 +52,7 @@ def allowed_local_request(headers):
         host = urlsplit("//" + headers.get("Host", ""))
         if host.hostname not in ("localhost", "127.0.0.1", "::1") or host.username is not None or host.path or host.query or host.fragment:
             return False
-        origin = headers.get("Origin")
-        if origin is None:
-            return True
-        source = urlsplit(origin)
-        return source.scheme in ("http", "https") and source.netloc.lower() == host.netloc.lower()
+        return same_origin(headers)
     except ValueError:
         return False
 
@@ -74,13 +91,19 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path.partition("?")[0] not in ("/api/review", "/api/review/"):
+        route = urlsplit(self.path)
+        path = route.path.removesuffix("/")
+        if path not in ("/api/review", "/api/review-session"):
             return self.reply(404, {"error": "Review endpoint not found."})
         local_operator = getattr(self.server, "local_operator", False)
         if self.headers.get("Sec-Fetch-Site") == "cross-site" or (local_operator and not allowed_local_request(self.headers)):
             return self.reply(403, {"error": "Open Folio to submit a review from this site."})
         peer = self.client_address[0] if self.client_address else None
         key = network_key(self.headers, peer, vercel=not local_operator and os.environ.get("VERCEL") == "1")
+        if path == "/api/review-session" or parse_qs(route.query).get("control") == ["session"]:
+            if self.headers.get("Sec-Fetch-Site") == "same-site" or not same_origin(self.headers):
+                return self.reply(403, {"error": "Open Folio to manage a review session."})
+            return self.session_body(key, local_operator)
         limited = REVIEW_LIMIT.claim(key)
         if limited:
             status, wait = limited
@@ -88,25 +111,60 @@ class handler(BaseHTTPRequestHandler):
                        if status == 429 else "The review service is at capacity.")
             unit = "second" if wait == 1 else "seconds"
             return self.reply(status, {"error": f"{warning} Try again in {wait} {unit}."}, retry_after=wait)
+        payload = self.read_payload(MAX_BODY)
+        if payload is not INVALID_BODY:
+            self.review_body(payload, local_operator)
+
+    def read_payload(self, limit):
         if self.headers.get_content_type() != "application/json":
-            return self.reply(415, {"error": "Send an application/json request body."})
+            self.reply(415, {"error": "Send an application/json request body."})
+            return INVALID_BODY
         try:
             length = int(self.headers.get("Content-Length", ""))
             if length <= 0:
                 raise ValueError
         except ValueError:
-            return self.reply(400, {"error": "A nonempty JSON request body is required."})
-        if length > MAX_BODY:
-            return self.reply(413, {"error": f"The review request exceeds {MAX_BODY:,} bytes. Split it into smaller batches."})
-        self.review_body(length, local_operator)
-
-    def review_body(self, length, local_operator):
+            self.reply(400, {"error": "A nonempty JSON request body is required."})
+            return INVALID_BODY
+        if length > limit:
+            self.reply(413, {"error": f"The request exceeds {limit:,} bytes."})
+            return INVALID_BODY
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            return json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, RecursionError):
-            return self.reply(400, {"error": "The request must contain valid UTF-8 JSON."})
+            self.reply(400, {"error": "The request must contain valid UTF-8 JSON."})
+            return INVALID_BODY
+
+    def session_body(self, key, local_operator):
+        payload = self.read_payload(256)
+        if payload is INVALID_BODY:
+            return
+        if not isinstance(payload, dict) or set(payload) not in (set(), {"token"}):
+            return self.reply(400, {"error": "Send an empty object to start, or a session token to cancel."})
+        # A burst of starts must leave capacity for the same network to cancel.
+        limited = SESSION_LIMIT.claim((key, "cancel" if payload else "start"))
+        if limited:
+            status, wait = limited
+            return self.reply(status, {"error": "Too many session requests. Try again shortly."}, retry_after=wait)
         try:
-            result = review(payload, local_operator=local_operator)
+            store = session_store(local_operator)
+            if payload:
+                store.cancel(session_key(payload["token"]))
+                return self.reply(200, {"cancelled": True})
+            return self.reply(201, {"token": create_session(store)})
+        except ReviewCancelled:
+            return self.reply(400, {"error": "Invalid session token."})
+        except SessionUnavailable:
+            return self.reply(503, {"error": "Review sessions are temporarily unavailable."})
+
+    def review_body(self, payload, local_operator):
+        try:
+            with review_session(self.headers.get("X-Folio-Review-Token"), local_operator):
+                result = review(payload, local_operator=local_operator)
+        except ReviewCancelled:
+            return self.reply(409, {"code": "review_cancelled", "error": "This review session has stopped or expired."})
+        except SessionUnavailable:
+            return self.reply(503, {"error": "Review sessions are temporarily unavailable."})
         except ReviewPartTooLarge as exc:
             return self.reply(422, {"code": "review_part_too_large", "error": str(exc)})
         except InvalidRequest as exc:
