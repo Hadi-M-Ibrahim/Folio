@@ -3,7 +3,6 @@
 from . import model
 from .search import MAX_CRITERIA, WORD
 
-
 MAX_TERMS = 8
 MAX_TERM_CHARS = 80
 MAX_QUOTE_CHARS = 2000

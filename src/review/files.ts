@@ -1,4 +1,4 @@
-import type { Policy } from './review';
+import type { Policy } from './model';
 
 export async function readDocument(file: File): Promise<Policy> {
   if (file.size > 32 * 1024 * 1024) throw Error('Use files smaller than 32 MB.');

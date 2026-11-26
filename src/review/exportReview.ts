@@ -4,7 +4,7 @@ import {
   type Decision,
   type Evidence,
   type Review,
-} from './review';
+} from './model';
 
 function passages(label: string, entries: Evidence[]): string[] {
   if (!entries.length) return [`**${label}** — No passage cited.`, ''];
