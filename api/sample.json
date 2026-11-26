@@ -1,0 +1,35 @@
+{
+  "questions": [
+    "Does the plan acknowledge all member grievances in writing within five business days?",
+    "Does the plan record each member’s preferred language at intake?",
+    "Does the plan send a written notice when a grievance is closed?",
+    "Does the plan escalate urgent grievances to a supervisor on the same day?",
+    "Does the plan offer grievance notices in large print on request?"
+  ],
+  "guide": "Member communications guide\n\n1. The plan must acknowledge every grievance in writing within five business days of receipt.\n\n2. The plan must record each member’s preferred language during intake.\n\n3. The plan must send the member a written notice when a grievance is closed.\n\n4. The plan must escalate urgent grievances to a supervisor on the day of receipt.\n\n5. The plan must make large-print grievance notices available on request.",
+  "documents": [
+    {
+      "id": "grievance-policy",
+      "title": "Grievance handling policy",
+      "pages": [
+        { "number": 1, "text": "Grievance handling policy\n\nAcknowledgment of receipt\n\nThe plan sends a written acknowledgment for every member grievance within five business days of receipt. Staff record the date of receipt and the date the acknowledgment was sent in the grievance register." },
+        { "number": 2, "text": "Closing a grievance\n\nWhen a grievance is closed, the plan sends the member a written notice summarizing the outcome and the reason for the decision. A copy of the notice is retained with the grievance record." }
+      ]
+    },
+    {
+      "id": "service-playbook",
+      "title": "Member services playbook",
+      "pages": [
+        { "number": 1, "text": "Member services playbook\n\nIntake procedure\n\nAt intake, member services staff ask each member for their preferred language and record the response in the member profile. The intake checklist also captures a callback number and preferred contact time." },
+        { "number": 2, "text": "Telephone grievances\n\nFor grievances resolved during the initial phone call, staff provide a verbal acknowledgment only and do not send a written acknowledgment. Record the resolution in the call log before closing the case." }
+      ]
+    },
+    {
+      "id": "escalation-standard",
+      "title": "Grievance escalation standard",
+      "pages": [
+        { "number": 1, "text": "Grievance escalation standard\n\nUrgent referrals\n\nStaff send urgent grievances to a supervisor on the next business day after receipt. The supervisor records the referral outcome in the grievance register." }
+      ]
+    }
+  ]
+}
