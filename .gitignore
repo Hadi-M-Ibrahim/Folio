@@ -1,2 +1,13 @@
 /Materials/
 .DS_Store
+.env
+.env.*
+!.env.example
+.vercel/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.venv/
+*.tsbuildinfo
+/.local-review/

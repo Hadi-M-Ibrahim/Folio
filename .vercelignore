@@ -1,0 +1,17 @@
+Materials/
+Deliverables/
+.local-review/
+.env
+.env.*
+.vercel/
+.git/
+.github/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.venv/
+tests/
+scripts/
+*.tsbuildinfo
+.DS_Store
