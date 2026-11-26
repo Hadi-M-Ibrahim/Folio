@@ -1,7 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { ArrowDown, ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
-import { ReviewWorkspace } from './components/ReviewWorkspace';
-import { Setup } from './components/Setup';
 import { modeLabels, type Decision, type Mode, type Review } from './review/model';
 
 function onHashChange(notify: () => void) {
@@ -77,11 +75,23 @@ export default function App() {
   const path = useSyncExternalStore(onHashChange, currentPath);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [decisions, setDecisions] = useState(() => new Map<string, Decision>());
+  const [screens, setScreens] = useState<typeof import('./components/reviewScreens')>();
+  const [loadFailed, setLoadFailed] = useState(false);
   const setupMode: Mode | undefined = workflows.find(({ mode }) =>
     path === '/new/' + mode || path === '/new/' + mode + '/policies',
   )?.mode;
   const review = reviews.find((item) => path === '/review/' + item.key);
   const home = !setupMode && !review;
+
+  useEffect(() => {
+    if (home || screens || loadFailed) return;
+    let active = true;
+    import('./components/reviewScreens').then(
+      (module) => { if (active) setScreens(module); },
+      () => { if (active) setLoadFailed(true); },
+    );
+    return () => { active = false; };
+  }, [home, screens, loadFailed]);
 
   useEffect(() => {
     const title = review?.title ?? (setupMode ? modeLabels[setupMode] : 'Policy review');
@@ -95,7 +105,7 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' });
     const heading = document.querySelector<HTMLElement>('main h1');
     heading?.focus({ preventScroll: true });
-  }, [path, review, setupMode]);
+  }, [path, review, setupMode, screens]);
 
   function openReview(newReview: Review) {
     setReviews((current) => [newReview, ...current]);
@@ -126,11 +136,16 @@ export default function App() {
         </div>
       </header>
       <main id="main" tabIndex={-1} className={home ? 'home-main' : undefined}>
-        {setupMode ? (
-          <Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onDone={openReview} />
-        ) : review ? (
-          <ReviewWorkspace key={review.key} review={review} decisions={decisions} onDecisionChange={saveDecision} />
-        ) : <Home reviews={reviews} />}
+        {home ? <Home reviews={reviews} /> : !screens ? (
+          <div className="page-heading">
+            <p><output>{loadFailed ? 'The review tools couldn’t load.' : 'Opening review…'}</output></p>
+            {loadFailed && <button className="secondary" onClick={() => window.location.reload()}>Reload review</button>}
+          </div>
+        ) : setupMode ? (
+          <screens.Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onDone={openReview} />
+        ) : review && (
+          <screens.ReviewWorkspace key={review.key} review={review} decisions={decisions} onDecisionChange={saveDecision} />
+        )}
       </main>
     </>
   );

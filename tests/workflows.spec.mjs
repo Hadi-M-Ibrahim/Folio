@@ -7,6 +7,52 @@ async function report(page, name) {
   return readFile(await (await download).path(), 'utf8');
 }
 
+test('a late font keeps the headline at its first painted width', async ({ page }) => {
+  const fonts = Promise.withResolvers();
+  await page.route('**/*.woff2', async (route) => {
+    await fonts.promise;
+    await route.continue();
+  });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const title = page.getByRole('heading', { name: 'Policy review', exact: true });
+  const textWidth = () => title.evaluate((heading) => {
+    const text = document.createRange();
+    text.selectNodeContents(heading);
+    return text.getBoundingClientRect().width;
+  });
+  let firstWidth;
+  try {
+    await expect(title).toBeVisible();
+    await expect.poll(() => page.evaluate(() => performance.getEntriesByName('first-contentful-paint').length)).toBe(1);
+    firstWidth = await textWidth();
+  } finally {
+    fonts.resolve();
+  }
+  await page.evaluate(() => document.fonts.ready);
+  expect(await textWidth()).toBe(firstWidth);
+  const fontRequests = await page.evaluate(() => performance.getEntriesByType('resource')
+    .filter((entry) => entry.name.endsWith('.woff2')).map((entry) => entry.initiatorType));
+  expect(fontRequests).toEqual(['link', 'link']);
+});
+
+test('review tools load on demand and recover after a download failure', async ({ page }) => {
+  const bundle = '**/assets/reviewScreens-*.js';
+  let requests = 0;
+  await page.route(bundle, (route) => {
+    requests++;
+    return route.abort('failed');
+  });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Policy review', exact: true })).toBeVisible();
+  expect(requests).toBe(0);
+  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await expect(page.getByRole('button', { name: 'Reload review' })).toBeVisible();
+  expect(requests).toBeGreaterThan(0);
+  await page.unroute(bundle);
+  await page.getByRole('button', { name: 'Reload review' }).click();
+  await expect(page.getByRole('heading', { name: 'Answer a questionnaire', exact: true })).toBeFocused();
+});
+
 for (const mode of ['guide', 'questionnaire']) {
   test(`a rate-limited ${mode} keeps its inputs for retry`, async ({ page }) => {
     const guide = mode === 'guide';
