@@ -74,8 +74,16 @@ def read_questions(pdf):
     return {n: " ".join(parts) for n, parts in items.items() if parts}
 
 
+def material_pdfs(materials, candidates):
+    root = materials.resolve()
+    files = sorted(p for p in candidates if p.suffix.lower() == ".pdf" and p.is_file())
+    if any(not path.resolve().is_relative_to(root) for path in files):
+        raise ValueError("A PDF points outside the selected materials directory.")
+    return files
+
+
 def source_pair(materials, stack):
-    sources = sorted(p for p in materials.iterdir() if p.suffix.lower() == ".pdf")
+    sources = material_pdfs(materials, materials.iterdir())
     if len(sources) != 2:
         raise ValueError("The materials folder must contain a guide and a questionnaire PDF at its top level.")
     # Inspect the shorter source first to avoid parsing the entire guide for form fields.
@@ -146,8 +154,7 @@ def prepare_criteria(args, guide, questions):
 
 
 def read_corpus(materials):
-    policies = sorted(p for p in materials.rglob("*")
-                      if p.is_file() and p.suffix.lower() == ".pdf" and p.parent != materials)
+    policies = material_pdfs(materials, (p for p in materials.rglob("*") if p.parent != materials))
     if not policies:
         raise ValueError("Place the policy PDFs in subdirectories of the materials folder.")
     pages = {}
@@ -219,6 +226,8 @@ def save_private(payload):
         raise ValueError("This review exceeds the API request byte limit. Use a smaller selection.")
     directory = ROOT / ".local-review"
     directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError("The private bundle directory must be a directory inside the project.")
     destination = directory / f"{payload['mode']}.json"
     f = tempfile.NamedTemporaryFile(dir=directory, delete=False)
     staging = Path(f.name)

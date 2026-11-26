@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Check, FileText, LoaderCircle, Plus, Upload, X } from 'lucide-react';
 import { checkInput, isLoopback, requestReview } from '../review/client';
 import { readDocument } from '../review/files';
-import { modeLabels, readScope, type Mode, type Policy, type Review, type ReviewInput, type Scope } from '../review/model';
+import { MAX_POLICY_PAGE_CHARACTERS, MAX_POLICY_PAGES, modeLabels, readScope, type Mode, type Policy, type Review, type ReviewInput, type Scope } from '../review/model';
 import { IntakeFile } from './IntakeFile';
 import { preparedGuide, preparedSelection, questionnaireRange, SourceRange, type RangeSource } from './SourceRange';
 import { questionsFromPdf } from './intakeQuestions';
@@ -122,7 +122,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
       } else {
         if (files.length + documents.length > 18) throw Error('Choose up to 18 policy documents.');
         const next = [...documents];
-        for (const file of files) next.push(await readDocument(file));
+        for (const file of files) next.push(await readDocument(file, next));
         checkInput(inputWith(next));
         setDocuments(next);
         setScope(undefined);
@@ -136,10 +136,12 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
 
   function pastedPolicy(): Policy {
     if (!policyText.trim()) throw Error('Enter the policy text.');
-    const pages = policyText.split('\f')
+    const sections = policyText.split('\f', MAX_POLICY_PAGES + 1);
+    if (sections.length > MAX_POLICY_PAGES) throw Error('A review supports up to 1,200 pages.');
+    const pages = sections
       .map((text, index) => ({ number: index + 1, text: text.trim() }))
       .filter((page) => page.text);
-    if (pages.some((page) => page.text.length > 35000)) {
+    if (pages.some((page) => page.text.length > MAX_POLICY_PAGE_CHARACTERS)) {
       throw Error('Each policy page can contain up to 35,000 characters. Upload a paginated file or paste a shorter section.');
     }
     return { id: crypto.randomUUID(), title: policyTitle.trim() || 'Policy ' + (documents.length + 1), pages };

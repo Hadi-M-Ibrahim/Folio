@@ -1,4 +1,4 @@
-import type { Result, ReviewInput } from './model';
+import { MAX_POLICY_CHARACTERS, MAX_POLICY_PAGE_CHARACTERS, MAX_POLICY_PAGES, type Result, type ReviewInput } from './model';
 
 export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(window.location.hostname);
 
@@ -29,11 +29,11 @@ export function checkInput(input: ReviewInput) {
     const pageNumbers = new Set<number>();
     for (const page of doc.pages) {
       if (
-        !Number.isInteger(page.number) ||
+        !Number.isSafeInteger(page.number) ||
         page.number < 1 ||
         pageNumbers.has(page.number) ||
         typeof page.text !== 'string' ||
-        page.text.length > 35000
+        page.text.length > MAX_POLICY_PAGE_CHARACTERS
       )
         throw Error(
           'Each policy page needs a unique positive page number and up to 35,000 characters of text.',
@@ -44,7 +44,7 @@ export function checkInput(input: ReviewInput) {
     }
     if (!doc.pages.some((p) => p.text.trim())) throw Error('Each policy needs at least one searchable page.');
   }
-  if (totalPages > 1200 || totalChars > 2400000)
+  if (totalPages > MAX_POLICY_PAGES || totalChars > MAX_POLICY_CHARACTERS)
     throw Error('This review exceeds the limit of 1,200 pages or 2.4 million policy characters.');
   if (
     input.mode === 'guide' &&
@@ -70,6 +70,13 @@ export async function requestReview(input: ReviewInput, signal: AbortSignal): Pr
     body: JSON.stringify(input),
     signal,
   });
+  if (response.status === 429) {
+    // The edge firewall can return HTML. Both layers use the same ten-minute quota.
+    const retry = response.headers.get('Retry-After');
+    const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : NaN;
+    const minutes = Number.isSafeInteger(seconds) && seconds > 0 ? Math.ceil(seconds / 60) : 10;
+    throw Error(`This network has reached its limit of 30 review submissions per 10 minutes. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. Your inputs are still here.`);
+  }
   const body = await response.json().catch(() => null);
   if (!response.ok || !body)
     throw Error(

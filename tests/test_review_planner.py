@@ -159,6 +159,8 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(tool["name"], "record_review")
             row, = inputs
             self.assertEqual(row["criterion"], question)
+            for passage in row["passages"]:
+                self.assertEqual(set(passage), {"passage", "quote"})
             refs = {item["quote"]: item["passage"] for item in row["passages"]}
             self.assertEqual(set(refs), {rule, exception})
             return {"assessments": [{

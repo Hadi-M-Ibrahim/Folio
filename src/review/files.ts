@@ -1,39 +1,77 @@
-import type { Policy } from './model';
+import { MAX_POLICY_CHARACTERS, MAX_POLICY_PAGE_CHARACTERS, MAX_POLICY_PAGES, type Policy } from './model';
+import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 
-export async function readDocument(file: File): Promise<Policy> {
-  if (file.size > 32 * 1024 * 1024) throw Error('Use files smaller than 32 MB.');
+const maxFileBytes = 32 * 1024 * 1024;
+const maxExtractedCharacters = 32_000_000;
+
+export async function readDocument(file: File, existingPolicies?: readonly Policy[]): Promise<Policy> {
+  if (file.size > maxFileBytes) throw Error('Use files smaller than 32 MB.');
   const name = file.name;
-  let pages: Policy['pages'];
+  const pages: Policy['pages'] = [];
+  let remainingPages = MAX_POLICY_PAGES;
+  let remainingCharacters = MAX_POLICY_CHARACTERS;
+  for (const policy of existingPolicies ?? []) {
+    remainingPages -= policy.pages.length;
+    for (const page of policy.pages) remainingCharacters -= page.text.length;
+  }
+
+  function addPage(number: number, raw: string) {
+    const text = raw.trim();
+    if (!text) return;
+    if (existingPolicies) {
+      if (text.length > MAX_POLICY_PAGE_CHARACTERS) throw Error('Each policy page can contain up to 35,000 characters.');
+      remainingPages--;
+      remainingCharacters -= text.length;
+      if (remainingPages < 0 || remainingCharacters < 0) {
+        throw Error('This review exceeds the limit of 1,200 pages or 2.4 million policy characters.');
+      }
+    }
+    pages.push({ number, text });
+  }
+
   if (/\.pdf$/i.test(name)) {
     const pdfjs = await import('pdfjs-dist');
     const { default: workerUrl } = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
     pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
     const loadingTask = pdfjs.getDocument({ data: await file.arrayBuffer() });
-    const pdf = await loadingTask.promise;
     try {
-      if (pdf.numPages > 1200) throw Error('A review supports up to 1,200 pages.');
-      pages = [];
+      const pdf = await loadingTask.promise;
+      if (pdf.numPages > MAX_POLICY_PAGES) throw Error('A review supports up to 1,200 pages.');
+      let extractedCharacters = 0;
       for (let number = 1; number <= pdf.numPages; number++) {
         const page = await pdf.getPage(number);
-        const content = await page.getTextContent();
-        const text = content.items
-          // pdf.js emits word spaces in the text items. A font or ligature
-          // change can also start a new item in the middle of a word.
-          .map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : '') : ''))
-          .join('')
-          .trim();
-        if (text) pages.push({ number, text });
-        page.cleanup();
+        const reader: ReadableStreamDefaultReader<TextContent> = page.streamTextContent().getReader();
+        const parts: string[] = [];
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            // A font or ligature change can split a word across PDF text items.
+            let part = '';
+            for (const item of value.items) {
+              if (!('str' in item)) continue;
+              extractedCharacters += item.str.length + (item.hasEOL ? 1 : 0);
+              if (extractedCharacters > maxExtractedCharacters) {
+                throw Error('Use a PDF with up to 32 million characters of extracted text.');
+              }
+              part += item.str + (item.hasEOL ? '\n' : '');
+            }
+            if (part) parts.push(part);
+          }
+          addPage(number, parts.join(''));
+        } finally {
+          reader.releaseLock();
+          page.cleanup();
+        }
       }
     } finally {
       await loadingTask.destroy();
     }
   } else if (/\.(txt|md)$/i.test(name)) {
-    // A form feed explicitly separates pages in a plain-text export.
-    pages = (await file.text())
-      .split('\f')
-      .map((text, i) => ({ number: i + 1, text: text.trim() }))
-      .filter((p) => p.text);
+    // Stop splitting at the first unsupported page, including blank physical pages.
+    const sections = (await file.text()).split('\f', MAX_POLICY_PAGES + 1);
+    if (sections.length > MAX_POLICY_PAGES) throw Error('A review supports up to 1,200 pages.');
+    sections.forEach((section, index) => addPage(index + 1, section));
   } else throw Error('Choose a PDF, TXT, or Markdown file.');
   if (!pages.length)
     throw Error(`No readable text in “${name}”. For a scanned PDF, run OCR and upload the text export.`);

@@ -17,6 +17,9 @@ export type Policy = {
   title: string;
   pages: { number: number; text: string }[];
 };
+export const MAX_POLICY_PAGES = 1200;
+export const MAX_POLICY_CHARACTERS = 2400000;
+export const MAX_POLICY_PAGE_CHARACTERS = 35000;
 export type Evidence = {
   documentId: string;
   title: string;

@@ -13,6 +13,7 @@ MODEL = "claude-sonnet-5-5"
 SLOTS = threading.BoundedSemaphore(2)
 REVIEW_SECONDS = 70
 CALL_SECONDS = 40
+MAX_RESPONSE_BYTES = 1_048_576
 BATCH_SIZE = 5
 STATUSES = ("supported", "contradicted", "mixed", "insufficient", "needs_review")
 
@@ -76,6 +77,15 @@ class ProviderUnavailable(Exception):
     pass
 
 
+class NoProviderRedirects(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Consent and the API credential apply only to the configured provider endpoint.
+        return None
+
+
+open_provider_request = request.build_opener(NoProviderRedirects).open
+
+
 def invoke_tool(system, tool, input_data, key, deadline, max_tokens=3800):
     body = {
         "model": MODEL, "max_tokens": max_tokens, "system": system,
@@ -90,17 +100,23 @@ def invoke_tool(system, tool, input_data, key, deadline, max_tokens=3800):
     if timeout <= 0:
         raise ProviderUnavailable
     try:
-        with request.urlopen(outgoing, timeout=timeout) as response:
-            envelope = json.load(response)
+        with open_provider_request(outgoing, timeout=timeout) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ProviderUnavailable
+        envelope = json.loads(raw)
         if envelope.get("stop_reason") != "tool_use":
             raise ValueError("Incomplete tool response")
-        for block in envelope["content"]:
-            if block.get("type") == "tool_use" and block.get("name") == tool["name"] and isinstance(block.get("input"), dict):
-                return block["input"]
-        raise ValueError("Missing tool response")
-    except (error.URLError, OSError, HTTPException, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+        calls = [block for block in envelope["content"] if block.get("type") == "tool_use"]
+        if len(calls) != 1 or calls[0].get("name") != tool["name"] or not isinstance(calls[0].get("input"), dict):
+            raise ProviderUnavailable
+        return calls[0]["input"]
+    except error.HTTPError as exc:
+        exc.close()
+        raise ProviderUnavailable from None
+    except (error.URLError, OSError, HTTPException, ValueError, KeyError, TypeError, AttributeError, RecursionError):
         # Provider responses may contain source content. Never log a provider body or exception.
-        raise ProviderUnavailable from exc
+        raise ProviderUnavailable from None
 
 
 def call_provider(model_input, key, deadline):
@@ -179,7 +195,7 @@ def assess_batch(findings, pages, key, deadline):
         evidence_by_id[finding["id"]] = refs
         assignments.append({
             "id": finding["id"], "criterion": finding["question"], "criterionSource": finding["criterionSource"],
-            "passages": [{"passage": pid, **item} for pid, item in refs.items()],
+            "passages": [{"passage": pid, "quote": item["quote"]} for pid, item in refs.items()],
         })
     outputs = call_provider(assignments, key, deadline)
     by_id = {}

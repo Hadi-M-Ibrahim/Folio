@@ -1,6 +1,8 @@
 Materials/
 Deliverables/
 .local-review/
+folio-policy-action-list.md
+folio-questionnaire-responses.md
 .env
 .env.*
 .vercel/

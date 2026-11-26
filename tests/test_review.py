@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 from api import review as api
 from api._review import model
-from api._review.search import InvalidRequest, basic_plan, retrieve, validate
+from api._review.search import (
+    MAX_PAGE_NUMBER,
+    InvalidRequest,
+    basic_plan,
+    retrieve,
+    validate,
+)
 
 
 def sample(mode="questionnaire", **changes):
@@ -122,6 +128,14 @@ class ReviewTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(InvalidRequest):
                 api.review(sample(**changes))
 
+    def test_citation_page_numbers_are_exact_in_the_browser(self):
+        page = {"number": MAX_PAGE_NUMBER, "text": "The office keeps records."}
+        payload = sample(questions=["Who keeps records?"], documents=[{"id": "d", "title": "Policy", "pages": [page]}])
+        self.assertEqual(api.review(payload)["findings"][0]["candidates"][0]["page"], MAX_PAGE_NUMBER)
+        page["number"] += 1
+        with self.assertRaisesRegex(InvalidRequest, "integer page number"):
+            api.review(payload)
+
     def test_hosted_model_review_requires_both_opt_ins_even_with_local_operator_flag(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "REVIEW_ALLOW_CUSTOM_MODEL": "1", "VERCEL": "1"}, clear=True):
             with patch.object(model, "invoke_tool", side_effect=AssertionError("Unexpected provider call")):
@@ -226,7 +240,7 @@ class ReviewTests(unittest.TestCase):
                     self.assertEqual(provider.call_count, 2)
 
     def test_provider_call_cannot_start_after_deadline_and_uses_remaining_budget(self):
-        with patch.object(model.time, "monotonic", return_value=100), patch.object(model.request, "urlopen") as send:
+        with patch.object(model.time, "monotonic", return_value=100), patch.object(model, "open_provider_request") as send:
             send.side_effect = TimeoutError
             for deadline in (99, 100, 107, 1000):
                 with self.subTest(deadline=deadline), self.assertRaises(model.ProviderUnavailable):
@@ -284,3 +298,9 @@ class HttpContractTests(unittest.TestCase):
             self.assertEqual(response.getheader("Cache-Control"), "no-store")
         finally:
             conn.close()
+
+    def test_large_result_returns_a_complete_error(self):
+        with patch.object(api, "MAX_RESPONSE", 256), patch.object(api, "review", return_value={"text": "é" * 80}):
+            status, body = self.request("POST", "/api/review", "{}")
+        self.assertEqual(status, 422)
+        self.assertIn("Select fewer questions", body["error"])

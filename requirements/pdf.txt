@@ -1,1 +1,2 @@
-PyMuPDF>=1.25,<2
+# Existing environments should uninstall PyMuPDF first. Both distributions provide pymupdf.
+pymupdf-lite==2.2
