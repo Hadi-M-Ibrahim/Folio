@@ -14,7 +14,6 @@ import {
   FolderOpen,
   Grid2X2,
   History,
-  Layers3,
   LibraryBig,
   ListChecks,
   Plus,
@@ -325,9 +324,7 @@ export default function App() {
       <header className="app-header">
         <div className="header-inner">
           <a href="#main" className="brand" onClick={() => setNav('workspace')} aria-label="Folio workspace">
-            <span className="brand-icon">
-              <Layers3 size={24} strokeWidth={2} />
-            </span>
+            <img className="brand-icon" src="/folio.svg" width="35" height="35" alt="" />
             Folio
           </a>
           <div className="nav-separator" />
@@ -357,7 +354,7 @@ export default function App() {
         <div className="page-heading">
           <div>
             <div className="crumb">
-              <Layers3 size={13} />
+              <img src="/folio.svg" width="16" height="16" alt="" />
               Folio <ChevronRight size={12} />
               {navLabels[nav]}
             </div>
@@ -633,7 +630,7 @@ export default function App() {
         )}
         <footer className="app-footer">
           <span>
-            <Layers3 size={14} />
+            <img src="/folio.svg" width="18" height="18" alt="" />
             Folio
           </span>
           <button className="text-link" onClick={() => exportReview(review, byKey)}>
