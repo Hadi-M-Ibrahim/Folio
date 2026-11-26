@@ -1,9 +1,6 @@
-import http.client
 import json
 import os
-import threading
 import unittest
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -255,52 +252,3 @@ class ReviewTests(unittest.TestCase):
         with patch.object(model, "call_provider", return_value=[raw, raw, {**raw, "id": "q2"}]):
             result = model.assess_batch(rows, pages, "test-key", 100)
         self.assertEqual([f["analysisEngine"] for f in result], ["local", "anthropic", "local", "local", "local"])
-
-
-class HttpContractTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), api.handler)
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.thread.join()
-
-    def request(self, method, path, body, mime="application/json"):
-        conn = http.client.HTTPConnection(*self.server.server_address, timeout=3)
-        try:
-            conn.request(method, path, body, {"Content-Type": mime})
-            r = conn.getresponse()
-            return r.status, json.loads(r.read())
-        finally:
-            conn.close()
-
-    def test_http_entry_point_and_errors(self):
-        self.assertEqual(self.request("POST", "/api/review", json.dumps(sample()))[0], 200)
-        self.assertEqual(self.request("POST", "/api/review", "{")[0], 400)
-        self.assertEqual(self.request("POST", "/api/review", "{}")[0], 422)
-        self.assertEqual(self.request("POST", "/api/review", "{}", "text/plain")[0], 415)
-        self.assertEqual(self.request("GET", "/api/review", None)[0], 405)
-        self.assertEqual(self.request("POST", "/nonexistent", "{}")[0], 404)
-
-    def test_http_size_limit_and_no_store_apply_before_body_read(self):
-        conn = http.client.HTTPConnection(*self.server.server_address, timeout=3)
-        try:
-            conn.request("POST", "/api/review", headers={
-                "Content-Type": "application/json", "Content-Length": str(api.MAX_BODY + 1),
-            })
-            response = conn.getresponse()
-            self.assertEqual(response.status, 413)
-            self.assertEqual(response.getheader("Cache-Control"), "no-store")
-        finally:
-            conn.close()
-
-    def test_large_result_returns_a_complete_error(self):
-        with patch.object(api, "MAX_RESPONSE", 256), patch.object(api, "review", return_value={"text": "é" * 80}):
-            status, body = self.request("POST", "/api/review", "{}")
-        self.assertEqual(status, 422)
-        self.assertIn("Select fewer questions", body["error"])

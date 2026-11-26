@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Policy } from '../review/model';
+import { MAX_GUIDE_CHARACTERS, MAX_QUESTIONS, type Policy } from '../review/model';
 
 export type RangeSource = {
   unit: 'page' | 'question';
@@ -8,7 +8,7 @@ export type RangeSource = {
 };
 
 export function questionnaireRange(questions: string[], original?: Policy): RangeSource | undefined {
-  if (questions.length <= 30) return undefined;
+  if (questions.length <= MAX_QUESTIONS) return undefined;
   const numbers = questions.map((q) => Number(q.match(/^\s*(?:Q(?:uestion)?\s*)?\(?(\d+)[.):]\s+/i)?.[1]));
   const numbered = numbers.every((n, i) => Number.isSafeInteger(n) && n > 0 && (i === 0 || n > numbers[i - 1]));
   return {
@@ -20,17 +20,12 @@ export function questionnaireRange(questions: string[], original?: Policy): Rang
 
 function formatRange(numbers: number[]): string {
   const ranges: string[] = [];
-  let start = numbers[0];
-  let end = start;
-  for (const number of numbers.slice(1)) {
-    if (number === end + 1) {
-      end = number;
-    } else {
-      ranges.push(start === end ? String(start) : start + '–' + end);
-      start = end = number;
-    }
+  for (let index = 0; index < numbers.length; index++) {
+    const start = numbers[index];
+    while (numbers[index + 1] === numbers[index] + 1) index++;
+    const end = numbers[index];
+    ranges.push(start === end ? String(start) : start + '–' + end);
   }
-  ranges.push(start === end ? String(start) : start + '–' + end);
   return ranges.join(', ');
 }
 
@@ -73,24 +68,23 @@ export function SourceRange({ source, oversized, onApply }: {
   const group = pages ? 'Guide pages' : 'Questionnaire items';
 
   function apply() {
-    const ranges = value.trim().split(',').map((part) => {
+    const ranges: { start: number; end: number }[] = [];
+    for (const part of value.split(',')) {
       const match = part.match(/^\s*(\d+)\s*(?:[-–]\s*(\d+)\s*)?$/);
-      if (!match) return undefined;
-      const start = Number(match[1]);
-      const end = Number(match[2] ?? match[1]);
-      if (start < first || end < start || end > last) return undefined;
-      return { start, end };
-    });
-    if (ranges.some((range) => !range)) {
-      setError('Enter numbers or ranges between ' + first + ' and ' + last + ', separated by commas.');
-      return;
+      const start = Number(match?.[1]);
+      const end = Number(match?.[2] ?? start);
+      if (!match || start < first || end < start || end > last) {
+        setError('Enter numbers or ranges between ' + first + ' and ' + last + ', separated by commas.');
+        return;
+      }
+      ranges.push({ start, end });
     }
-    const selected = items.filter((item) => ranges.some((r) => r && r.start <= item.number && item.number <= r.end));
+    const selected = items.filter((item) => ranges.some(({ start, end }) => start <= item.number && item.number <= end));
     if (!selected.length) {
       setError('No readable ' + (pages ? 'pages' : 'questions') + ' in this selection.');
       return;
     }
-    if ((!pages && selected.length > 30) || (pages && selected.map((p) => p.text).join('\n\n').length > 50000)) {
+    if (pages ? selected.map((p) => p.text).join('\n\n').length > MAX_GUIDE_CHARACTERS : selected.length > MAX_QUESTIONS) {
       setError(pages ? 'Select a smaller section of up to 50,000 characters.' : 'Select up to 30 questions per review.');
       return;
     }

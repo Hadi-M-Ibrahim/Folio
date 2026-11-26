@@ -1,73 +1,73 @@
-import { MAX_POLICY_CHARACTERS, MAX_POLICY_PAGE_CHARACTERS, MAX_POLICY_PAGES, type Result, type ReviewInput } from './model';
+import {
+  MAX_GUIDE_CHARACTERS, MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
+  MAX_POLICY_PAGES, MAX_QUESTION_CHARACTERS, MAX_QUESTIONS, MAX_REQUEST_BYTES, type Policy, type Result, type ReviewInput,
+} from './model';
 
 export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(window.location.hostname);
 
+function hasText(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length <= maxLength && Boolean(value.trim());
+}
+
+function checkPolicyPages(pages: Policy['pages']): number {
+  const numbers = new Set<number>();
+  let characters = 0;
+  for (const page of pages) {
+    if (!Number.isSafeInteger(page.number) || page.number < 1 || numbers.has(page.number) ||
+      typeof page.text !== 'string' || page.text.length > MAX_POLICY_PAGE_CHARACTERS) {
+      throw Error('Each policy page needs a unique positive page number and up to 35,000 characters of text.');
+    }
+    numbers.add(page.number);
+    characters += page.text.length;
+  }
+  if (!pages.some((page) => page.text.trim())) throw Error('Each policy needs at least one searchable page.');
+  return characters;
+}
+
+function checkPolicies(documents: Policy[]) {
+  const ids = new Set<string>();
+  let pages = 0;
+  let characters = 0;
+  for (const doc of documents) {
+    if (!hasText(doc.id, 100) || doc.id !== doc.id.trim() || ids.has(doc.id) ||
+      !hasText(doc.title, 240) || !Array.isArray(doc.pages) || !doc.pages.length) {
+      throw Error('Each policy needs a unique ID, a title, and at least one page.');
+    }
+    ids.add(doc.id);
+    characters += checkPolicyPages(doc.pages);
+    pages += doc.pages.length;
+  }
+  if (pages > MAX_POLICY_PAGES || characters > MAX_POLICY_CHARACTERS)
+    throw Error('This review exceeds the limit of 1,200 pages or 2.4 million policy characters.');
+}
+
 export function checkInput(input: ReviewInput) {
   if (!['questionnaire', 'guide'].includes(input.mode)) throw Error('Choose a valid review mode.');
-  if (!Array.isArray(input.documents) || input.documents.length > 18)
+  if (!Array.isArray(input.documents) || input.documents.length > MAX_POLICY_DOCUMENTS)
     throw Error('Include up to 18 policy documents.');
   if (input.mode === 'questionnaire' && !input.documents.length)
     throw Error('Add at least one policy to search for answers.');
-  let totalPages = 0,
-    totalChars = 0;
-  const ids = new Set<string>();
-  for (const doc of input.documents) {
-    if (
-      typeof doc.id !== 'string' ||
-      !doc.id.trim() ||
-      doc.id !== doc.id.trim() ||
-      doc.id.length > 100 ||
-      ids.has(doc.id) ||
-      typeof doc.title !== 'string' ||
-      !doc.title.trim() ||
-      doc.title.length > 240 ||
-      !Array.isArray(doc.pages) ||
-      !doc.pages.length
-    )
-      throw Error('Each policy needs a unique ID, a title, and at least one page.');
-    ids.add(doc.id);
-    const pageNumbers = new Set<number>();
-    for (const page of doc.pages) {
-      if (
-        !Number.isSafeInteger(page.number) ||
-        page.number < 1 ||
-        pageNumbers.has(page.number) ||
-        typeof page.text !== 'string' ||
-        page.text.length > MAX_POLICY_PAGE_CHARACTERS
-      )
-        throw Error(
-          'Each policy page needs a unique positive page number and up to 35,000 characters of text.',
-        );
-      totalPages++;
-      totalChars += page.text.length;
-      pageNumbers.add(page.number);
+  checkPolicies(input.documents);
+
+  if (input.mode === 'guide') {
+    if (!hasText(input.guide, MAX_GUIDE_CHARACTERS)) throw Error('Enter a guide containing up to 50,000 characters.');
+  } else {
+    const questions = input.questions;
+    if (!Array.isArray(questions) || !questions.length || questions.length > MAX_QUESTIONS ||
+      !questions.every((question) => hasText(question, MAX_QUESTION_CHARACTERS))) {
+      throw Error('Include 1–30 questions, each up to 2,000 characters.');
     }
-    if (!doc.pages.some((p) => p.text.trim())) throw Error('Each policy needs at least one searchable page.');
   }
-  if (totalPages > MAX_POLICY_PAGES || totalChars > MAX_POLICY_CHARACTERS)
-    throw Error('This review exceeds the limit of 1,200 pages or 2.4 million policy characters.');
-  if (
-    input.mode === 'guide' &&
-    (typeof input.guide !== 'string' || !input.guide.trim() || input.guide.length > 50000)
-  )
-    throw Error('Enter a guide containing up to 50,000 characters.');
-  if (
-    input.mode === 'questionnaire' &&
-    (!Array.isArray(input.questions) ||
-      !input.questions.length ||
-      input.questions.length > 30 ||
-      input.questions.some((q) => typeof q !== 'string' || !q.trim() || q.length > 2000))
-  )
-    throw Error('Include 1–30 questions, each up to 2,000 characters.');
-  if (new TextEncoder().encode(JSON.stringify(input)).length > 4000000)
+  const body = JSON.stringify(input);
+  if (new TextEncoder().encode(body).length > MAX_REQUEST_BYTES)
     throw Error('This review exceeds the 4 MB request limit.');
+  return body;
 }
 export async function requestReview(input: ReviewInput, signal: AbortSignal): Promise<Result> {
-  checkInput(input);
   const response = await fetch('/api/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: checkInput(input),
     signal,
   });
   if (response.status === 429) {

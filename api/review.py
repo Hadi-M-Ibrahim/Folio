@@ -92,7 +92,7 @@ class handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.reply(400, {"error": "A nonempty JSON request body is required."})
         if length > MAX_BODY:
-            return self.reply(413, {"error": "The review request exceeds 4,000,000 bytes. Split it into smaller batches."})
+            return self.reply(413, {"error": f"The review request exceeds {MAX_BODY:,} bytes. Split it into smaller batches."})
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, RecursionError):

@@ -64,7 +64,7 @@ function Home({ reviews }: { reviews: Review[] }) {
 export default function App() {
   const path = useSyncExternalStore(onHashChange, currentPath);
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [decisions, setDecisions] = useState(new Map<string, { decision: Decision }>());
+  const [decisions, setDecisions] = useState(() => new Map<string, Decision>());
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const setupMode: Mode | undefined = workflows.find(({ mode }) =>
     path === '/new/' + mode || path === '/new/' + mode + '/policies',
@@ -87,7 +87,7 @@ export default function App() {
   function saveDecision(key: string, decision?: Decision) {
     setDecisions((current) => {
       const next = new Map(current);
-      if (decision) next.set(key, { decision });
+      if (decision) next.set(key, decision);
       else next.delete(key);
       return next;
     });

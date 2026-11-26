@@ -4,8 +4,14 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from heapq import nsmallest
 
 MAX_CRITERIA = 30
+MAX_DOCUMENTS = 18
+MAX_GUIDE_CHARS = 50_000
+MAX_QUESTION_CHARS = 2_000
+MAX_PAGE_CHARS = 35_000
+MAX_PASSAGE_CHARS = 680
 MAX_PAGES = 1200
 MAX_CHARS = 2_400_000
 # The browser must be able to distinguish every citation's page number exactly.
@@ -144,7 +150,7 @@ def validate(payload):
             raise InvalidRequest(f"{consent} must be true or false.")
     mode = payload["mode"]
     if mode == "guide":
-        guide = bounded_string(payload.get("guide"), "Guide", 50000)
+        guide = bounded_string(payload.get("guide"), "Guide", MAX_GUIDE_CHARS)
         # Offsets address the input string including any leading whitespace.
         shift = len(payload["guide"]) - len(payload["guide"].lstrip())
         criteria = [(q, shift + pos) for q, pos in guide_criteria(guide)]
@@ -152,15 +158,16 @@ def validate(payload):
         questions = payload.get("questions")
         if not isinstance(questions, list) or not 1 <= len(questions) <= MAX_CRITERIA:
             raise InvalidRequest(f"Provide 1 to {MAX_CRITERIA} questions.")
-        criteria = [(bounded_string(q, "Each question", 2000), None) for q in questions]
-    docs = payload.get("documents")
-    if not isinstance(docs, list) or len(docs) > 18:
-        raise InvalidRequest("Provide a list of up to 18 policy documents.")
+        criteria = [(bounded_string(q, "Each question", MAX_QUESTION_CHARS), None) for q in questions]
+    return mode, criteria, document_pages(payload.get("documents"), mode)
+
+
+def validated_documents(docs, mode):
+    if not isinstance(docs, list) or len(docs) > MAX_DOCUMENTS:
+        raise InvalidRequest(f"Provide a list of up to {MAX_DOCUMENTS} policy documents.")
     if not docs and mode == "questionnaire":
         raise InvalidRequest("Provide at least one policy document with the questionnaire.")
     identifiers = set()
-    pages = {}
-    size = 0
     for doc in docs:
         if not isinstance(doc, dict):
             raise InvalidRequest("Each document needs an id, title, and pages.")
@@ -171,8 +178,15 @@ def validate(payload):
         identifiers.add(doc_id)
         if not isinstance(doc.get("pages"), list) or not doc["pages"]:
             raise InvalidRequest("Each document needs one or more pages.")
+        yield doc_id, title, doc["pages"]
+
+
+def document_pages(docs, mode):
+    pages = {}
+    size = 0
+    for doc_id, title, source_pages in validated_documents(docs, mode):
         has_text = False
-        for page in doc["pages"]:
+        for page in source_pages:
             if (not isinstance(page, dict) or type(page.get("number")) is not int
                     or not 1 <= page["number"] <= MAX_PAGE_NUMBER):
                 raise InvalidRequest(f"Each page needs an integer page number from 1 to {MAX_PAGE_NUMBER:,}.")
@@ -180,16 +194,16 @@ def validate(payload):
             if key in pages:
                 raise InvalidRequest("Page numbers must be unique within a document.")
             body = page.get("text")
-            if not isinstance(body, str) or len(body) > 35000:
-                raise InvalidRequest("Each page must contain text of at most 35,000 characters.")
+            if not isinstance(body, str) or len(body) > MAX_PAGE_CHARS:
+                raise InvalidRequest(f"Each page must contain text of at most {MAX_PAGE_CHARS:,} characters.")
             size += len(body)
             if size > MAX_CHARS or len(pages) >= MAX_PAGES:
-                raise InvalidRequest("Submit at most 1,200 pages and 2,400,000 source characters per review.")
+                raise InvalidRequest(f"Submit at most {MAX_PAGES:,} pages and {MAX_CHARS:,} source characters per review.")
             has_text = has_text or bool(body.strip())
             pages[key] = (title, body)
         if not has_text:
             raise InvalidRequest(f"{title} contains no searchable text.")
-    return mode, criteria, pages
+    return pages
 
 
 def words(text):
@@ -205,14 +219,14 @@ def passages(page):
     for para in re.split(r"\n\s*\n", page):
         remaining = para.strip()
         while remaining:
-            if len(remaining) <= 680:
+            if len(remaining) <= MAX_PASSAGE_CHARS:
                 yield remaining
                 break
-            end = max(remaining.rfind(mark, 220, 680) for mark in (". ", "! ", "? ", "\n"))
+            end = max(remaining.rfind(mark, 220, MAX_PASSAGE_CHARS) for mark in (". ", "! ", "? ", "\n"))
             if end == -1:
-                end = remaining.rfind(" ", 220, 680)
+                end = remaining.rfind(" ", 220, MAX_PASSAGE_CHARS)
             if end == -1:
-                end = 679
+                end = MAX_PASSAGE_CHARS - 1
             yield remaining[:end + 1].strip()
             remaining = remaining[end + 1:].strip()
 
@@ -245,6 +259,13 @@ def phrase_pattern(term):
     return re.compile(r"(?<!\w)" + r"\s+".join(re.escape(part) for part in term.split()) + r"(?!\w)", re.I)
 
 
+def phrase_hits(text, patterns):
+    for phrase, pattern in patterns.items():
+        count = sum(1 for _ in pattern.finditer(text))
+        if count:
+            yield phrase, count
+
+
 class Index:
     def __init__(self, pages, plan):
         self.items = []
@@ -257,19 +278,9 @@ class Index:
         interest.update(group_for(t) for t in model_terms if t not in self.phrases)
         total_words = 0
         self.passage_count = 0
-        for (doc_id, number), (title, body) in pages.items():
-            page_key = (doc_id, number)
-            for word, count in Counter(words(body)).items():
-                group = group_for(word)
-                if group in interest:
-                    self.page_hits[word][page_key] = count
-                    self.forms[group].add(word)
-            page_phrases = {}
-            for phrase, pattern in self.phrases.items():
-                hits = sum(1 for _ in pattern.finditer(body))
-                if hits:
-                    self.page_hits[phrase][page_key] = hits
-                    page_phrases[phrase] = pattern
+        for page_key, (title, body) in pages.items():
+            doc_id, number = page_key
+            page_phrases = self.index_page_terms(page_key, body, interest)
             for piece in passages(body):
                 literal = Counter(words(piece))
                 length = sum(literal.values())
@@ -284,10 +295,8 @@ class Index:
                     group = group_for(word)
                     if group in interest:
                         counts[group] += count
-                for phrase, pattern in page_phrases.items():
-                    occurrences = sum(1 for _ in pattern.finditer(piece))
-                    if occurrences:
-                        counts[phrase] = occurrences
+                for phrase, count in phrase_hits(piece, page_phrases):
+                    counts[phrase] = count
                 if not counts:
                     continue
                 index = len(self.items)
@@ -299,11 +308,19 @@ class Index:
                 ))
         self.mean_length = total_words / max(1, self.passage_count)
 
-    def retrieve(self, row, number):
-        question = row["question"]
-        model_terms = list(dict.fromkeys(normalize_term(t) for t in row["searchTerms"]))
-        terms = list(dict.fromkeys(w for w in words(question) if w not in STOP))
-        groups = list(dict.fromkeys(group_for(w) for w in model_terms + terms))
+    def index_page_terms(self, page_key, body, interest):
+        for word, count in Counter(words(body)).items():
+            group = group_for(word)
+            if group in interest:
+                self.page_hits[word][page_key] = count
+                self.forms[group].add(word)
+        page_phrases = {}
+        for phrase, count in phrase_hits(body, self.phrases):
+            self.page_hits[phrase][page_key] = count
+            page_phrases[phrase] = self.phrases[phrase]
+        return page_phrases
+
+    def rank_candidates(self, groups):
         scores = Counter()
         for group in groups:
             posting = self.postings.get(group, ())
@@ -313,31 +330,42 @@ class Index:
                 item = self.items[index]
                 freq = item.counts[group]
                 scores[index] += weight * idf * freq * 2.2 / (freq + 1.2 * (.25 + .75 * item.length / self.mean_length))
-        ranked = sorted(scores, key=lambda i: (-scores[i], i))
-        # Retain two high-ranked passages with potential exceptions alongside the main shortlist.
-        selected = set(ranked[:6]) | set([i for i in ranked if self.items[i].adverse][:2])
-        candidates = [self.items[i].evidence for i in ranked if i in selected]
 
-        literal_terms = list(dict.fromkeys(model_terms + terms))
-        requested = set(literal_terms)
+        def rank(index):
+            return -scores[index], index
+
+        # Retain two high-ranked passages with potential exceptions alongside the main shortlist.
+        shortlist = nsmallest(6, scores, key=rank)
+        adverse = nsmallest(2, (i for i in scores if self.items[i].adverse), key=rank)
+        selected = sorted(set(shortlist).union(adverse), key=rank)
+        return [self.items[i].evidence for i in selected], len(scores)
+
+    def retrieve(self, row, number):
+        origins = dict.fromkeys((normalize_term(t) for t in row["searchTerms"]), "model")
+        model_terms = list(origins)
+        for term in words(row["question"]):
+            if term not in STOP:
+                origins.setdefault(term, "criterion")
+        groups = dict.fromkeys(group_for(term) for term in origins)
+        candidates, candidate_count = self.rank_candidates(groups)
         for group in groups:
-            # Each related form belongs to exactly one group.
-            literal_terms.extend(form for form in sorted(self.forms.get(group, ())) if form not in requested)
+            for form in sorted(self.forms.get(group, ())):
+                origins.setdefault(form, "related_form")
         # Bound the visible search log for large inventories and report all omissions.
+        visible_terms = list(origins)[:24]
         proof = []
-        for term in literal_terms[:24]:
+        for term in visible_terms:
             hits = self.page_hits[term]
             matches = [{"documentId": d, "page": p, "count": n} for (d, p), n in hits.most_common(24)]
-            origin = "model" if term in model_terms else ("criterion" if term in terms else "related_form")
-            proof.append({"term": term, "origin": origin, "matches": matches, "totalPages": len(hits), "totalHits": sum(hits.values())})
+            proof.append({"term": term, "origin": origins[term], "matches": matches, "totalPages": len(hits), "totalHits": sum(hits.values())})
         return {
             **criterion_fields(row, number),
             "status": "needs_review" if candidates else "insufficient",
             "answer": ("Review the ranked passages to decide whether they address this criterion."
                        if candidates else "The search terms returned no source passages. Evidence is insufficient for a decision."),
-            "supporting": [], "counter": [], "searchTerms": literal_terms[:24], "plannedTerms": model_terms,
-            "searchProof": proof, "totalSearchTerms": len(literal_terms),
-            "candidates": candidates, "totalCandidatePassages": len(ranked), "analysisEngine": "local",
+            "supporting": [], "counter": [], "searchTerms": visible_terms, "plannedTerms": model_terms,
+            "searchProof": proof, "totalSearchTerms": len(origins),
+            "candidates": candidates, "totalCandidatePassages": candidate_count, "analysisEngine": "local",
         }
 
 

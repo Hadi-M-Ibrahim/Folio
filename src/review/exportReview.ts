@@ -1,14 +1,15 @@
 import { guideCitation } from './guideSource';
 import {
+  assessmentLabel,
   policyActionLabels,
+  responseLabels,
   statusLabels,
   type Decision,
   type Evidence,
   type PolicyAction,
   type Review,
+  type ReviewRow,
 } from './model';
-
-type Decisions = ReadonlyMap<string, { decision: Decision }>;
 
 // Character references render as literal text after Markdown has recognized its
 // block and inline syntax. Keep the report's own headings and quotes separate.
@@ -38,20 +39,90 @@ function passages(label: string, entries: Evidence[]): string[] {
 }
 
 function responseStatus(decision?: Decision): string {
-  if (decision?.value === 'confirmed') return 'Confirmed';
-  if (decision?.value === 'flagged') return 'Flagged for follow-up';
+  if (decision?.value) return responseLabels[decision.value];
   return decision?.answer?.trim() || decision?.citations?.length ? 'Draft' : 'Pending';
 }
 
-export function exportReview(review: Review, decisions: Decisions): void {
+function appendPolicyActions(lines: string[], review: Review, rows: readonly ReviewRow[]) {
+  const groups: (PolicyAction | undefined)[] = ['write', 'update', 'no_change', undefined];
+  for (const action of groups) {
+    const obligations = rows.filter((row) => row.decision?.action === action);
+    if (!obligations.length) continue;
+    lines.push('## ' + (action ? policyActionLabels[action] : 'Action pending'), '');
+    for (const { finding, index, decision } of obligations) {
+      lines.push(`### Obligation ${index + 1}`, '', inlineText(guideCitation(review, finding)), '');
+      if (finding.criterionSource) lines.push(...quoted(finding.criterionSource), '');
+      if (finding.criterionSource !== finding.question) {
+        lines.push('Review criterion — ' + markdownText(finding.question), '');
+      }
+      lines.push('Action note — ' + markdownText(decision?.note?.trim() || 'None recorded.'), '');
+      if (decision) lines.push('Last edited — ' + decision.at, '');
+    }
+  }
+}
+
+function appendQuestionnaireResponses(lines: string[], rows: readonly ReviewRow[]) {
+  for (const { finding, index, decision } of rows) {
+    lines.push(
+      `## Question ${index + 1}. ${inlineText(finding.question)}`,
+      '',
+      'Response status — ' + responseStatus(decision),
+      '',
+      markdownText(decision?.answer?.trim() || 'No response entered.'),
+      '',
+      ...passages('Reviewer-selected citations', decision?.citations ?? []),
+    );
+    if (decision) lines.push('Last edited — ' + decision.at, '');
+  }
+}
+
+function appendEvidenceRecord(lines: string[], review: Review, rows: readonly ReviewRow[]) {
+  const { input, result } = review;
+  const isGuide = input.mode === 'guide';
+  lines.push(
+    '## Evidence and search record',
+    '',
+    `Review method — ${result.engine === 'anthropic' ? 'Model-assisted assessment' : 'Keyword retrieval'}`,
+    '',
+    markdownText(result.notice),
+    '',
+    `Reviewed policy documents — ${input.documents.length} documents, ${input.documents.reduce((n, d) => n + d.pages.length, 0)} pages.`,
+    '',
+  );
+  if (review.scope) {
+    const { sourceDocuments, sourcePages, searchablePages } = review.scope;
+    lines.push(
+      `Original corpus — ${sourceDocuments} documents, ${sourcePages} pages (${searchablePages} searchable).`,
+      '',
+    );
+  }
+  for (const { finding, index } of rows) {
+    lines.push(
+      `### ${isGuide ? 'Obligation' : 'Question'} ${index + 1}`,
+      '',
+      `${assessmentLabel(finding)} — ${statusLabels[finding.status]}`,
+      '',
+      markdownText(finding.answer),
+      '',
+      ...passages('Supporting policy evidence', finding.supporting),
+      ...passages('Counterevidence', finding.counter),
+    );
+    const available = finding.candidates.length;
+    const total = finding.totalCandidatePassages ?? available;
+    if (available) {
+      lines.push(...passages(`Ranked policy passages (${available} of ${total})`, finding.candidates));
+    }
+    if (finding.searchTerms.length) {
+      const termCount = finding.totalSearchTerms ?? finding.searchTerms.length;
+      lines.push(`Search terms (${finding.searchTerms.length} of ${termCount}) — ${finding.searchTerms.map(inlineText).join(', ')}`, '');
+    }
+  }
+}
+
+export function exportReview(review: Review, rows: readonly ReviewRow[]): void {
   const { input, result } = review;
   const isGuide = input.mode === 'guide';
   const guideOnly = isGuide && input.documents.length === 0;
-  const rows = result.findings.map((finding, index) => ({
-    finding,
-    number: index + 1,
-    decision: decisions.get(review.key + '/' + finding.id)?.decision,
-  }));
   const lines = [
     isGuide ? '# Policy action list' : '# Questionnaire responses',
     '',
@@ -65,78 +136,10 @@ export function exportReview(review: Review, decisions: Decisions): void {
     lines.push(`Review method — ${method} obligation extraction`, '', markdownText(result.notice), '');
   }
 
-  if (isGuide) {
-    const groups: (PolicyAction | undefined)[] = ['write', 'update', 'no_change', undefined];
-    for (const action of groups) {
-      const obligations = rows.filter((row) => row.decision?.action === action);
-      if (!obligations.length) continue;
-      lines.push('## ' + (action ? policyActionLabels[action] : 'Action pending'), '');
-      for (const { finding, number, decision } of obligations) {
-        lines.push(`### Obligation ${number}`, '', inlineText(guideCitation(review, finding)), '');
-        if (finding.criterionSource) lines.push(...quoted(finding.criterionSource), '');
-        if (finding.criterionSource !== finding.question) {
-          lines.push('Review criterion — ' + markdownText(finding.question), '');
-        }
-        lines.push('Action note — ' + markdownText(decision?.note?.trim() || 'None recorded.'), '');
-        if (decision) lines.push('Last edited — ' + decision.at, '');
-      }
-    }
-  } else {
-    for (const { finding, number, decision } of rows) {
-      lines.push(
-        `## Question ${number}. ${inlineText(finding.question)}`,
-        '',
-        'Response status — ' + responseStatus(decision),
-        '',
-        markdownText(decision?.answer?.trim() || 'No response entered.'),
-        '',
-        ...passages('Reviewer-selected citations', decision?.citations ?? []),
-      );
-      if (decision) lines.push('Last edited — ' + decision.at, '');
-    }
-  }
+  if (isGuide) appendPolicyActions(lines, review, rows);
+  else appendQuestionnaireResponses(lines, rows);
+  if (!guideOnly) appendEvidenceRecord(lines, review, rows);
 
-  if (!guideOnly) {
-    lines.push(
-      '## Evidence and search record',
-      '',
-      `Review method — ${result.engine === 'anthropic' ? 'Model-assisted assessment' : 'Keyword retrieval'}`,
-      '',
-      markdownText(result.notice),
-      '',
-      `Reviewed policy documents — ${input.documents.length} documents, ${input.documents.reduce((n, d) => n + d.pages.length, 0)} pages.`,
-      '',
-    );
-    if (review.scope) {
-      const { sourceDocuments, sourcePages, searchablePages } = review.scope;
-      lines.push(
-        `Original corpus — ${sourceDocuments} documents, ${sourcePages} pages (${searchablePages} searchable).`,
-        '',
-      );
-    }
-    for (const { finding, number } of rows) {
-      const method = finding.analysisEngine === 'anthropic' ? 'Model assessment' : 'Keyword search';
-      lines.push(
-        `### ${isGuide ? 'Obligation' : 'Question'} ${number}`,
-        '',
-        `${method} — ${statusLabels[finding.status]}`,
-        '',
-        markdownText(finding.answer),
-        '',
-        ...passages('Supporting policy evidence', finding.supporting),
-        ...passages('Counterevidence', finding.counter),
-      );
-      const available = finding.candidates.length;
-      const total = finding.totalCandidatePassages ?? available;
-      if (available) {
-        lines.push(...passages(`Ranked policy passages (${available} of ${total})`, finding.candidates));
-      }
-      if (finding.searchTerms.length) {
-        const termCount = finding.totalSearchTerms ?? finding.searchTerms.length;
-        lines.push(`Search terms (${finding.searchTerms.length} of ${termCount}) — ${finding.searchTerms.map(inlineText).join(', ')}`, '');
-      }
-    }
-  }
   const url = URL.createObjectURL(
     new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' }),
   );

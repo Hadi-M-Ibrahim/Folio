@@ -33,7 +33,9 @@ function highlightPage(text: string, page: number, location: SourceLocation) {
 }
 
 export function SourceDialog({ location, onClose }: { location: SourceLocation; onClose: () => void }) {
-  const [pageNumber, setPageNumber] = useState(location.page);
+  const pages = location.doc.pages;
+  const [index, setIndex] = useState(() => pages.findIndex((page) => page.number === location.page));
+  const page = pages[index];
   const paperRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const paper = paperRef.current;
@@ -41,30 +43,28 @@ export function SourceDialog({ location, onClose }: { location: SourceLocation; 
     const mark = paper.querySelector('mark');
     if (mark) mark.scrollIntoView({ block: 'nearest' });
     else paper.scrollTop = 0;
-  }, [location, pageNumber]);
-  const index = location.doc.pages.findIndex((p) => p.number === pageNumber);
-  const page = location.doc.pages[index];
+  }, [location, page]);
   return (
     <Modal title={location.doc.title} subtitle="Source document" onClose={onClose} wide>
       <div className="source-toolbar">
         <span>
           <FileText size={15} />
-          {location.unpaginated ? 'Submitted text' : 'Page ' + pageNumber}
+          {location.unpaginated ? 'Submitted text' : 'Page ' + (page?.number ?? location.page)}
         </span>
-        {location.doc.pages.length > 1 && <div>
+        {pages.length > 1 && <div>
           <button
             className="icon-button"
             disabled={index <= 0}
             aria-label="Previous page"
-            onClick={() => setPageNumber(location.doc.pages[index - 1].number)}
+            onClick={() => setIndex(index - 1)}
           >
             <ChevronLeft size={16} />
           </button>
           <button
             className="icon-button"
-            disabled={index === -1 || index >= location.doc.pages.length - 1}
+            disabled={!page || index >= pages.length - 1}
             aria-label="Next page"
-            onClick={() => setPageNumber(location.doc.pages[index + 1].number)}
+            onClick={() => setIndex(index + 1)}
           >
             <ChevronRight size={16} />
           </button>
