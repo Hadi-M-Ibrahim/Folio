@@ -7,7 +7,7 @@ Folio helps compliance analysts answer state questionnaires and turn regulatory 
 Open [Folio](https://folio-policy-review.vercel.app) or [watch the 83-second walkthrough](Deliverables/folio-walkthrough.mp4).
 
 - **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open a passage to verify its page, attach the quotation to a response, and confirm or flag the answer. Download the responses with their citations.
-- **Review a policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
+- **Review a new policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
 For a long source, select a batch of questions or a range of guide pages. The workspace and export identify the selected range. Uploaded guides retain their physical page numbers.
 

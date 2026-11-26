@@ -22,7 +22,7 @@ type SetupProps = {
 const intakeCopy = {
   guide: {
     sourceLabel: 'Regulatory guide',
-    sourceTitle: 'Review a policy guide',
+    sourceTitle: 'Review a new policy guide',
     sourceIntro: 'Upload the regulatory guide or paste the section you want to review.',
     policyIntro: 'Policies are optional. Add them to check coverage, or continue to the guide’s obligations.',
     submit: 'Review obligations',

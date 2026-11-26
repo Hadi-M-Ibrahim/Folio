@@ -1,9 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
-import { Modal } from './components/Modal';
 import { ReviewWorkspace } from './components/ReviewWorkspace';
 import { Setup } from './components/Setup';
-import { isLoopback } from './review/client';
 import { modeLabels, type Decision, type Mode, type Review } from './review/model';
 
 function onHashChange(notify: () => void) {
@@ -19,12 +17,12 @@ const workflows = [
   {
     mode: 'questionnaire',
     title: 'Answer a questionnaire',
-    description: 'Find policy evidence for each state question and prepare a cited response.',
+    description: 'Find existing policy evidence for each state inquiry and prepare a cited response.',
     Icon: ClipboardList,
   },
   {
     mode: 'guide',
-    title: 'Review a policy guide',
+    title: 'Review a new policy guide',
     description: 'Identify the obligations and decide which policies to write or update.',
     Icon: BookOpen,
   },
@@ -65,7 +63,6 @@ export default function App() {
   const path = useSyncExternalStore(onHashChange, currentPath);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [decisions, setDecisions] = useState(() => new Map<string, Decision>());
-  const [privacyOpen, setPrivacyOpen] = useState(false);
   const setupMode: Mode | undefined = workflows.find(({ mode }) =>
     path === '/new/' + mode || path === '/new/' + mode + '/policies',
   )?.mode;
@@ -105,7 +102,6 @@ export default function App() {
             <img className="brand-icon" src="/folio.svg" width="32" height="32" alt="" />
             Folio
           </a>
-          <button className="privacy-link" onClick={() => setPrivacyOpen(true)}>Document privacy</button>
         </div>
       </header>
       <main id="main" tabIndex={-1}>
@@ -115,17 +111,6 @@ export default function App() {
           <ReviewWorkspace key={review.key} review={review} decisions={decisions} onDecisionChange={saveDecision} />
         ) : <Home reviews={reviews} />}
       </main>
-      {privacyOpen && (
-        <Modal title="Document privacy" onClose={() => setPrivacyOpen(false)}>
-          <div className="privacy-body">
-            <p>{isLoopback
-              ? 'Running a review sends the documents to the Python service on this computer.'
-              : 'Running a review sends the selected document text to Folio.'}</p>
-            <p>Model assessment is optional. Enabling it sends the questions or guide and relevant policy passages to Anthropic.</p>
-            <p>Responses and policy actions stay in this tab. Download your work before refreshing or closing it.</p>
-          </div>
-        </Modal>
-      )}
     </>
   );
 }
