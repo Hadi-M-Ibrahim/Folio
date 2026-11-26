@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import type { SourceLocation } from '../review/guideSource';
 import { searchRanges } from '../review/searchText';
 import { Modal } from './Modal';
+import { PdfViewer } from './PdfViewer';
 
 function highlightPage(text: string, page: number, location: SourceLocation) {
   const { quote, marks, term } = location;
@@ -33,6 +34,33 @@ function highlightPage(text: string, page: number, location: SourceLocation) {
 }
 
 export function SourceDialog({ location, onClose }: { location: SourceLocation; onClose: () => void }) {
+  const { doc } = location;
+  return (
+    <Modal title={doc.title} subtitle="Source document" onClose={onClose} wide>
+      {doc.pdfFile ? <PdfSource location={location} file={doc.pdfFile} /> : <TextSource location={location} />}
+    </Modal>
+  );
+}
+
+function PdfSource({ location, file }: { location: SourceLocation; file: File }) {
+  const [page, setPage] = useState(location.page);
+  const marks = location.marks?.filter(mark => mark.page === page);
+  const text = location.doc.pages.find(item => item.number === page)?.text ?? '';
+  const excerpt = marks?.length ? marks.map(mark => text.slice(mark.start, mark.end)).join(' … ')
+    : page === location.page ? location.quote : '';
+  return (
+    <>
+      {excerpt && <aside className="pdf-citation" aria-label={location.term ? 'Search term' : 'Cited passage'}>
+        <strong>{location.term ? 'Search term' : 'Cited passage'} · p. {page}</strong>
+        <blockquote>{excerpt}</blockquote>
+      </aside>}
+      <PdfViewer file={file} pages={location.doc.pages.map(item => item.number)} initialPage={location.page}
+        onPageChange={setPage} highlight={excerpt ? { page, text: excerpt, term: location.term } : undefined} />
+    </>
+  );
+}
+
+function TextSource({ location }: { location: SourceLocation }) {
   const pages = location.doc.pages;
   const [index, setIndex] = useState(() => pages.findIndex((page) => page.number === location.page));
   const page = pages[index];
@@ -45,7 +73,7 @@ export function SourceDialog({ location, onClose }: { location: SourceLocation; 
     else paper.scrollTop = 0;
   }, [location, page]);
   return (
-    <Modal title={location.doc.title} subtitle="Source document" onClose={onClose} wide>
+    <>
       <div className="source-toolbar">
         <span>
           <FileText size={15} />
@@ -73,6 +101,6 @@ export function SourceDialog({ location, onClose }: { location: SourceLocation; 
       <div className="source-paper" ref={paperRef}>
         {page ? highlightPage(page.text, page.number, location) : 'The cited page is unavailable in this review.'}
       </div>
-    </Modal>
+    </>
   );
 }

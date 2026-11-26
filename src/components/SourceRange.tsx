@@ -1,29 +1,34 @@
 import { useState } from 'react';
 import { ChevronDown, ListFilter } from 'lucide-react';
-import { MAX_GUIDE_CHARACTERS, MAX_QUESTIONS, type Policy } from '../review/model';
+import { MAX_GUIDE_CHARACTERS, MAX_PDF_ATTACHMENT_PAGES, MAX_QUESTIONS, type Policy } from '../review/model';
+import type { PdfQuestion } from './intakeQuestions';
+
+export type RangeItem = { number: number; text: string; pageNumbers?: number[] };
+type PageKind = 'guide' | 'questionnaire' | 'policy';
 
 export type RangeSource = {
   unit: 'page' | 'question';
-  items: Policy['pages'];
+  items: RangeItem[];
   original?: Policy;
   originalSelection?: string;
 };
 
-export function questionnaireRange(questions: string[], original?: Policy, preparedNumbers?: unknown): RangeSource | undefined {
+export function questionnaireRange(questions: (string | PdfQuestion)[], original?: Policy, preparedNumbers?: unknown): RangeSource | undefined {
   if (questions.length < 2) return undefined;
+  const prompts = questions.map((question) => typeof question === 'string' ? { text: question } : question);
   const numbers = Array.isArray(preparedNumbers) && preparedNumbers.length === questions.length
     ? preparedNumbers
-    : questions.map((q) => Number(q.match(/^\s*(?:Q(?:uestion)?\s*)?\(?(\d+)[.):]\s+/i)?.[1]));
+    : prompts.map(({ text }) => Number(text.match(/^\s*(?:Q(?:uestion)?\s*)?\(?(\d+)[.):]\s+/i)?.[1]));
   const numbered = numbers.every((n, i) => Number.isSafeInteger(n) && n > 0 && (i === 0 || n > numbers[i - 1]));
   return {
     unit: 'question',
-    items: questions.map((text, i) => ({ number: numbered ? numbers[i] : i + 1, text })),
+    items: prompts.map((prompt, i) => ({ ...prompt, number: numbered ? numbers[i] : i + 1 })),
     original,
     originalSelection: preparedSelection(preparedNumbers, 'question'),
   };
 }
 
-function formatRange(numbers: number[]): string {
+export function formatRange(numbers: number[]): string {
   const ranges: string[] = [];
   for (let index = 0; index < numbers.length; index++) {
     const start = numbers[index];
@@ -32,6 +37,11 @@ function formatRange(numbers: number[]): string {
     ranges.push(start === end ? String(start) : start + '–' + end);
   }
   return ranges.join(', ');
+}
+
+export function pdfScopeLabel(numbers: number[], subset: boolean) {
+  if (subset) return (numbers.length === 1 ? 'Selected PDF page ' : 'Selected PDF pages ') + formatRange(numbers) + '.';
+  return numbers.length === 1 ? 'Entire PDF included (1 page).' : 'All ' + numbers.length + ' PDF pages included.';
 }
 
 export function preparedSelection(numbers: unknown, unit: 'page' | 'question'): string | undefined {
@@ -58,11 +68,25 @@ export function preparedGuide(value: unknown, guide: string, selected: unknown):
   return undefined;
 }
 
-export function SourceRange({ source, oversized, appliedValue, onApply }: {
+function rangeError(source: RangeSource, pageKind: PageKind, selected: RangeItem[]): string {
+  if (!selected.length) return 'No ' + (source.unit === 'page' ? 'pages' : 'questions') + ' in this selection.';
+  if (source.unit === 'question') return selected.length > MAX_QUESTIONS ? 'Select up to 30 questions per review.' : '';
+  if (source.original?.pdfFile && selected.length > MAX_PDF_ATTACHMENT_PAGES) {
+    return 'Select up to ' + MAX_PDF_ATTACHMENT_PAGES + ' PDF pages per review.';
+  }
+  if (pageKind === 'guide' && selected.every((p) => p.text.trim()) &&
+    selected.map((p) => p.text).join('\n\n').length > MAX_GUIDE_CHARACTERS) {
+    return 'Select a smaller guide section of up to 50,000 characters.';
+  }
+  return '';
+}
+
+export function SourceRange({ source, oversized, appliedValue, pageKind = 'guide', onApply }: {
   source: RangeSource;
   oversized: boolean;
   appliedValue?: string;
-  onApply: (items: Policy['pages'], description: string | undefined, rangeValue: string) => void;
+  pageKind?: PageKind;
+  onApply: (items: RangeItem[], description: string | undefined, rangeValue: string) => void;
 }) {
   const [expanded, setExpanded] = useState<boolean>();
   const [value, setValue] = useState(appliedValue ?? '');
@@ -72,7 +96,9 @@ export function SourceRange({ source, oversized, appliedValue, onApply }: {
   const pages = unit === 'page';
   const first = items[0].number;
   const last = items[items.length - 1].number;
-  const group = pages ? 'Guide pages' : 'Questionnaire items';
+  const pageLabels = { guide: 'Guide pages', questionnaire: 'Questionnaire pages', policy: 'Policy pages' };
+  const group = pages ? pageLabels[pageKind] : 'Questionnaire items';
+  const controlId = 'range-' + (source.original?.id ?? 'pasted');
 
   function apply() {
     const ranges: { start: number; end: number }[] = [];
@@ -87,18 +113,12 @@ export function SourceRange({ source, oversized, appliedValue, onApply }: {
       ranges.push({ start, end });
     }
     const selected = items.filter((item) => ranges.some(({ start, end }) => start <= item.number && item.number <= end));
-    if (!selected.length) {
-      setError('No readable ' + (pages ? 'pages' : 'questions') + ' in this selection.');
-      return;
-    }
-    if (pages ? selected.map((p) => p.text).join('\n\n').length > MAX_GUIDE_CHARACTERS : selected.length > MAX_QUESTIONS) {
-      setError(pages ? 'Select a smaller section of up to 50,000 characters.' : 'Select up to 30 questions per review.');
-      return;
-    }
+    const message = rangeError(source, pageKind, selected);
+    if (message) { setError(message); return; }
     setError('');
     const formatted = formatRange(selected.map((item) => item.number));
     const description = selected.length === items.length ? source.originalSelection :
-      group + ' ' + formatted + ' (' + selected.length + ' of ' + items.length + (pages ? ' readable pages).' : ' questions).');
+      group + ' ' + formatted + ' (' + selected.length + ' of ' + items.length + (pages ? ' pages).' : ' questions).');
     setValue(formatted);
     setExpanded(true);
     onApply(selected, description, formatted);
@@ -106,23 +126,23 @@ export function SourceRange({ source, oversized, appliedValue, onApply }: {
 
   return (
     <div className="intake-range">
-      <button type="button" className="intake-text-button" aria-expanded={open} aria-controls="intake-range-controls"
+      <button type="button" className="intake-text-button" aria-expanded={open} aria-controls={controlId}
         onClick={() => setExpanded(!open)}>
         <ListFilter size={17} aria-hidden="true" />
-        {pages ? 'Choose guide pages' : 'Choose questionnaire items'}
+        {'Choose ' + group.toLowerCase()}
         <ChevronDown className="intake-chevron" size={14} aria-hidden="true" />
       </button>
-      <div id="intake-range-controls" hidden={!open}>
-        <label htmlFor="intake-range-value">{group} <span>({first}–{last})</span></label>
+      <div id={controlId} hidden={!open}>
+        <label htmlFor={controlId + '-value'}>{group} <span>({first}–{last})</span></label>
         <div className="intake-range-input">
-          <input id="intake-range-value" value={value} placeholder={first + '–' + Math.min(first + 2, last)}
-            aria-describedby={error ? 'intake-range-error' : 'intake-range-help'} aria-invalid={error ? true : undefined}
+          <input id={controlId + '-value'} value={value} placeholder={first + '–' + Math.min(first + 2, last)}
+            aria-describedby={controlId + (error ? '-error' : '-help')} aria-invalid={error ? true : undefined}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); apply(); } }}
             onChange={(event) => { setValue(event.target.value); setError(''); }} />
           <button className="intake-secondary" type="button" onClick={apply}>Apply range</button>
         </div>
-        {error ? <p className="intake-error" id="intake-range-error" role="alert">{error}</p> :
-          <p className="intake-help" id="intake-range-help">{pages ? 'Use physical page numbers. Separate ranges with commas.' : 'Select up to 30 items. Separate ranges with commas.'}</p>}
+        {error ? <p className="intake-error" id={controlId + '-error'} role="alert">{error}</p> :
+          <p className="intake-help" id={controlId + '-help'}>{pages ? 'Use physical page numbers. Separate ranges with commas.' : 'Select up to 30 items. Separate ranges with commas.'}</p>}
       </div>
     </div>
   );

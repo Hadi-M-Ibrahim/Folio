@@ -99,12 +99,17 @@ def guide_anchor(row, unit):
     return quote, start + position
 
 
-def plan_criteria(mode, source, fallback, key, deadline):
+def plan_criteria(mode, source, fallback, key, deadline, *, attachments=()):
     """Call once after model authorization. Raise ProviderUnavailable to use local extraction."""
     units = {f"s{i}": unit for i, unit in enumerate(source_units(mode, source, fallback), 1)}
     inputs = [{"sourceId": unit_id, "text": text, "required": required}
               for unit_id, (text, _, required) in units.items()]
-    response = model.invoke_tool(SYSTEM, TOOL, {"mode": mode, "sources": inputs}, key, deadline, max_tokens=6000)
+    system = SYSTEM
+    if attachments:
+        system += ("\nRead the attached source PDF for context and layout. Plan only the supplied source IDs. "
+                   "Questionnaire wording and guide citation anchors must come from those structured sources.")
+    options = {"attachments": attachments} if attachments else {}
+    response = model.invoke_tool(system, TOOL, {"mode": mode, "sources": inputs}, key, deadline, max_tokens=6000, **options)
     if not isinstance(response, dict):
         raise model.ProviderUnavailable
     rows = response.get("criteria")

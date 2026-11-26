@@ -1,9 +1,11 @@
 import { useMemo } from 'react';
-import { ChevronDown, ClipboardPaste, FilePenLine, FolderOpen } from 'lucide-react';
+import { ChevronDown, ClipboardPaste, FilePenLine, FolderOpen, X } from 'lucide-react';
 import { isLoopback } from '../review/client';
-import { MAX_GUIDE_CHARACTERS, MAX_QUESTIONS, type Policy } from '../review/model';
+import { MAX_GUIDE_CHARACTERS, MAX_PDF_ATTACHMENT_PAGES, MAX_QUESTIONS, type Policy } from '../review/model';
 import { IntakeFile } from './IntakeFile';
-import { questionnaireRange, SourceRange, type RangeSource } from './SourceRange';
+import { PdfViewer } from './PdfViewer';
+import { pdfScopeLabel, questionnaireRange, SourceRange, type RangeItem, type RangeSource } from './SourceRange';
+import { questionsFromPdfPages } from './intakeQuestions';
 
 export type IntakeSource = {
   text: string;
@@ -13,8 +15,45 @@ export type IntakeSource = {
   selection?: string;
   rangeValue?: string;
   questions?: string[];
+  readSourcePdf?: boolean;
   showText?: boolean;
 };
+
+export function sourceFromDocument(doc: Policy, isGuide: boolean): IntakeSource {
+  const hasUnindexedPages = doc.pages.some((page) => !page.text.trim());
+  const indexed = doc.pdfFile && !isGuide && !hasUnindexedPages ? questionsFromPdfPages(doc.pages) : [];
+  const questions = indexed.length ? indexed.map((item) => item.text) : undefined;
+  const pageRange = (isGuide || (doc.pdfFile && indexed.length < 2)) && doc.pages.length > 1;
+  return {
+    text: questions?.join('\n') ?? doc.pages.map((page) => page.text).join('\n\n'),
+    name: doc.title,
+    document: doc,
+    range: pageRange ? { unit: 'page', items: doc.pages, original: doc } : questionnaireRange(indexed, doc),
+    questions,
+    readSourcePdf: Boolean(doc.pdfFile && (hasUnindexedPages || (!isGuide && !questions))),
+  };
+}
+
+function applyRange(source: IntakeSource, range: RangeSource, items: RangeItem[], isGuide: boolean,
+  selection: string | undefined, rangeValue: string): IntakeSource {
+  const original = range.original;
+  const subset = items.length < range.items.length;
+  if (original?.pdfFile && !subset) return { ...sourceFromDocument(original, isGuide), rangeValue };
+  let document = original;
+  if (original && range.unit === 'page') {
+    document = { ...original, pages: items };
+  } else if (original?.pdfFile && subset) {
+    const numbers = new Set(items.flatMap((item) => item.pageNumbers ?? []));
+    document = { ...original, pages: original.pages.filter((page) => numbers.has(page.number)) };
+  }
+  const lines = items.map((item) => item.text);
+  const readSourcePdf = Boolean(document?.pdfFile && range.unit === 'page' && (!isGuide || items.some((page) => !page.text.trim())));
+  return {
+    ...source, document, selection, range, rangeValue, readSourcePdf,
+    text: lines.join(range.unit === 'page' ? '\n\n' : '\n'),
+    questions: range.unit === 'question' ? lines : undefined,
+  };
+}
 
 type SourceFieldsProps = {
   isGuide: boolean;
@@ -60,49 +99,63 @@ function SourceText({ isGuide, source, questions, onChange }: Omit<SourceFieldsP
   );
 }
 
+function SourcePdf({ doc, file, source }: { doc: Policy; file: File; source: IntakeSource }) {
+  const pageNumbers = useMemo(() => doc.pages.map((page) => page.number), [doc.pages]);
+  return <>
+    <p className="intake-help">
+      {pdfScopeLabel(pageNumbers, Boolean(source.selection))}
+      {source.selection && source.range?.unit === 'question' && ' Other questions printed on ' +
+        (pageNumbers.length === 1 ? 'this page are' : 'these pages are') + ' visible to Anthropic.'}
+    </p>
+    <PdfViewer file={file} pages={pageNumbers} />
+  </>;
+}
+
+function uploadDetail(source: IntakeSource) {
+  if (!source.name) return 'Drop a PDF, TXT or Markdown file here.';
+  const original = source.range?.original ?? source.document;
+  return original ? original.pages.length + (original.pages.length === 1 ? ' page' : ' pages') : 'Edited text';
+}
+
 export function SourceFields({ isGuide, source, questions, onChange, onFiles }: SourceFieldsProps) {
-  const availableRange = useMemo(() => source.range ?? (isGuide ? undefined : questionnaireRange(questions, source.document)),
+  const availableRange = useMemo(() => source.range ?? (isGuide || source.document?.pdfFile ? undefined : questionnaireRange(questions, source.document)),
     [isGuide, questions, source.range, source.document]);
-  const oversized = isGuide ? source.text.trim().length > MAX_GUIDE_CHARACTERS : questions.length > MAX_QUESTIONS;
-  const originalPages = source.range?.original?.pages ?? source.document?.pages;
-  const fileDetail = originalPages ? originalPages.length + (originalPages.length === 1 ? ' readable page' : ' readable pages') : 'Edited text';
+  const doc = source.document;
+  const tooManyPages = doc?.pdfFile && doc.pages.length > MAX_PDF_ATTACHMENT_PAGES;
+  const tooMuchText = !source.readSourcePdf && (isGuide ? source.text.trim().length > MAX_GUIDE_CHARACTERS : questions.length > MAX_QUESTIONS);
+  const oversized = Boolean(tooManyPages || tooMuchText);
 
   return (
     <>
       <IntakeFile
         label={isGuide ? 'Upload regulatory guide' : 'Upload questionnaire'}
         fileName={source.name}
-        detail={source.name ? fileDetail : undefined}
+        detail={uploadDetail(source)}
         onFiles={(files) => onFiles(files, 'source')}
       />
       <div className="intake-source-options">
-        <SourceText isGuide={isGuide} source={source} questions={questions} onChange={onChange} />
+        {!doc?.pdfFile && <SourceText isGuide={isGuide} source={source} questions={questions} onChange={onChange} />}
         {availableRange && (
           <SourceRange
             key={availableRange.original?.id ?? 'pasted'}
             source={availableRange}
             oversized={oversized}
+            pageKind={isGuide ? 'guide' : 'questionnaire'}
             appliedValue={source.rangeValue}
-            onApply={(items, description, rangeValue) => {
-              const lines = items.map((item) => item.text);
-              const original = availableRange.original;
-              onChange({
-                ...source,
-                text: lines.join(isGuide ? '\n\n' : '\n'),
-                questions: isGuide ? undefined : lines,
-                document: isGuide && original ? { ...original, pages: items } : original,
-                range: availableRange,
-                rangeValue,
-                selection: description,
-              });
-            }}
+            onApply={(items, description, rangeValue) => onChange(applyRange(source, availableRange, items, isGuide, description, rangeValue))}
           />
         )}
+        {source.name && <button type="button" className="intake-text-button" onClick={() => {
+          onChange({ text: '', name: '', showText: true });
+          requestAnimationFrame(() => document.getElementById('intake-source')?.focus());
+        }}><X size={16} aria-hidden="true" /> Remove file</button>}
       </div>
-      {oversized && (
+      {doc?.pdfFile && <SourcePdf doc={doc} file={doc.pdfFile} source={source} />}
+      {tooManyPages && <output className="intake-notice">Choose a smaller range. A review can include up to {MAX_PDF_ATTACHMENT_PAGES} PDF pages across all files.</output>}
+      {tooMuchText && (
         <output className="intake-notice">
-          {isGuide ? 'This guide exceeds 50,000 characters. ' + (availableRange ? 'Choose a page range or edit the text to continue.' : 'Edit the text to review a shorter section.')
-            : 'This questionnaire exceeds 30 questions. Choose a range or edit the questions to continue.'}
+          {isGuide ? 'This guide exceeds 50,000 characters. Select a shorter section.'
+            : 'This questionnaire exceeds 30 questions. Choose a smaller item range.'}
         </output>
       )}
       {isLoopback && (

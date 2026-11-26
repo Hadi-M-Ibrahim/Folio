@@ -15,6 +15,14 @@ export type Policy = {
   id: string;
   title: string;
   pages: { number: number; text: string }[];
+  pdfFile?: File;
+};
+export type PdfAttachment = {
+  role: 'source' | 'policy';
+  documentId: string;
+  title: string;
+  pages: number[];
+  data: string;
 };
 export const MAX_POLICY_PAGES = 1200;
 export const MAX_POLICY_CHARACTERS = 2400000;
@@ -24,6 +32,7 @@ export const MAX_GUIDE_CHARACTERS = 50_000;
 export const MAX_QUESTIONS = 30;
 export const MAX_QUESTION_CHARACTERS = 2_000;
 export const MAX_REQUEST_BYTES = 4_000_000;
+export const MAX_PDF_ATTACHMENT_PAGES = 600;
 export type Evidence = {
   documentId: string;
   title: string;
@@ -69,6 +78,8 @@ export type ReviewInput = {
   documents: Policy[];
   allowModel?: boolean;
   modelSharingConsent?: boolean;
+  pdfAttachments?: PdfAttachment[];
+  readSourcePdf?: boolean;
 };
 export type Result = {
   mode: Mode;
@@ -77,6 +88,10 @@ export type Result = {
   criterionLimitReached?: boolean;
   notice: string;
   findings: Finding[];
+  sourcePages?: Policy['pages'];
+  guide?: string;
+  questions?: string[];
+  policyPageText?: { documentId: string; pages: Policy['pages'] }[];
 };
 export type Scope = {
   sourceDocuments: number;

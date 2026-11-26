@@ -2,14 +2,14 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Check, LoaderCircle } from 'lucide-react';
 import { checkInput, isLoopback, requestReview } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
+import { makePdfAttachment } from '../review/pdf';
 import {
-  MAX_GUIDE_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_QUESTION_CHARACTERS,
+  MAX_GUIDE_CHARACTERS, MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_DOCUMENTS, MAX_QUESTION_CHARACTERS,
   MAX_QUESTIONS, MAX_REQUEST_BYTES, modeLabels, readScope, type Mode, type Policy, type Review, type ReviewInput, type Scope,
 } from '../review/model';
 import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
-import { SourceFields, type IntakeSource } from './SourceFields';
+import { SourceFields, sourceFromDocument, type IntakeSource } from './SourceFields';
 import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
-import { questionsFromPdf } from './intakeQuestions';
 import './intake.css';
 
 type SetupProps = {
@@ -46,6 +46,9 @@ async function readPreparedReview(file: File) {
     sourceDocument?: unknown;
     selection?: { guidePages?: unknown; questionNumbers?: unknown };
   } = JSON.parse(await file.text());
+  if (input.readSourcePdf || input.pdfAttachments || (Array.isArray(input.documents) && input.documents.some((doc) => doc?.pdfFile))) {
+    throw Error('Upload original PDFs directly. Prepared reviews must contain text.');
+  }
   checkInput(input);
 
   let source: IntakeSource;
@@ -74,9 +77,12 @@ async function readPreparedReview(file: File) {
   return { mode: input.mode, documents: input.documents, scope: readScope(input.corpusScope), source };
 }
 
-function sourceError(mode: Mode, text: string, questions: string[]): string {
+function sourceError(mode: Mode, source: IntakeSource, questions: string[]): string {
+  if (source.document?.pdfFile && source.document.pages.length > MAX_PDF_ATTACHMENT_PAGES)
+    return 'Choose a range of up to ' + MAX_PDF_ATTACHMENT_PAGES + ' PDF pages.';
+  if (source.readSourcePdf && source.document?.pdfFile) return '';
   if (mode === 'guide') {
-    const guide = text.trim();
+    const guide = source.text.trim();
     if (!guide) return 'Upload or paste your regulatory guide.';
     if (guide.length > MAX_GUIDE_CHARACTERS) return 'Choose a guide section of up to 50,000 characters.';
   } else {
@@ -88,10 +94,60 @@ function sourceError(mode: Mode, text: string, questions: string[]): string {
   return '';
 }
 
+type PolicyRanges = Record<string, Policy['pages']>;
+function selectedPolicies(originals: Policy[], ranges: PolicyRanges): Policy[] {
+  return originals.map((doc) => Object.hasOwn(ranges, doc.id) ? { ...doc, pages: ranges[doc.id] } : doc);
+}
+
+function sharingDisclosure(mode: Mode, source: IntakeSource, documents: Policy[]) {
+  const subject = mode === 'guide' ? 'guide' : 'questions';
+  if (source.document?.pdfFile || documents.some((doc) => doc.pdfFile)) {
+    const focus = source.document?.pdfFile && source.range?.unit === 'question' && source.selection
+      ? ' Folio reviews only the selected questions.' : '';
+    return 'Submitting sends the original PDFs or selected PDF pages to Anthropic, along with available text from your ' +
+      subject + ' and relevant policy passages.' + focus;
+  }
+  return 'Submitting sends your ' + subject + ' and relevant policy text to Anthropic.';
+}
+
+async function attachmentsForReview(source: IntakeSource, policies: Policy[], originals: Policy[], signal: AbortSignal) {
+  const files: { original: Policy; role: 'source' | 'policy'; pages: number[] }[] = [];
+  if (source.document?.pdfFile) {
+    files.push({ original: source.range?.original ?? source.document, role: 'source', pages: source.document.pages.map((p) => p.number) });
+  }
+  policies.forEach((doc, index) => {
+    if (doc.pdfFile) files.push({ original: originals[index], role: 'policy', pages: doc.pages.map((p) => p.number) });
+  });
+  if (files.reduce((count, file) => count + file.pages.length, 0) > MAX_PDF_ATTACHMENT_PAGES) {
+    throw Error('A review can include up to ' + MAX_PDF_ATTACHMENT_PAGES + ' PDF pages in total. Select fewer source or policy pages.');
+  }
+  const attachments = [];
+  let encodedBytes = 0;
+  for (const { original, role, pages } of files) {
+    signal.throwIfAborted();
+    const itemSubset = role === 'source' && source.range?.unit === 'question' && Boolean(source.selection);
+    const attachment = await makePdfAttachment(original, role, pages, signal, { renderSelectedPages: itemSubset });
+    encodedBytes += attachment.data.length;
+    if (encodedBytes > MAX_REQUEST_BYTES) {
+      throw Error('The selected PDFs exceed the 4 MB request limit. Select fewer source or policy pages.');
+    }
+    attachments.push(attachment);
+  }
+  return attachments;
+}
+
+function withReturnedPages(doc: Policy, returned?: Policy['pages']): Policy {
+  if (!returned?.length) return doc;
+  const textByPage = new Map(returned.map((page) => [page.number, page.text]));
+  return { ...doc, pages: doc.pages.map((page) => ({ ...page, text: textByPage.get(page.number) ?? page.text })) };
+}
+
 export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) {
   const [mode, setMode] = useState(initialMode);
   const [source, setSource] = useState<IntakeSource>({ text: '', name: '' });
-  const [documents, setDocuments] = useState<Policy[]>([]);
+  const [originalDocuments, setOriginalDocuments] = useState<Policy[]>([]);
+  const [policyRanges, setPolicyRanges] = useState<PolicyRanges>({});
+  const documents = useMemo(() => selectedPolicies(originalDocuments, policyRanges), [originalDocuments, policyRanges]);
   const [scope, setScope] = useState<Scope>();
   const [draft, setDraft] = useState(emptyPolicyDraft);
   const [lastError, setLastError] = useState({ step: 1, message: '' });
@@ -101,9 +157,9 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const request = useRef<AbortController | null>(null);
   const isGuide = mode === 'guide';
   const copy = intakeCopy[mode];
-  const questions = useMemo(() => source.questions ?? (isGuide ? [] : source.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [source.questions, source.text, isGuide]);
+  const questions = useMemo(() => source.questions ?? (isGuide || source.readSourcePdf ? [] : source.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [source.questions, source.readSourcePdf, source.text, isGuide]);
   const sourcePath = '#/new/' + initialMode;
-  const validationError = sourceError(mode, source.text, questions);
+  const validationError = sourceError(mode, source, questions);
   const step = policyStep && !validationError ? 2 : 1;
   const error = lastError.step === step ? lastError.message : '';
 
@@ -128,13 +184,21 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     return {
       mode,
       documents: policies,
-      ...(isGuide ? { guide: source.text.trim() } : { questions }),
+      ...(source.readSourcePdf ? { readSourcePdf: true } : isGuide ? { guide: source.text.trim() } : { questions }),
     };
   }
 
-  function acceptAddedPolicies(next: Policy[]) {
-    checkInput(inputWith(next));
-    setDocuments(next);
+  function acceptAddedPolicies(added: Policy[]) {
+    const next = [...originalDocuments, ...added];
+    if (next.length > MAX_POLICY_DOCUMENTS) throw Error('Choose up to 18 policy documents.');
+    const selected = selectedPolicies(next, policyRanges);
+    try {
+      checkInput(inputWith(selected));
+    } catch (cause) {
+      if (!added.some((doc) => doc.pdfFile)) throw cause;
+      setError(documentErrorMessage(cause) + ' Open a PDF policy preview to choose the pages to review.');
+    }
+    setOriginalDocuments(next);
     setScope(undefined);
   }
 
@@ -146,25 +210,22 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         const prepared = await readPreparedReview(files[0]);
         setMode(prepared.mode);
         setSource(prepared.source);
-        setDocuments(prepared.documents);
+        setOriginalDocuments(prepared.documents);
+        setPolicyRanges({});
         setScope(prepared.scope);
         setDraft(emptyPolicyDraft);
       } else if (kind === 'source') {
         if (files.length > 1) throw Error('Choose one source file for this review.');
-        const file = files[0];
-        const doc = await readDocument(file);
-        const text = doc.pages.map((page) => page.text).join('\n\n');
-        setSource({
-          text: !isGuide && /\.pdf$/i.test(file.name) ? questionsFromPdf(text) : text,
-          name: file.name,
-          document: doc,
-          range: isGuide && doc.pages.length > 1 ? { unit: 'page', items: doc.pages, original: doc } : undefined,
-        });
+        setSource(sourceFromDocument(await readDocument(files[0]), isGuide));
       } else {
         if (files.length + documents.length > MAX_POLICY_DOCUMENTS) throw Error('Choose up to 18 policy documents.');
-        const next = [...documents];
-        for (const file of files) next.push(await readDocument(file, next));
-        acceptAddedPolicies(next);
+        const added: Policy[] = [];
+        for (const file of files) {
+          // A PDF's full local index may exceed review limits. Its page scope can be narrowed after opening it.
+          const existing = /\.pdf$/i.test(file.name) ? undefined : [...documents, ...added].filter((doc) => !doc.pdfFile);
+          added.push(await readDocument(file, existing));
+        }
+        acceptAddedPolicies(added);
       }
     } catch (cause) {
       setError(documentErrorMessage(cause));
@@ -175,13 +236,29 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
 
   function removePolicy(id: string) {
     const next = documents.filter((doc) => doc.id !== id);
-    setDocuments(next);
+    setOriginalDocuments(originalDocuments.filter((doc) => doc.id !== id));
+    setPolicyRanges((current) => {
+      const nextRanges = { ...current };
+      delete nextRanges[id];
+      return nextRanges;
+    });
     if (scope) {
       setScope({
         ...scope,
         selectedDocuments: next.length,
         selectedPages: next.reduce((count, doc) => count + doc.pages.length, 0),
       });
+    }
+  }
+
+  function selectPolicyPages(id: string, pages: Policy['pages']) {
+    const ranges = { ...policyRanges, [id]: pages };
+    setPolicyRanges(ranges);
+    try {
+      checkInput(inputWith(selectedPolicies(originalDocuments, ranges)));
+      setError('');
+    } catch (cause) {
+      setError(documentErrorMessage(cause));
     }
   }
 
@@ -201,17 +278,25 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
       const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
       if (!policies.length && !isGuide) throw Error('Upload a policy file or paste a policy to continue.');
       const input = { ...inputWith(policies), allowModel: true, modelSharingConsent: true };
+      checkInput(input);
       const controller = new AbortController();
       request.current = controller;
       setBusy(copy.submitting);
-      const result = await requestReview(input, controller.signal);
+      const attachments = await attachmentsForReview(source, policies, originalDocuments, controller.signal);
+      controller.signal.throwIfAborted();
+      const result = await requestReview(attachments.length ? { ...input, pdfAttachments: attachments } : input, controller.signal);
       if (!controller.signal.aborted) {
         onDone({
           key: crypto.randomUUID(),
           title: source.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || modeLabels[mode] + ' review',
-          input,
+          input: {
+            ...input,
+            ...(result.guide !== undefined && { guide: result.guide }),
+            ...(result.questions && { questions: result.questions }),
+            documents: policies.map((doc) => withReturnedPages(doc, result.policyPageText?.find((record) => record.documentId === doc.id)?.pages)),
+          },
           result,
-          sourceDocument: source.document,
+          sourceDocument: source.document && withReturnedPages(source.document, result.sourcePages),
           sourceSelection: source.selection,
           scope: includeDraft ? undefined : scope,
         });
@@ -275,10 +360,12 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
               ) : (
                 <PolicyFields
                   documents={documents}
+                  originalDocuments={originalDocuments}
                   draft={draft}
                   onDraft={setDraft}
                   onFiles={(files) => void importFiles(files, 'policies')}
-                  onAdd={(policy) => acceptAddedPolicies([...documents, policy])}
+                  onAdd={(policy) => acceptAddedPolicies([policy])}
+                  onRange={selectPolicyPages}
                   onRemove={removePolicy}
                   onError={setError}
                 />
@@ -291,7 +378,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
             <div className="intake-actions">
               {step === 2 && <p className="intake-disclosure" id="intake-sharing">
-                Submitting sends your {isGuide ? 'guide' : 'questions'} and relevant policy text to Anthropic.
+                {sharingDisclosure(mode, source, documents)}
               </p>}
               <button type="submit" className="intake-primary" disabled={Boolean(busy)} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
                 <span>{busy || (step === 1 ? 'Continue to policies' : copy.submit)}</span>

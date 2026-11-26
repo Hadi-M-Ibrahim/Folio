@@ -1,5 +1,115 @@
 import { expect, test } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+
+// A colored registration square identifies each physical sheet even if Folio rasterizes a subset.
+const sheetColors = [[225, 38, 57], [27, 107, 199], [46, 154, 68], [151, 63, 200], [224, 138, 22]];
+
+async function printPdf(context, lines, { scanned = false } = {}) {
+  const printer = await context.newPage();
+  try {
+    await printer.setContent(`<style>
+      @page { size: 6in 4in; margin: 0; }
+      body { margin: 0; font: 16px Arial, sans-serif; }
+      section { padding: 32px; }
+      section + section { break-before: page; }
+      i { display: block; height: 48px; width: 48px; }
+      p { margin: 12px 0 0; white-space: pre-line; }
+    </style>`);
+    await printer.evaluate(async ({ lines, sheetColors, scanned }) => {
+      for (const [index, text] of lines.entries()) {
+        const sheet = document.createElement('section');
+        const square = document.createElement('i');
+        square.style.backgroundColor = 'rgb(' + sheetColors[index].join(',') + ')';
+        const paragraph = document.createElement('p');
+        if (scanned === true || (Array.isArray(scanned) && scanned.includes(index + 1))) {
+          const canvas = document.createElement('canvas');
+          canvas.width = 480;
+          canvas.height = 40;
+          const ctx = canvas.getContext('2d');
+          ctx.font = '16px Arial';
+          ctx.fillText(text, 0, 20);
+          const image = document.createElement('img');
+          image.src = canvas.toDataURL();
+          await image.decode();
+          paragraph.append(image);
+        } else {
+          paragraph.textContent = text;
+        }
+        sheet.append(square, paragraph);
+        document.body.append(sheet);
+      }
+    }, { lines, sheetColors, scanned });
+    return await printer.pdf({ preferCSSPageSize: true, printBackground: true });
+  } finally {
+    await printer.close();
+  }
+}
+
+function uploadPdf(page, label, name, buffer) {
+  return page.getByLabel(label, { exact: true }).setInputFiles({ name, mimeType: 'application/pdf', buffer });
+}
+
+async function chooseRange(page, action, label, value) {
+  const toggle = page.getByRole('button', { name: action, exact: true });
+  if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+  await page.getByRole('textbox', { name: label }).fill(value);
+  await page.getByRole('button', { name: 'Apply range', exact: true }).click();
+}
+
+async function expectPdfCanvas(viewer, title, number) {
+  const canvas = viewer.getByRole('img', { name: `Page ${number} of ${title}`, exact: true });
+  await expect(canvas).toBeVisible();
+  // Sample the registration square inside the rendered page, away from its edge.
+  const expected = sheetColors[number - 1];
+  await expect.poll(() => canvas.evaluate((sheet, rgb) => {
+    if (!sheet.width || !sheet.height) return false;
+    const ctx = sheet.getContext('2d');
+    const pixel = ctx.getImageData(sheet.width / 12, sheet.height / 8, 1, 1).data;
+    return rgb.every((channel, i) => Math.abs(channel - pixel[i]) < 12);
+  }, expected)).toBe(true);
+  return canvas;
+}
+
+async function expectAttachedSheets(attachment, numbers) {
+  expect(attachment.pages).toEqual(numbers);
+  const bytes = Buffer.from(attachment.data, 'base64');
+  const task = getDocument({ data: Uint8Array.from(bytes) });
+  try {
+    const pdf = await task.promise;
+    expect(pdf.numPages).toBe(numbers.length);
+    for (const [index, originalPage] of numbers.entries()) {
+      const sheet = await pdf.getPage(index + 1);
+      const viewport = sheet.getViewport({ scale: 1 });
+      expect([viewport.width, viewport.height]).toEqual([432, 288]);
+      const target = pdf.canvasFactory.create(viewport.width, viewport.height);
+      try {
+        await sheet.render({ canvas: target.canvas, viewport }).promise;
+        const { data } = target.context.getImageData(36, 36, 1, 1);
+        for (const [channel, value] of sheetColors[originalPage - 1].entries()) {
+          expect(Math.abs(data[channel] - value)).toBeLessThan(12);
+        }
+        // The body under the square still contains the printed words.
+        const body = target.context.getImageData(18, 62, 395, 110).data;
+        expect(body.some((value, offset) => offset % 4 === 0 && value < 80)).toBe(true);
+      } finally {
+        pdf.canvasFactory.destroy(target);
+      }
+    }
+  } finally {
+    await task.destroy();
+  }
+  return {
+    role: attachment.role, documentId: attachment.documentId, title: attachment.title, pages: numbers,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+}
+
+async function providerCalls(response) {
+  expect(response.status()).toBe(200);
+  return JSON.parse(await response.headerValue('x-test-provider-calls'));
+}
 
 async function report(page, name) {
   const download = page.waitForEvent('download');
@@ -22,10 +132,11 @@ async function addPolicy(page, name, text) {
 
 async function submitReview(page, mode) {
   const guide = mode === 'guide';
-  await expect(page.getByText(guide ? /your guide.*Anthropic/i : /your questions.*Anthropic/i)).toBeVisible();
+  const submit = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
+  await expect(submit).toHaveAccessibleDescription(/Anthropic/i);
   await expect(page.getByRole('checkbox')).toHaveCount(0);
   const response = page.waitForResponse('**/api/review');
-  await page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' }).click();
+  await submit.click();
   const received = await response;
   expect(received.request().postDataJSON()).toMatchObject({ mode, allowModel: true, modelSharingConsent: true });
   return received;
@@ -167,6 +278,10 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(preview).toHaveValue(policy);
   await expect(preview).not.toBeEditable();
   const response = await submitReview(page, 'questionnaire');
+  expect(response.request().postDataJSON().pdfAttachments ?? []).toEqual([]);
+  expect(await providerCalls(response)).toEqual([
+    { tool: 'record_search_plan', documents: [] }, { tool: 'record_review', documents: [] },
+  ]);
   expect((await response.json()).findings[0]).toMatchObject({
     analysisEngine: 'anthropic', supporting: [{ title: 'Facilities.txt', page: 1, quote: policy }],
   });
@@ -340,13 +455,10 @@ test('intake checks page limits and can read a PDF after rejecting a file', asyn
   });
   await expect(page.getByRole('alert')).toContainText('1,200 pages');
 
-  const pdfPage = await context.newPage();
-  await pdfPage.setContent('<p>Teams must record inspection dates.</p>');
-  const pdf = await pdfPage.pdf();
-  await pdfPage.close();
-  await upload.setInputFiles({ name: 'Guide.pdf', mimeType: 'application/pdf', buffer: pdf });
-  await page.getByRole('button', { name: 'Preview and edit text' }).click();
-  await expect(page.getByLabel('Guide text')).toHaveValue('Teams must record inspection dates.');
+  const pdf = await printPdf(context, ['Teams must record inspection dates.']);
+  await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', pdf);
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Guide.pdf', 1);
+  await expect(page.getByRole('textbox', { name: 'Guide text' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
 
   const policies = page.getByLabel('Upload policy files');
@@ -359,3 +471,134 @@ test('intake checks page limits and can read a PDF after rejecting a file', asyn
   await expect(page.getByRole('alert')).toContainText('1,200 pages');
   await expect(added.getByRole('listitem')).toHaveCount(1);
 });
+
+test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
+  const first = '20. Who keeps the inspection log before the site closes?';
+  const last = '30. Who receives the final inspection log?';
+  const quote = 'The facilities coordinator keeps the inspection log before the site closes.';
+  const questions = await printPdf(context, [
+    '10. Who schedules training?', '20. Who keeps the inspection',
+    'log before the site closes?\n21. Who approves invoices?', '22. Who handles travel?', last,
+  ]);
+  const policy = await printPdf(context, ['Out-of-scope travel rules.', quote, 'Out-of-scope invoice rules.']);
+  const submissions = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/review') submissions.push(request);
+  });
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload questionnaire', 'Intake.pdf', questions);
+  const viewer = page.getByRole('region', { name: 'PDF preview' });
+  const firstCanvas = await expectPdfCanvas(viewer, 'Intake.pdf', 1);
+  const width = (await firstCanvas.boundingBox()).width;
+  await viewer.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect.poll(async () => (await firstCanvas.boundingBox()).width).toBeGreaterThan(width);
+  await viewer.getByRole('button', { name: 'Fit to width', exact: true }).click();
+  await viewer.getByRole('button', { name: 'Next PDF page' }).click();
+  await expectPdfCanvas(viewer, 'Intake.pdf', 2);
+  await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '20, 30');
+  await expect(viewer.getByRole('combobox', { name: 'PDF page' }).getByRole('option')).toHaveCount(3);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await uploadPdf(page, 'Upload policy files', 'Facility.pdf', policy);
+  await page.getByRole('button', { name: 'Preview Facility.pdf' }).click();
+  await expectPdfCanvas(viewer, 'Facility.pdf', 1);
+  await chooseRange(page, 'Choose policy pages', /Policy pages/, '2');
+  await expectPdfCanvas(viewer, 'Facility.pdf', 2);
+  expect(submissions).toHaveLength(0);
+  const response = await submitReview(page, 'questionnaire');
+  const sent = response.request().postDataJSON();
+  expect(sent.questions).toEqual([first, last]);
+  expect(sent.documents).toMatchObject([{ title: 'Facility.pdf', pages: [{ number: 2, text: quote }] }]);
+  expect(sent.pdfAttachments).toHaveLength(2);
+  const sourceBlock = await expectAttachedSheets(sent.pdfAttachments.find(pdf => pdf.role === 'source'), [2, 3, 5]);
+  const policyBlock = await expectAttachedSheets(sent.pdfAttachments.find(pdf => pdf.role === 'policy'), [2]);
+  expect(sourceBlock.title).toBe('Intake.pdf');
+  expect(policyBlock).toMatchObject({ title: 'Facility.pdf', documentId: sent.documents[0].id });
+  expect(await providerCalls(response)).toEqual([
+    { tool: 'record_search_plan', documents: [sourceBlock] },
+    { tool: 'record_review', documents: [sourceBlock, policyBlock] },
+  ]);
+  const result = await response.json();
+  expect(result.findings.map(finding => finding.question)).toEqual([first, last]);
+  expect(result.findings[0].supporting).toMatchObject([{ title: 'Facility.pdf', page: 2, quote }]);
+  await page.getByRole('button', { name: /Facility\.pdf.*p\. 2/ }).first().click();
+  const citedPolicy = page.getByRole('dialog');
+  await expectPdfCanvas(citedPolicy, 'Facility.pdf', 2);
+  await expect(citedPolicy.locator('.pdf-text-layer mark').first()).toBeVisible();
+});
+
+test('non-contiguous guide pages reach the planner and open at the original citation', async ({ page, context }) => {
+  const obligations = ['Staff must record inspection dates.', 'Supervisors must sign inspection reports.'];
+  const guide = await printPdf(context, [obligations[0], 'Unselected payroll instructions.', obligations[1]]);
+  await page.goto('/#/new/guide');
+  await uploadPdf(page, 'Upload regulatory guide', 'Audit.pdf', guide);
+  await chooseRange(page, 'Choose guide pages', /Guide pages/, '1, 3');
+  const viewer = page.getByRole('region', { name: 'PDF preview' });
+  await viewer.getByRole('button', { name: 'Next PDF page' }).click();
+  await expectPdfCanvas(viewer, 'Audit.pdf', 3);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  const response = await submitReview(page, 'guide');
+  const sent = response.request().postDataJSON();
+  expect(sent.guide).toBe(obligations.join('\n\n'));
+  expect(sent.documents).toEqual([]);
+  expect(sent.pdfAttachments).toHaveLength(1);
+  const source = await expectAttachedSheets(sent.pdfAttachments[0], [1, 3]);
+  expect(source).toMatchObject({ role: 'source', title: 'Audit.pdf' });
+  expect(await providerCalls(response)).toEqual([{ tool: 'record_search_plan', documents: [source] }]);
+  await page.getByRole('button', { name: 'Next obligation' }).click();
+  await page.getByRole('button', { name: /Audit\.pdf.*p\. 3/ }).click();
+  const citedGuide = page.getByRole('dialog');
+  await expectPdfCanvas(citedGuide, 'Audit.pdf', 3);
+  await expect(citedGuide.locator('.pdf-text-layer mark').first()).toBeVisible();
+});
+
+test('selecting one of two items on a shared page sends only visible page content and reviews one question', async ({ page, context }) => {
+  const question = '2. Who keeps the inspection log?';
+  const form = await printPdf(context, ['1. Who schedules training?\n' + question]);
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload questionnaire', 'Shared page.pdf', form);
+  await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '2');
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Inspection.txt', 'The registrar keeps the inspection log.');
+  const response = await submitReview(page, 'questionnaire');
+  const sent = response.request().postDataJSON();
+  expect(sent.questions).toEqual([question]);
+  const source = sent.pdfAttachments[0];
+  expect(Buffer.from(source.data, 'base64').equals(form)).toBe(false);
+  const block = await expectAttachedSheets(source, [1]);
+  expect((await providerCalls(response))[0]).toEqual({ tool: 'record_search_plan', documents: [block] });
+});
+
+for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]) {
+  test(`a ${kind} questionnaire can select and review a scanned page alongside a scanned policy`, async ({ page, context }) => {
+    const questions = await printPdf(context, ['1. Who keeps inspection log 1?\n2. When is it signed?', 'Who keeps inspection log 2?'], { scanned });
+    const policy = await printPdf(context, ['The registrar keeps inspection log 1.'], { scanned: true });
+    await page.goto('/#/new/questionnaire');
+    await uploadPdf(page, 'Upload questionnaire', 'Scanned form.pdf', questions);
+    await chooseRange(page, 'Choose questionnaire pages', /Questionnaire pages/, '2');
+    await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Scanned form.pdf', 2);
+    await page.getByRole('button', { name: 'Continue to policies' }).click();
+    await uploadPdf(page, 'Upload policy files', 'Scanned policy.pdf', policy);
+    await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Scanned policy.pdf');
+    const response = await submitReview(page, 'questionnaire');
+    const sent = response.request().postDataJSON();
+    expect(sent.readSourcePdf).toBe(true);
+    expect(sent.questions).toBeUndefined();
+    expect(sent.pdfAttachments).toHaveLength(2);
+    const source = await expectAttachedSheets(sent.pdfAttachments.find(pdf => pdf.role === 'source'), [2]);
+    const attachedPolicy = sent.pdfAttachments.find(pdf => pdf.role === 'policy');
+    expect(Buffer.from(attachedPolicy.data, 'base64').equals(policy)).toBe(true);
+    const policyBlock = await expectAttachedSheets(attachedPolicy, [1]);
+    const calls = await providerCalls(response);
+    expect(calls.filter(call => call.tool === 'record_pdf_pages')).toEqual(expect.arrayContaining([
+      { tool: 'record_pdf_pages', documents: [source] }, { tool: 'record_pdf_pages', documents: [policyBlock] },
+    ]));
+    expect(calls.at(-1)).toEqual({ tool: 'record_review', documents: [source, policyBlock] });
+    const result = await response.json();
+    expect(result.findings[0]).toMatchObject({
+      question: 'Who keeps inspection log 2?',
+      supporting: [{ title: 'Scanned policy.pdf', page: 1, quote: 'The registrar keeps inspection log 1.' }],
+    });
+    await page.getByRole('button', { name: /Scanned policy\.pdf.*p\. 1/ }).first().click();
+    await expectPdfCanvas(page.getByRole('dialog'), 'Scanned policy.pdf', 1);
+  });
+}

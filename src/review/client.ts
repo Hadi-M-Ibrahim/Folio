@@ -1,6 +1,7 @@
 import {
   MAX_GUIDE_CHARACTERS, MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
-  MAX_POLICY_PAGES, MAX_QUESTION_CHARACTERS, MAX_QUESTIONS, MAX_REQUEST_BYTES, type Policy, type Result, type ReviewInput,
+  MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGES, MAX_QUESTION_CHARACTERS, MAX_QUESTIONS, MAX_REQUEST_BYTES,
+  type Policy, type Result, type ReviewInput,
 } from './model';
 
 export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(window.location.hostname);
@@ -9,7 +10,7 @@ function hasText(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' && value.length <= maxLength && Boolean(value.trim());
 }
 
-function checkPolicyPages(pages: Policy['pages']): number {
+function checkPolicyPages({ pages, pdfFile }: Policy): number {
   const numbers = new Set<number>();
   let characters = 0;
   for (const page of pages) {
@@ -20,7 +21,8 @@ function checkPolicyPages(pages: Policy['pages']): number {
     numbers.add(page.number);
     characters += page.text.length;
   }
-  if (!pages.some((page) => page.text.trim())) throw Error('Each policy needs at least one searchable page.');
+  if (!(pdfFile instanceof File) && !pages.some((page) => page.text.trim()))
+    throw Error('Each policy needs a PDF or at least one searchable page.');
   return characters;
 }
 
@@ -34,7 +36,7 @@ function checkPolicies(documents: Policy[]) {
       throw Error('Each policy needs a unique ID, a title, and at least one page.');
     }
     ids.add(doc.id);
-    characters += checkPolicyPages(doc.pages);
+    characters += checkPolicyPages(doc);
     pages += doc.pages.length;
   }
   if (pages > MAX_POLICY_PAGES || characters > MAX_POLICY_CHARACTERS)
@@ -49,6 +51,15 @@ export function checkInput(input: ReviewInput) {
     throw Error('Add at least one policy to search for answers.');
   checkPolicies(input.documents);
 
+  if (!input.readSourcePdf) checkSourceText(input);
+  const documents = input.documents.map(({ id, title, pages }) => ({ id, title, pages }));
+  const body = JSON.stringify({ ...input, documents });
+  if (new TextEncoder().encode(body).length > MAX_REQUEST_BYTES)
+    throw Error('This review exceeds the 4 MB request limit. Select fewer pages or remove a policy file.');
+  return body;
+}
+
+function checkSourceText(input: ReviewInput) {
   if (input.mode === 'guide') {
     if (!hasText(input.guide, MAX_GUIDE_CHARACTERS)) throw Error('Enter a guide containing up to 50,000 characters.');
   } else {
@@ -58,12 +69,16 @@ export function checkInput(input: ReviewInput) {
       throw Error('Include 1–30 questions, each up to 2,000 characters.');
     }
   }
-  const body = JSON.stringify(input);
-  if (new TextEncoder().encode(body).length > MAX_REQUEST_BYTES)
-    throw Error('This review exceeds the 4 MB request limit.');
-  return body;
 }
+
 export async function requestReview(input: ReviewInput, signal: AbortSignal): Promise<Result> {
+  const attachments = input.pdfAttachments ?? [];
+  if (input.readSourcePdf && !attachments.some(file => file.role === 'source'))
+    throw Error('Attach the source PDF before submitting this review.');
+  if (input.documents.some(doc => doc.pdfFile && !attachments.some(file => file.role === 'policy' && file.documentId === doc.id)))
+    throw Error('A policy PDF could not be attached. Try submitting the review again.');
+  if (attachments.reduce((total, file) => total + file.pages.length, 0) > MAX_PDF_ATTACHMENT_PAGES)
+    throw Error(`Select up to ${MAX_PDF_ATTACHMENT_PAGES} PDF pages across this review.`);
   const response = await fetch('/api/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

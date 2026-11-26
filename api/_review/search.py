@@ -1,5 +1,6 @@
 """Deterministic criterion extraction, passage ranking, and exact word-count evidence."""
 
+import base64
 import math
 import re
 from collections import Counter, defaultdict
@@ -14,6 +15,8 @@ MAX_PAGE_CHARS = 35_000
 MAX_PASSAGE_CHARS = 680
 MAX_PAGES = 1200
 MAX_CHARS = 2_400_000
+MAX_PDF_PAGES = 600
+MAX_REQUEST_BYTES = 4_000_000
 # The browser must be able to distinguish every citation's page number exactly.
 MAX_PAGE_NUMBER = (1 << 53) - 1
 
@@ -144,24 +147,83 @@ def guide_criteria(guide):
     return chosen
 
 
-def validate(payload):
-    if not isinstance(payload, dict) or payload.get("mode") not in ("questionnaire", "guide"):
-        raise InvalidRequest("Choose questionnaire or guide mode.")
-    for consent in ("allowModel", "modelSharingConsent", "publicInputConsent"):
-        if type(payload.get(consent, False)) is not bool:
-            raise InvalidRequest(f"{consent} must be true or false.")
-    mode = payload["mode"]
+def source_criteria(mode, payload):
     if mode == "guide":
         guide = bounded_string(payload.get("guide"), "Guide", MAX_GUIDE_CHARS)
         # Offsets address the input string including any leading whitespace.
         shift = len(payload["guide"]) - len(payload["guide"].lstrip())
-        criteria = [(q, shift + pos) for q, pos in guide_criteria(guide)]
-    else:
-        questions = payload.get("questions")
-        if not isinstance(questions, list) or not 1 <= len(questions) <= MAX_CRITERIA:
-            raise InvalidRequest(f"Provide 1 to {MAX_CRITERIA} questions.")
-        criteria = [(bounded_string(q, "Each question", MAX_QUESTION_CHARS), None) for q in questions]
-    return mode, criteria, document_pages(payload.get("documents"), mode)
+        return [(q, shift + pos) for q, pos in guide_criteria(guide)]
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not 1 <= len(questions) <= MAX_CRITERIA:
+        raise InvalidRequest(f"Provide 1 to {MAX_CRITERIA} questions.")
+    return [(bounded_string(q, "Each question", MAX_QUESTION_CHARS), None) for q in questions]
+
+
+def validate_pdf(attachment):
+    if not isinstance(attachment, dict) or set(attachment) != {"role", "documentId", "title", "pages", "data"}:
+        raise InvalidRequest("Each PDF attachment needs a role, document ID, title, physical page numbers and base64 data.")
+    if attachment["role"] not in ("source", "policy"):
+        raise InvalidRequest("Choose a source or policy role for each PDF.")
+    doc_id = bounded_string(attachment["documentId"], "PDF document ID", 100)
+    if doc_id != attachment["documentId"]:
+        raise InvalidRequest("PDF document IDs must have no surrounding whitespace.")
+    bounded_string(attachment["title"], "PDF title", 240)
+    numbers = attachment["pages"]
+    if (not isinstance(numbers, list) or not 1 <= len(numbers) <= MAX_PDF_PAGES
+            or any(type(n) is not int or not 1 <= n <= MAX_PAGE_NUMBER for n in numbers)
+            or numbers != sorted(set(numbers))):
+        raise InvalidRequest("Provide the selected physical PDF page numbers in ascending order, without duplicates.")
+    data = attachment["data"]
+    if not isinstance(data, str) or not 1 <= len(data) <= MAX_REQUEST_BYTES:
+        raise InvalidRequest("Each PDF needs base64 data within the review request size limit.")
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except ValueError:
+        raise InvalidRequest("The PDF attachment contains invalid base64 data.") from None
+    if not re.match(rb"%PDF-[0-9]\.[0-9]\b", raw) or b"%%EOF" not in raw[-1024:]:
+        raise InvalidRequest("The attachment must contain a PDF file.")
+
+
+def validate_attachments(attachments, docs):
+    if not isinstance(attachments, list) or len(attachments) > MAX_DOCUMENTS + 1:
+        raise InvalidRequest("Provide at most one source PDF and one PDF per policy document.")
+    for attachment in attachments:
+        validate_pdf(attachment)
+    if sum(len(a["data"]) for a in attachments) > MAX_REQUEST_BYTES:
+        raise InvalidRequest("The attached PDFs exceed the review request size limit. Select fewer PDF pages.")
+    ids = {a["documentId"] for a in attachments}
+    if len(ids) != len(attachments) or sum(a["role"] == "source" for a in attachments) > 1:
+        raise InvalidRequest("Each attached PDF needs a unique document ID. Attach at most one source PDF.")
+    if sum(len(a["pages"]) for a in attachments) > MAX_PDF_PAGES:
+        raise InvalidRequest(f"Select at most {MAX_PDF_PAGES} PDF pages across the review.")
+    policies = {doc["id"]: doc for doc in docs}
+    for attachment in attachments:
+        doc = policies.get(attachment["documentId"])
+        if attachment["role"] == "source":
+            if doc:
+                raise InvalidRequest("The source PDF must have its own document ID.")
+        elif (not doc or attachment["title"] != doc["title"]
+              or attachment["pages"] != [p.get("number") if isinstance(p, dict) else None for p in doc["pages"]]):
+            raise InvalidRequest("Each policy PDF must match its policy document's ID, title and physical pages.")
+
+
+def validate(payload):
+    if not isinstance(payload, dict) or payload.get("mode") not in ("questionnaire", "guide"):
+        raise InvalidRequest("Choose questionnaire or guide mode.")
+    for flag in ("allowModel", "modelSharingConsent", "publicInputConsent", "readSourcePdf"):
+        if type(payload.get(flag, False)) is not bool:
+            raise InvalidRequest(f"{flag} must be true or false.")
+    mode = payload["mode"]
+    docs = list(validated_documents(payload.get("documents"), mode))
+    attachments = payload.get("pdfAttachments", [])
+    validate_attachments(attachments, payload["documents"])
+    policy_pdfs = {a["documentId"] for a in attachments if a["role"] == "policy"}
+    pages = document_pages(docs, policy_pdfs)
+    if payload.get("readSourcePdf"):
+        if not any(a["role"] == "source" for a in attachments) or "guide" in payload or "questions" in payload:
+            raise InvalidRequest("To read a source PDF directly, attach one source PDF and omit guide and questions.")
+        return mode, [], pages
+    return mode, source_criteria(mode, payload), pages
 
 
 def validated_documents(docs, mode):
@@ -183,10 +245,10 @@ def validated_documents(docs, mode):
         yield doc_id, title, doc["pages"]
 
 
-def document_pages(docs, mode):
+def document_pages(docs, policy_pdfs):
     pages = {}
     size = 0
-    for doc_id, title, source_pages in validated_documents(docs, mode):
+    for doc_id, title, source_pages in docs:
         has_text = False
         for page in source_pages:
             if (not isinstance(page, dict) or type(page.get("number")) is not int
@@ -203,7 +265,7 @@ def document_pages(docs, mode):
                 raise InvalidRequest(f"Submit at most {MAX_PAGES:,} pages and {MAX_CHARS:,} source characters per review.")
             has_text = has_text or bool(body.strip())
             pages[key] = (title, body)
-        if not has_text:
+        if not has_text and doc_id not in policy_pdfs:
             raise InvalidRequest(f"{title} contains no searchable text.")
     return pages
 
