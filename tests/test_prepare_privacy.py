@@ -1,14 +1,11 @@
 import json
 import stat
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-# These filesystem checks use synthetic files and never parse a PDF.
-with patch.dict(sys.modules, {"pymupdf": Mock()}):
-    from scripts import prepare_review
+from scripts import prepare_review
 
 
 class PreparationPrivacyTests(unittest.TestCase):

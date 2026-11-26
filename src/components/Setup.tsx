@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, Check, FileText, LoaderCircle, Plus, Upload, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, LoaderCircle } from 'lucide-react';
 import { checkInput, isLoopback, requestReview } from '../review/client';
-import { readDocument } from '../review/files';
-import { MAX_POLICY_PAGE_CHARACTERS, MAX_POLICY_PAGES, modeLabels, readScope, type Mode, type Policy, type Review, type ReviewInput, type Scope } from '../review/model';
-import { IntakeFile } from './IntakeFile';
-import { preparedGuide, preparedSelection, questionnaireRange, SourceRange, type RangeSource } from './SourceRange';
+import { documentErrorMessage, readDocument } from '../review/files';
+import {
+  MAX_GUIDE_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_QUESTION_CHARACTERS,
+  MAX_QUESTIONS, MAX_REQUEST_BYTES, modeLabels, readScope, type Mode, type Policy, type Review, type ReviewInput, type Scope,
+} from '../review/model';
+import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
+import { SourceFields, type IntakeSource } from './SourceFields';
+import { preparedGuide, preparedSelection } from './SourceRange';
 import { questionsFromPdf } from './intakeQuestions';
 import './intake.css';
 
@@ -15,39 +19,90 @@ type SetupProps = {
   onDone: (review: Review) => void;
 };
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Could not read the document. Try again.';
+const intakeCopy = {
+  guide: {
+    sourceLabel: 'Regulatory guide',
+    sourceTitle: 'Review a policy guide',
+    sourceIntro: 'Upload the regulatory guide or paste the section you want to review.',
+    policyIntro: 'Policies are optional. Add them to check coverage, or continue to the guide’s obligations.',
+    submit: 'Review obligations',
+    submitting: 'Reviewing obligations…',
+  },
+  questionnaire: {
+    sourceLabel: 'State questions',
+    sourceTitle: 'Answer a questionnaire',
+    sourceIntro: 'Upload the state questionnaire or paste the questions you need to answer.',
+    policyIntro: 'Add the policies you want to search for evidence for each question.',
+    submit: 'Find evidence',
+    submitting: 'Finding evidence…',
+  },
+};
+
+async function readPreparedReview(file: File) {
+  if (!isLoopback) throw Error('Open prepared reviews in the local app.');
+  if (file.size > MAX_REQUEST_BYTES) throw Error('Use a prepared review smaller than 4 MB.');
+  const input: ReviewInput & {
+    corpusScope?: unknown;
+    sourceDocument?: unknown;
+    selection?: { guidePages?: unknown; questionNumbers?: unknown };
+  } = JSON.parse(await file.text());
+  checkInput(input);
+
+  let source: IntakeSource;
+  if (input.mode === 'guide') {
+    const text = input.guide!;
+    const pages = input.selection?.guidePages;
+    const document = preparedGuide(input.sourceDocument, text, pages);
+    source = {
+      text,
+      name: document && input.sourceDocument ? document.title : '',
+      document,
+      selection: preparedSelection(pages, 'page'),
+    };
+  } else {
+    const questions = input.questions!;
+    source = {
+      text: questions.map((question) => question.replace(/\s+/g, ' ')).join('\n'),
+      name: '',
+      questions,
+      selection: preparedSelection(input.selection?.questionNumbers, 'question'),
+    };
+  }
+  return { mode: input.mode, documents: input.documents, scope: readScope(input.corpusScope), source };
+}
+
+function sourceError(mode: Mode, text: string, questions: string[]): string {
+  if (mode === 'guide') {
+    const guide = text.trim();
+    if (!guide) return 'Upload or paste your regulatory guide.';
+    if (guide.length > MAX_GUIDE_CHARACTERS) return 'Choose a guide section of up to 50,000 characters.';
+  } else {
+    if (!questions.length) return 'Upload or enter at least one state question.';
+    if (questions.length > MAX_QUESTIONS || questions.some((question) => question.length > MAX_QUESTION_CHARACTERS)) {
+      return 'Use up to 30 questions, with one question per line and up to 2,000 characters each.';
+    }
+  }
+  return '';
 }
 
 export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) {
   const [mode, setMode] = useState(initialMode);
-  const [source, setSource] = useState('');
-  const [sourceName, setSourceName] = useState('');
-  const [sourceDocument, setSourceDocument] = useState<Policy>();
-  const [rangeSource, setRangeSource] = useState<RangeSource>();
-  const [sourceSelection, setSourceSelection] = useState<string>();
-  const [preparedQuestions, setPreparedQuestions] = useState<string[]>();
+  const [source, setSource] = useState<IntakeSource>({ text: '', name: '' });
   const [documents, setDocuments] = useState<Policy[]>([]);
   const [scope, setScope] = useState<Scope>();
-  const [policyTitle, setPolicyTitle] = useState('');
-  const [policyText, setPolicyText] = useState('');
-  const [pasteOpen, setPasteOpen] = useState(false);
+  const [draft, setDraft] = useState(emptyPolicyDraft);
   const [allowModel, setAllowModel] = useState(false);
   const [lastError, setLastError] = useState({ step: 1, message: '' });
   const [busy, setBusy] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
-  const pasteButton = useRef<HTMLButtonElement>(null);
   const request = useRef<AbortController | null>(null);
   const isGuide = mode === 'guide';
-  const sourceLabel = isGuide ? 'Regulatory guide' : 'State questions';
-  const questions = useMemo(() => preparedQuestions ?? (isGuide ? [] : source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [preparedQuestions, isGuide, source]);
-  const availableRange = useMemo(() => rangeSource ?? questionnaireRange(questions), [rangeSource, questions]);
+  const copy = intakeCopy[mode];
+  const questions = useMemo(() => source.questions ?? (isGuide ? [] : source.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [source, isGuide]);
   const sourcePath = '#/new/' + initialMode;
-  const validSource = Boolean(source.trim()) && (isGuide
-    ? source.trim().length <= 50000
-    : questions.length <= 30 && questions.every((q) => q.length <= 2000));
-  const step = policyStep && validSource ? 2 : 1;
+  const validationError = sourceError(mode, source.text, questions);
+  const step = policyStep && !validationError ? 2 : 1;
   const error = lastError.step === step ? lastError.message : '';
 
   function setError(message: string) {
@@ -56,8 +111,8 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
 
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
-    if (policyStep && !validSource) window.location.replace(sourcePath);
-  }, [policyStep, validSource, sourcePath]);
+    if (policyStep && step === 1) window.location.replace(sourcePath);
+  }, [policyStep, step, sourcePath]);
   useEffect(() => {
     if (step === 1) request.current?.abort();
     heading.current?.focus({ preventScroll: true });
@@ -71,10 +126,16 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     return {
       mode,
       documents: policies,
-      ...(isGuide ? { guide: source.trim() } : { questions }),
+      ...(isGuide ? { guide: source.text.trim() } : { questions }),
       allowModel,
       ...(!isLoopback && allowModel ? { publicInputConsent: true } : {}),
     };
+  }
+
+  function acceptAddedPolicies(next: Policy[]) {
+    checkInput(inputWith(next));
+    setDocuments(next);
+    setScope(undefined);
   }
 
   async function importFiles(files: File[], kind: 'source' | 'policies' | 'bundle') {
@@ -82,84 +143,33 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     setBusy('Reading ' + (files.length > 1 ? 'files…' : 'file…'));
     try {
       if (kind === 'bundle') {
-        if (!isLoopback) throw Error('Open prepared reviews in the local app.');
-        const file = files[0];
-        if (file.size > 4000000) throw Error('Use a prepared review smaller than 4 MB.');
-        const input: ReviewInput & {
-          corpusScope?: Scope;
-          sourceDocument?: unknown;
-          selection?: { guidePages?: unknown; questionNumbers?: unknown };
-        } = JSON.parse(await file.text());
-        checkInput(input);
-        setMode(input.mode);
-        setPreparedQuestions(input.mode === 'questionnaire' ? input.questions : undefined);
-        setSource(input.mode === 'guide' ? input.guide! : input.questions!.map((q) => q.replace(/\s+/g, ' ')).join('\n'));
-        const doc = input.mode === 'guide' ? preparedGuide(input.sourceDocument, input.guide!, input.selection?.guidePages) : undefined;
-        setSourceName(doc && input.sourceDocument ? doc.title : '');
-        setSourceDocument(doc);
-        setRangeSource(undefined);
-        setSourceSelection(input.mode === 'guide'
-          ? preparedSelection(input.selection?.guidePages, 'page')
-          : preparedSelection(input.selection?.questionNumbers, 'question'));
-        setDocuments(input.documents);
-        setScope(readScope(input.corpusScope));
+        const prepared = await readPreparedReview(files[0]);
+        setMode(prepared.mode);
+        setSource(prepared.source);
+        setDocuments(prepared.documents);
+        setScope(prepared.scope);
         setAllowModel(false);
-        setPolicyText('');
-        setPolicyTitle('');
-        setPasteOpen(false);
+        setDraft(emptyPolicyDraft);
       } else if (kind === 'source') {
         const file = files[0];
         const doc = await readDocument(file);
         const text = doc.pages.map((page) => page.text).join('\n\n');
-        const value = !isGuide && /\.pdf$/i.test(file.name) ? questionsFromPdf(text) : text;
-        setPreparedQuestions(undefined);
-        setSource(value);
-        setSourceName(file.name);
-        setSourceDocument(doc);
-        setSourceSelection(undefined);
-        if (isGuide) setRangeSource(doc.pages.length > 1 ? { unit: 'page', items: doc.pages, original: doc } : undefined);
-        else setRangeSource(questionnaireRange(value.split(/\r?\n/).map((q) => q.trim()).filter(Boolean), doc));
+        setSource({
+          text: !isGuide && /\.pdf$/i.test(file.name) ? questionsFromPdf(text) : text,
+          name: file.name,
+          document: doc,
+          range: isGuide && doc.pages.length > 1 ? { unit: 'page', items: doc.pages, original: doc } : undefined,
+        });
       } else {
-        if (files.length + documents.length > 18) throw Error('Choose up to 18 policy documents.');
+        if (files.length + documents.length > MAX_POLICY_DOCUMENTS) throw Error('Choose up to 18 policy documents.');
         const next = [...documents];
         for (const file of files) next.push(await readDocument(file, next));
-        checkInput(inputWith(next));
-        setDocuments(next);
-        setScope(undefined);
+        acceptAddedPolicies(next);
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(documentErrorMessage(cause));
     } finally {
       setBusy('');
-    }
-  }
-
-  function pastedPolicy(): Policy {
-    if (!policyText.trim()) throw Error('Enter the policy text.');
-    const sections = policyText.split('\f', MAX_POLICY_PAGES + 1);
-    if (sections.length > MAX_POLICY_PAGES) throw Error('A review supports up to 1,200 pages.');
-    const pages = sections
-      .map((text, index) => ({ number: index + 1, text: text.trim() }))
-      .filter((page) => page.text);
-    if (pages.some((page) => page.text.length > MAX_POLICY_PAGE_CHARACTERS)) {
-      throw Error('Each policy page can contain up to 35,000 characters. Upload a paginated file or paste a shorter section.');
-    }
-    return { id: crypto.randomUUID(), title: policyTitle.trim() || 'Policy ' + (documents.length + 1), pages };
-  }
-
-  function addPolicy() {
-    setError('');
-    try {
-      const next = [...documents, pastedPolicy()];
-      checkInput(inputWith(next));
-      setDocuments(next);
-      setScope(undefined);
-      setPolicyTitle('');
-      setPolicyText('');
-      setPasteOpen(false);
-      pasteButton.current?.focus();
-    } catch (cause) {
-      setError(errorMessage(cause));
     }
   }
 
@@ -173,8 +183,6 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         selectedPages: next.reduce((count, doc) => count + doc.pages.length, 0),
       });
     }
-    setError('');
-    pasteButton.current?.focus();
   }
 
   async function submit(event: FormEvent) {
@@ -183,37 +191,33 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     setError('');
     try {
       if (step === 1) {
-        if (!source.trim()) throw Error(isGuide ? 'Upload or paste your regulatory guide.' : 'Upload or enter at least one state question.');
-        if (isGuide && source.trim().length > 50000) throw Error('Choose a guide section of up to 50,000 characters.');
-        if (!isGuide && (questions.length > 30 || questions.some((q) => q.length > 2000))) {
-          throw Error('Use up to 30 questions, with one question per line and up to 2,000 characters each.');
-        }
+        if (validationError) throw Error(validationError);
         window.history.pushState({ folioIntakeSource: sourcePath }, '', sourcePath + '/policies');
         window.dispatchEvent(new HashChangeEvent('hashchange'));
         return;
       }
 
-      const includeDraft = Boolean(policyText.trim() || policyTitle.trim());
-      const policies = includeDraft ? [...documents, pastedPolicy()] : documents;
+      const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
+      const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
       if (!policies.length && !isGuide) throw Error('Upload a policy file or paste a policy to continue.');
       const input = inputWith(policies);
       const controller = new AbortController();
       request.current = controller;
-      setBusy(isGuide ? 'Reviewing obligations…' : 'Finding evidence…');
+      setBusy(copy.submitting);
       const result = await requestReview(input, controller.signal);
       if (!controller.signal.aborted) {
         onDone({
           key: crypto.randomUUID(),
-          title: sourceName.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || modeLabels[mode] + ' review',
+          title: source.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || modeLabels[mode] + ' review',
           input,
           result,
-          sourceDocument,
-          sourceSelection,
+          sourceDocument: source.document,
+          sourceSelection: source.selection,
           scope: includeDraft ? undefined : scope,
         });
       }
     } catch (cause) {
-      if (!(cause instanceof Error && cause.name === 'AbortError')) setError(errorMessage(cause));
+      if (!(cause instanceof Error && cause.name === 'AbortError')) setError(documentErrorMessage(cause));
     } finally {
       request.current = null;
       setBusy('');
@@ -236,7 +240,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         <ArrowLeft size={15} aria-hidden="true" /> Back
       </button>
       <ol className="intake-steps" aria-label="Review steps">
-        {[sourceLabel, 'Existing policies'].map((label, index) => (
+        {[copy.sourceLabel, 'Existing policies'].map((label, index) => (
           <li key={label} aria-current={step === index + 1 ? 'step' : undefined} data-complete={index + 1 < step}>
             <span className="intake-step-number" aria-hidden="true">
               {index + 1 < step ? <Check size={12} /> : index + 1}
@@ -246,125 +250,36 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         ))}
       </ol>
       <h1 id="intake-title" ref={heading} tabIndex={-1}>
-        {step === 2 ? 'Add existing policies' : isGuide ? 'Review a policy guide' : 'Answer a questionnaire'}
+        {step === 1 ? copy.sourceTitle : 'Add existing policies'}
       </h1>
       <p className="intake-intro">
-        {step === 1
-          ? isGuide ? 'Upload the regulatory guide or paste the section you want to review.' : 'Upload the state questionnaire or paste the questions you need to answer.'
-          : isGuide ? 'Policies are optional. Add them to check coverage, or continue to the guide’s obligations.' : 'Add the policies you want to search for evidence for each question.'}
+        {step === 1 ? copy.sourceIntro : copy.policyIntro}
       </p>
       <form onSubmit={(event) => void submit(event)}>
         <fieldset disabled={Boolean(busy)} className="intake-fields">
-          <legend className="intake-sr-only">{step === 1 ? sourceLabel : 'Existing policies'}</legend>
+          <legend className="intake-sr-only">{step === 1 ? copy.sourceLabel : 'Existing policies'}</legend>
           {step === 1 ? (
-            <>
-              <IntakeFile
-                label={isGuide ? 'Upload regulatory guide' : 'Upload questionnaire'}
-                fileName={sourceName}
-                onFiles={(files) => void importFiles(files, 'source')}
-              />
-              {availableRange && (
-                <SourceRange
-                  key={availableRange.original?.id ?? 'pasted'}
-                  source={availableRange}
-                  oversized={isGuide ? source.length > 50000 || availableRange.items.length > 10 : questions.length > 30}
-                  onApply={(items, description) => {
-                    setRangeSource(availableRange);
-                    setSourceSelection(description);
-                    setSourceDocument(isGuide && availableRange.original ? { ...availableRange.original, pages: items } : availableRange.original);
-                    setPreparedQuestions(isGuide ? undefined : items.map((item) => item.text));
-                    setSource(items.map((item) => item.text).join(isGuide ? '\n\n' : '\n'));
-                    setError('');
-                  }}
-                />
-              )}
-              <div className="intake-source">
-                <div className="intake-field-heading">
-                  <label htmlFor="intake-source">{isGuide ? 'Guide text' : 'Questions'}</label>
-                  {!isGuide && questions.length > 0 && (
-                    <span>{questions.length} {questions.length === 1 ? 'question' : 'questions'}</span>
-                  )}
-                </div>
-                <textarea
-                  id="intake-source"
-                  rows={6}
-                  value={source}
-                  placeholder={isGuide ? 'Paste guide text here…' : 'Paste questions here…'}
-                  aria-describedby={!isGuide ? 'question-format' : undefined}
-                  onChange={(event) => {
-                    setSource(event.target.value);
-                    setSourceDocument(undefined);
-                    setPreparedQuestions(undefined);
-                    setSourceSelection(undefined);
-                    setRangeSource(undefined);
-                    setError('');
-                  }}
-                />
-                {!isGuide && <p className="intake-help" id="question-format">One question per line.</p>}
-              </div>
-              {isLoopback && (
-                <label className="intake-bundle">
-                  <Upload size={14} aria-hidden="true" /> Import a prepared review (.json)
-                  <input
-                    type="file"
-                    accept=".json"
-                    onChange={(event) => {
-                      const file = event.currentTarget.files?.[0];
-                      event.currentTarget.value = '';
-                      if (file) void importFiles([file], 'bundle');
-                    }}
-                  />
-                </label>
-              )}
-            </>
+            <SourceFields
+              isGuide={isGuide}
+              source={source}
+              questions={questions}
+              onFiles={importFiles}
+              onChange={(value) => { setSource(value); setError(''); }}
+            />
           ) : (
-            <>
-              <IntakeFile label="Upload policy files" multiple onFiles={(files) => void importFiles(files, 'policies')} />
-              {documents.length > 0 && (
-                <ul className="intake-documents" aria-label="Added policies">
-                  {documents.map((doc) => (
-                    <li key={doc.id}>
-                      <FileText size={16} aria-hidden="true" />
-                      <span>{doc.title}</span>
-                      <small>{doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'}</small>
-                      <button type="button" aria-label={'Remove ' + doc.title} onClick={() => removePolicy(doc.id)}><X size={16} /></button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="intake-paste">
-                <button
-                  ref={pasteButton}
-                  type="button"
-                  className="intake-text-button"
-                  aria-expanded={pasteOpen}
-                  aria-controls="intake-paste-fields"
-                  onClick={() => setPasteOpen(!pasteOpen)}
-                >
-                  {pasteOpen ? <X size={15} aria-hidden="true" /> : <Plus size={15} aria-hidden="true" />}
-                  {pasteOpen ? 'Hide text entry' : 'Paste a policy'}
-                </button>
-                <div className="intake-paste-fields" id="intake-paste-fields" hidden={!pasteOpen}>
-                  <label htmlFor="intake-policy-name">Policy title <span>(optional)</span></label>
-                  <input id="intake-policy-name" maxLength={240} value={policyTitle} onChange={(e) => setPolicyTitle(e.target.value)} />
-                  <label htmlFor="intake-policy-text">Policy text</label>
-                  <textarea id="intake-policy-text" rows={4} value={policyText} onChange={(e) => { setPolicyText(e.target.value); setError(''); }} />
-                  <button type="button" className="intake-secondary" onClick={addPolicy}>Add policy</button>
-                </div>
-              </div>
-              <label className="intake-consent">
-                <input type="checkbox" checked={allowModel} onChange={(e) => setAllowModel(e.target.checked)}
-                  aria-labelledby="intake-model-label" aria-describedby="intake-model-description" />
-                <span>
-                  <strong id="intake-model-label">Use Anthropic for this review</strong>
-                  <small id="intake-model-description">
-                    {isLoopback ? 'Allow the local server to send selected text to Anthropic if the operator has enabled it.' : 'I confirm these documents are public and agree to send selected text to Anthropic.'}
-                  </small>
-                </span>
-              </label>
-            </>
+            <PolicyFields
+              documents={documents}
+              draft={draft}
+              allowModel={allowModel}
+              onDraft={setDraft}
+              onAllowModelChange={setAllowModel}
+              onFiles={(files) => void importFiles(files, 'policies')}
+              onAdd={(policy) => acceptAddedPolicies([...documents, policy])}
+              onRemove={removePolicy}
+              onError={setError}
+            />
           )}
-          {sourceSelection && <output className="intake-help">{sourceSelection}</output>}
+          {source.selection && <output className="intake-help">{source.selection}</output>}
           {scope && (
             <output className="intake-help">This review searches {scope.selectedPages.toLocaleString()} selected {scope.selectedPages === 1 ? 'page' : 'pages'} from {scope.sourcePages.toLocaleString()} source pages.</output>
           )}
@@ -373,7 +288,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         <div className="intake-actions">
           {!isLoopback && <p className="intake-privacy">Use public documents. Running a review sends their text to Folio.</p>}
           <button type="submit" className="intake-primary" disabled={Boolean(busy)}>
-            <span>{busy || (step === 1 ? 'Continue' : isGuide ? 'Review obligations' : 'Find evidence')}</span>
+            <span>{busy || (step === 1 ? 'Continue' : copy.submit)}</span>
             {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
           </button>
         </div>

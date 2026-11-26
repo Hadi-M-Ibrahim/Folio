@@ -20,11 +20,6 @@ from contextlib import ExitStack, closing
 from itertools import zip_longest
 from pathlib import Path
 
-try:
-    import pymupdf
-except ImportError:
-    sys.exit("Install local PDF support with python -m pip install -r requirements/pdf.txt")
-
 if __name__ == "__main__" and not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -32,6 +27,9 @@ from api._review.search import (
     ADVERSE,
     MAX_CHARS,
     MAX_CRITERIA,
+    MAX_DOCUMENTS,
+    MAX_GUIDE_CHARS,
+    MAX_PAGE_CHARS,
     MAX_PAGES,
     STOP,
     guide_criteria,
@@ -50,6 +48,14 @@ ANSWER_FIELD = re.compile(r"\(references?\s*:|^\s*(?:☐\s*)?yes\s+(?:☐\s*)?no
 FOOTER = re.compile(r"(?:rev\.?\s*\d+/\d+|(?:page\s+)?\d+(?:\s+of\s+\d+)?)", re.I)
 
 
+def open_pdf(path):
+    try:
+        import pymupdf
+    except ImportError:
+        sys.exit("Install local PDF support with python -m pip install -r requirements/pdf.txt")
+    return pymupdf.open(path)
+
+
 def read_questions(pdf):
     items = {}
     active = None
@@ -66,9 +72,9 @@ def read_questions(pdf):
             if active is None:
                 continue
             fence = ANSWER_FIELD.search(line)
-            text = line[:fence.start()] if fence else line
-            if text.strip():
-                items[active].append(text.strip())
+            text = line[:fence.start()].strip() if fence else line
+            if text:
+                items[active].append(text)
             if fence:
                 active = None
     return {n: " ".join(parts) for n, parts in items.items() if parts}
@@ -87,10 +93,10 @@ def source_pair(materials, stack):
     if len(sources) != 2:
         raise ValueError("The materials folder must contain a guide and a questionnaire PDF at its top level.")
     # Inspect the shorter source first to avoid parsing the entire guide for form fields.
-    opened = sorted((stack.enter_context(pymupdf.open(p)) for p in sources), key=len)
+    opened = sorted((stack.enter_context(open_pdf(p)) for p in sources), key=len)
     for index, pdf in enumerate(opened):
         items = read_questions(pdf)
-        if len(items) >= 1 and sorted(items) == list(range(1, len(items) + 1)):
+        if items and sorted(items) == list(range(1, len(items) + 1)):
             return opened[1 - index], items
     raise ValueError("Could not identify a consecutively numbered questionnaire in the two PDFs.")
 
@@ -137,17 +143,17 @@ def prepare_criteria(args, guide, questions):
             raise ValueError(f"Select at most {MAX_CRITERIA} questions per review.")
         payload["questions"] = [f"{n}. {questions[n]}" for n in numbers]
         payload["selection"] = {"questionNumbers": numbers}
-        criteria = [(questions[n], None) for n in numbers]
+        criteria = [questions[n] for n in numbers]
     else:
         numbers = select_numbers(args.pages, len(guide))
         pages = [{"number": n, "text": page_text(guide[n - 1])} for n in numbers]
         text = "\n\n".join(page["text"] for page in pages)
-        if len(text) > 50000:
+        if len(text) > MAX_GUIDE_CHARS:
             raise ValueError("Select a smaller guide section (at most 50,000 characters per review).")
         payload["guide"] = text
         payload["sourceDocument"] = {"id": "submitted-guide", "title": Path(guide.name).name, "pages": pages}
         payload["selection"] = {"guidePages": numbers}
-        criteria = guide_criteria(text)
+        criteria = [clause for clause, _ in guide_criteria(text)]
         if not criteria:
             raise ValueError("No explicit duty found for selecting policy pages. Choose a different section or upload the guide directly to Folio.")
     return payload, criteria
@@ -161,7 +167,7 @@ def read_corpus(materials):
     all_pages = 0
     for i, path in enumerate(policies, 1):
         title = path.relative_to(materials).as_posix()
-        with pymupdf.open(path) as doc:
+        with open_pdf(path) as doc:
             all_pages += len(doc)
             for n, page in enumerate(doc, 1):
                 text = page_text(page)
@@ -175,8 +181,8 @@ def ranked_pages(pages, criteria):
     with closing(sqlite3.connect(":memory:")) as db:
         db.execute("CREATE VIRTUAL TABLE corpus USING fts5(body, title, tokenize='porter unicode61')")
         db.executemany("INSERT INTO corpus(rowid,body,title) VALUES(?,?,?)",
-                       ((i, pages[key][1], pages[key][0]) for i, key in enumerate(keys, 1)))
-        for query, _ in criteria:
+                       ((i, text, title) for i, (title, text) in enumerate(pages.values(), 1)))
+        for query in criteria:
             terms = dict.fromkeys(w for w in words(query) if len(w) > 1 and w not in STOP)
             if not terms:
                 yield []
@@ -204,9 +210,9 @@ def shortlist(pages, criteria):
                 continue
             doc_id, n = key
             title, text = pages[key]
-            if doc_id not in documents and len(documents) >= 18:
+            if doc_id not in documents and len(documents) >= MAX_DOCUMENTS:
                 continue
-            if len(text) > 35000 or characters + len(text) > MAX_CHARS or len(selected) >= MAX_PAGES:
+            if len(text) > MAX_PAGE_CHARS or characters + len(text) > MAX_CHARS or len(selected) >= MAX_PAGES:
                 continue
             document = documents.setdefault(doc_id, {"id": doc_id, "title": title, "pages": []})
             document["pages"].append({"number": n, "text": text})

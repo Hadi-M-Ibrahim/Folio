@@ -7,7 +7,7 @@ import time
 from http.client import HTTPException
 from urllib import error, request
 
-from .search import WORD, InvalidRequest, basic_plan, retrieve
+from .search import MAX_PASSAGE_CHARS, WORD, InvalidRequest, basic_plan, retrieve
 
 MODEL = "claude-sonnet-5-5"
 SLOTS = threading.BoundedSemaphore(2)
@@ -106,7 +106,7 @@ def invoke_tool(system, tool, input_data, key, deadline, max_tokens=3800):
             raise ProviderUnavailable
         envelope = json.loads(raw)
         if envelope.get("stop_reason") != "tool_use":
-            raise ValueError("Incomplete tool response")
+            raise ProviderUnavailable
         calls = [block for block in envelope["content"] if block.get("type") == "tool_use"]
         if len(calls) != 1 or calls[0].get("name") != tool["name"] or not isinstance(calls[0].get("input"), dict):
             raise ProviderUnavailable
@@ -149,7 +149,7 @@ def check_citations(entries, evidence, pages, *, require_scope=False):
         if not ref or not isinstance(quote, str):
             return verified, False
         quote = quote.strip()
-        if not 8 <= len(quote) <= 680 or len(WORD.findall(quote)) < 2:
+        if not 8 <= len(quote) <= MAX_PASSAGE_CHARS or len(WORD.findall(quote)) < 2:
             return verified, False
         source = pages[(ref["documentId"], ref["page"])][1]
         if quote not in ref["quote"] or quote not in source:
@@ -207,65 +207,78 @@ def assess_batch(findings, pages, key, deadline):
     return [verify(f, by_id.get(f["id"]), evidence_by_id[f["id"]], pages) for f in findings]
 
 
-def model_review(payload, criteria, pages, local_operator=False):
-    def local_result(reason=""):
-        if not criteria:
-            message = "Local extraction found no explicit review criterion. Select a guide section stating the duty or checklist."
-            raise InvalidRequest((reason + " " + message).strip())
-        summary = ("Review the ranked policy passages for each criterion." if pages
-                   else "Folio extracted guide clauses for review. No policies were supplied for comparison.")
-        return retrieve(pages, basic_plan(criteria)), (reason + " " + summary).strip(), "local"
-
-    if not payload.get("allowModel", False):
-        return local_result()
-    if os.environ.get("VERCEL"):
-        if os.environ["VERCEL"] != "1" or not payload.get("publicInputConsent", False):
-            return local_result("Hosted model review requires consent to send public inputs to Anthropic.")
-    elif not (local_operator and os.environ.get("REVIEW_ALLOW_CUSTOM_MODEL") == "1"):
-        return local_result("Model review requires an enabled local operator server.")
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return local_result("Anthropic is not configured.")
-    if not SLOTS.acquire(blocking=False):
-        return local_result("Model capacity is busy.")
-
-    try:
-        from .planner import plan_criteria
-
-        deadline = time.monotonic() + REVIEW_SECONDS
-        mode = payload["mode"]
-        source = payload["questions" if mode == "questionnaire" else "guide"]
-        try:
-            plan = plan_criteria(mode, source, criteria, key, deadline)
-            planner = "anthropic"
-        except ProviderUnavailable:
-            if not criteria or not pages:
-                return local_result("The model planner was unavailable.")
-            plan = basic_plan(criteria)
-            planner = "local"
-        findings = retrieve(pages, plan)
-        if not pages:
-            return findings, "Anthropic extracted requirements from the guide. No policies were supplied for comparison.", planner
-        with_evidence = [finding for finding in findings if finding["candidates"]]
-        assessments = {}
-        for offset in range(0, len(with_evidence), BATCH_SIZE):
-            try:
-                batch = assess_batch(with_evidence[offset:offset + BATCH_SIZE], pages, key, deadline)
-                assessments.update((row["id"], row) for row in batch)
-            except ProviderUnavailable:
-                break
-        reviewed = [assessments.get(row["id"], row) for row in findings]
-    finally:
-        SLOTS.release()
-
-    assessed = sum(row["analysisEngine"] == "anthropic" for row in reviewed)
-    planner_notice = "The model planner was unavailable. Search used terms from the original criteria. " if planner == "local" else ""
+def assess_findings(findings, pages, key, deadline):
+    with_evidence = [finding for finding in findings if finding["candidates"]]
     if not with_evidence:
-        notice = "No policy passages matched the search terms for these criteria."
-    elif assessed == len(findings):
+        return findings, "No policy passages matched the search terms for these criteria."
+
+    # Each completed batch replaces those local findings, preserving original criterion order.
+    by_id = {row["id"]: row for row in findings}
+    for offset in range(0, len(with_evidence), BATCH_SIZE):
+        try:
+            batch = assess_batch(with_evidence[offset:offset + BATCH_SIZE], pages, key, deadline)
+        except ProviderUnavailable:
+            break
+        by_id.update((row["id"], row) for row in batch)
+    reviewed = list(by_id.values())
+    assessed = sum(row["analysisEngine"] == "anthropic" for row in reviewed)
+    if assessed == len(findings):
         notice = "Anthropic reviewed the ranked passages. Folio checked the cited quotations against their source pages."
     elif assessed:
         notice = f"Anthropic assessed {assessed} of {len(findings)} criteria. Review the remaining criteria using their search results."
     else:
         notice = "Anthropic could not complete its assessment. Review the search results for each criterion."
-    return reviewed, planner_notice + notice, planner
+    return reviewed, notice
+
+
+def local_review(criteria, pages, reason=""):
+    if not criteria:
+        message = "Local extraction found no explicit review criterion. Select a guide section stating the duty or checklist."
+        raise InvalidRequest((reason + " " + message).strip())
+    summary = ("Review the ranked policy passages for each criterion." if pages
+               else "Folio extracted guide clauses for review. No policies were supplied for comparison.")
+    return retrieve(pages, basic_plan(criteria)), (reason + " " + summary).strip(), "local"
+
+
+def model_review(payload, criteria, pages, local_operator=False):
+    if not payload.get("allowModel", False):
+        return local_review(criteria, pages)
+    hosted = os.environ.get("VERCEL")
+    if hosted:
+        if hosted != "1" or not payload.get("publicInputConsent", False):
+            return local_review(criteria, pages, "Hosted model review requires consent to send public inputs to Anthropic.")
+    elif not (local_operator and os.environ.get("REVIEW_ALLOW_CUSTOM_MODEL") == "1"):
+        return local_review(criteria, pages, "Model review requires an enabled local operator server.")
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return local_review(criteria, pages, "Anthropic is not configured.")
+    if not SLOTS.acquire(blocking=False):
+        return local_review(criteria, pages, "Model capacity is busy.")
+
+    try:
+        return review_with_provider(payload, criteria, pages, key)
+    finally:
+        SLOTS.release()
+
+
+def review_with_provider(payload, criteria, pages, key):
+    from .planner import plan_criteria
+
+    deadline = time.monotonic() + REVIEW_SECONDS
+    mode = payload["mode"]
+    source = payload["questions" if mode == "questionnaire" else "guide"]
+    try:
+        plan = plan_criteria(mode, source, criteria, key, deadline)
+        planner = "anthropic"
+    except ProviderUnavailable:
+        if not criteria or not pages:
+            return local_review(criteria, pages, "The model planner was unavailable.")
+        plan = basic_plan(criteria)
+        planner = "local"
+    findings = retrieve(pages, plan)
+    if not pages:
+        return findings, "Anthropic extracted requirements from the guide. No policies were supplied for comparison.", planner
+    reviewed, notice = assess_findings(findings, pages, key, deadline)
+    if planner == "local":
+        notice = "The model planner was unavailable. Search used terms from the original criteria. " + notice
+    return reviewed, notice, planner

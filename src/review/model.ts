@@ -7,7 +7,6 @@ export const statusLabels: Record<Status, string> = {
   insufficient: 'Insufficient',
   needs_review: 'Needs review',
 };
-export const statusOrder = Object.keys(statusLabels) as Status[];
 export const modeLabels: Record<Mode, string> = {
   questionnaire: 'State questionnaire',
   guide: 'Regulatory guide',
@@ -20,6 +19,11 @@ export type Policy = {
 export const MAX_POLICY_PAGES = 1200;
 export const MAX_POLICY_CHARACTERS = 2400000;
 export const MAX_POLICY_PAGE_CHARACTERS = 35000;
+export const MAX_POLICY_DOCUMENTS = 18;
+export const MAX_GUIDE_CHARACTERS = 50_000;
+export const MAX_QUESTIONS = 30;
+export const MAX_QUESTION_CHARACTERS = 2_000;
+export const MAX_REQUEST_BYTES = 4_000_000;
 export type Evidence = {
   documentId: string;
   title: string;
@@ -102,6 +106,25 @@ export type Decision = {
   note?: string;
   at: string;
 };
+
+export const responseLabels: Record<NonNullable<Decision['value']>, string> = {
+  confirmed: 'Confirmed',
+  flagged: 'Flagged for follow-up',
+};
+
+export type ReviewRow = {
+  finding: Finding;
+  index: number;
+  decision: Decision | undefined;
+};
+
+export function samePassage(left: Evidence, right: Evidence): boolean {
+  return left.documentId === right.documentId && left.page === right.page && left.quote === right.quote;
+}
+
+export function assessmentLabel(finding: Finding): string {
+  return finding.analysisEngine === 'anthropic' ? 'Model assessment' : 'Keyword search';
+}
 
 export function guideSourceLabel(finding: Finding): string {
   const { criterionStart, criterionEnd } = finding;

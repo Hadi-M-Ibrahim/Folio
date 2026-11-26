@@ -11,10 +11,6 @@
   padding-left: 17px;
 }
 
-.evidence-tools .citation {
-  margin-left: 0;
-}
-
 .evidence-tools .cite-response,
 .response-citations .text-link {
   font-size: 13px;
@@ -46,10 +42,6 @@
 
 .decision-field textarea {
   width: 100%;
-}
-
-.decision-footer .decision-row {
-  margin-top: 0;
 }
 
 .response-citations h3 {
