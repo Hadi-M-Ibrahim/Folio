@@ -143,7 +143,7 @@ function ReviewHeading({ review }: { review: Review }) {
   ];
   return (
     <header className="page-heading">
-      <a className="back-link" href="#/"><ArrowLeft size={15} /> All reviews</a>
+      <a className="back-link" href="#review-options"><ArrowLeft size={15} /> All reviews</a>
       <h1 tabIndex={-1}>{review.title}</h1>
       <p>{summary.filter(Boolean).join(' · ')}</p>
     </header>
