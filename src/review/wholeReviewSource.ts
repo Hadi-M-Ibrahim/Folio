@@ -58,9 +58,36 @@ export function* questionSpans(questions: string[], countLimit: number, textTarg
   if (start < questions.length) yield { start, end: questions.length };
 }
 
+const sentenceBoundary = /[.!?]["”’')\]]*\s+(?=\S)/gu;
+const paragraphOrListBoundary = /\n\s*\n(?=[\p{Lu}\d•(])|\n[^\S\n]*(?=(?:[-*•]|\(\w+\)|(?:\d+|[A-Za-z])[.)])\s)/gu;
+const abbreviatedReference = /\b(?:secs?|subsecs?|arts?|chs?|paras?|pars?|pts?|nos?|regs?|figs?|vols?|pp?|dept|e\.g|i\.e|cf|vs|(?:[a-z]\.)+[a-z])\.$/iu;
+const listNumber = /(?:^|\n)\s*(?:\d+|[a-z])\.$/iu;
+// A short intact unit can be cited in full by the guide planner.
+const maxWholeGuideUnit = 2000;
+
+function guideDivision(guide: string, span: Span, midpoint: number): number {
+  const text = guide.slice(span.start, span.end).trimEnd();
+  const first = text.search(/\S/u);
+  // A PDF page break can fall in a sentence. Prefer a complete sentence on either side of the midpoint.
+  for (const boundary of [sentenceBoundary, paragraphOrListBoundary]) {
+    let closest: number | undefined;
+    for (const match of text.matchAll(boundary)) {
+      if (match.index! <= first) continue;
+      if (match[0].startsWith('.')) {
+        const prefix = text.slice(Math.max(0, match.index! - 32), match.index! + 1);
+        if (abbreviatedReference.test(prefix) || listNumber.test(prefix)) continue;
+      }
+      const cut = span.start + match.index! + match[0].length;
+      if (closest === undefined || Math.abs(cut - midpoint) < Math.abs(closest - midpoint)) closest = cut;
+    }
+    if (closest !== undefined) return closest;
+  }
+  return text.length > maxWholeGuideUnit ? guideBreak(guide, span.start, midpoint) : span.end;
+}
+
 export function divide(span: Span, guide?: string): Span[] {
   const midpoint = span.start + Math.ceil((span.end - span.start) / 2);
-  const end = guide ? guideBreak(guide, span.start, midpoint) : midpoint;
+  const end = guide ? guideDivision(guide, span, midpoint) : midpoint;
   return end > span.start && end < span.end
     ? [{ start: span.start, end }, { start: end, end: span.end }]
     : [];

@@ -68,18 +68,48 @@ def source_units(mode, source, fallback):
     return units
 
 
-def literal_terms(raw):
+def literal_terms(raw, unit_id):
+    error = InvalidPlan("search_terms", f"Use 1 to 8 short, single-line terms for {unit_id}, each at most 10 words and 80 characters.")
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_TERMS:
-        raise model.ProviderUnavailable
+        raise error
     terms = {}
     for term in raw:
         if not isinstance(term, str) or len(term) > MAX_TERM_CHARS or not term.isprintable():
-            raise model.ProviderUnavailable
+            raise error
         term = term.strip()
         if not 1 <= len(WORD.findall(term)) <= 10:
-            raise model.ProviderUnavailable
+            raise error
         terms.setdefault(term.casefold(), term)
     return list(terms.values())
+
+
+LINE_WRAP = r"[^\S\r\n\f\v]*\r?\n[^\S\r\n\f\v]*"
+DISCRETIONARY_HYPHEN = rf"(?:-{LINE_WRAP}|\u00ad(?:{LINE_WRAP})?)"
+WRAPPED_WORD = re.compile(rf"(?<=([^\W\d_])){DISCRETIONARY_HYPHEN}(?=([^\W\d_]))")
+
+
+def quote_spans(text, quote):
+    # Only a hyphen at a physical line break, or an explicit soft hyphen, can
+    # disappear between letters. Ordinary punctuation and letters stay literal.
+    wrapped = {(m[1], m[2]) for m in WRAPPED_WORD.finditer(text) if m[2].islower()}
+    pieces = []
+    for match in re.finditer(r"\s+|\S", quote):
+        char = match.group()
+        i = match.start()
+        if char.isspace():
+            pieces.append(r"(?<!\s)\s+" if i == 0 else r"\s+")
+            continue
+        if i and (quote[i - 1], char) in wrapped:
+            pieces.append(rf"(?:{DISCRETIONARY_HYPHEN})?")
+        elif i >= 2 and quote[i - 1] == "-" and (quote[i - 2], char) in wrapped:
+            pieces.append(rf"(?:{LINE_WRAP})?")
+        pieces.append(re.escape(char))
+    # Lookahead preserves overlapping occurrences. Exact and layout-equivalent
+    # copies participate in the same source-order occurrence numbering.
+    for match in re.finditer("(?=(" + "".join(pieces) + "))", text):
+        left, right = match.span(1)
+        exact = text.find(quote, left, right)
+        yield (exact, exact + len(quote)) if exact >= 0 else (left, right)
 
 
 def guide_anchor(row, unit):
@@ -93,20 +123,25 @@ def guide_anchor(row, unit):
     if (not isinstance(quote, str) or not 1 <= len(quote) <= MAX_QUOTE_CHARS
             or not WORD.search(quote) or type(occurrence) is not int or not 1 <= occurrence <= len(text)):
         raise model.ProviderUnavailable
-    position = text.find(quote)
-    if "occurrence" not in row and position >= 0 and text.find(quote, position + 1) >= 0:
-        raise model.ProviderUnavailable
-    for _ in range(1, occurrence):
-        if position < 0:
-            break
-        position = text.find(quote, position + 1)
-    if position < 0:
-        raise model.ProviderUnavailable
-    return quote, start + position
+    spans = quote_spans(text, quote)
+    for index, (left, right) in enumerate(spans, 1):
+        if index == occurrence:
+            if "occurrence" not in row and next(spans, None) is not None:
+                break
+            return text[left:right], start + left
+    raise model.ProviderUnavailable
 
 
 class IncompletePlan(model.ProviderUnavailable):
     """A failed part must not replace a full guide plan with a partial local extraction."""
+
+
+class InvalidPlan(model.ProviderUnavailable):
+    """A completed tool response that can be corrected against the same sources."""
+
+    def __init__(self, reason, correction):
+        super().__init__(correction)
+        self.reason = reason
 
 
 def batches(units):
@@ -161,17 +196,20 @@ def request_batch(mode, source, batch, key, deadline, attachments):
         system += ("\nRead the attached source PDF for context and layout. Plan only the supplied source IDs. "
                    "Questionnaire wording and guide citation anchors must come from those structured sources.")
     options = {"attachments": attachments} if attachments else {}
-    response = model.invoke_tool(system, TOOL, inputs, key, deadline, max_tokens=6000, **options)
-    if not isinstance(response, dict):
-        raise model.ProviderUnavailable
-    rows = response.get("criteria")
-    if response.get("exceedsLimit") is True:
-        raise model.OutputTruncated
-    if not isinstance(rows, list):
-        raise model.ProviderUnavailable
-    if len(rows) > PLAN_RESPONSE_ROWS or (mode == "guide" and len(rows) == PLAN_RESPONSE_ROWS):
-        raise model.OutputTruncated
-    return validate_rows(rows, units, mode)
+
+    def propose(instruction):
+        response = model.invoke_tool(instruction, TOOL, inputs, key, deadline, max_tokens=6000, **options)
+        return validated_plan(response, units, mode)
+
+    try:
+        return propose(system)
+    except (InvalidPlan, model.MissingToolCall) as exc:
+        if mode != "guide":
+            raise
+        model.logger.warning("guide_plan_repair reason=%s", getattr(exc, "reason", "missing_tool_call"))
+        correction = str(exc) if isinstance(exc, InvalidPlan) else "Call the record_search_plan tool exactly once."
+    # Retry just this batch, with the original source IDs, attachments and deadline.
+    return propose(system + "\nRebuild the complete plan for this batch. " + correction)
 
 
 def plan_batch(mode, source, batch, key, deadline, attachments):
@@ -219,35 +257,50 @@ def plan_criteria(mode, source, fallback, key, deadline, *, attachments=(), docu
     return plan
 
 
+def validated_plan(response, units, mode):
+    if isinstance(response, dict) and response.get("exceedsLimit") is True:
+        raise model.OutputTruncated
+    rows = response.get("criteria") if isinstance(response, dict) else None
+    if not isinstance(rows, list):
+        raise InvalidPlan("criteria_array", "Return an array of criteria.")
+    if len(rows) > PLAN_RESPONSE_ROWS or (mode == "guide" and len(rows) == PLAN_RESPONSE_ROWS):
+        raise model.OutputTruncated
+    return validate_rows(rows, units, mode)
+
+
 def validate_rows(rows, units, mode):
     required_ids = {unit_id for unit_id, (_, _, required) in units.items() if required}
     planned = {}
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("sourceId"), str):
-            raise model.ProviderUnavailable
+            raise InvalidPlan("source_id", "Include a sourceId in every row.")
         unit_id = row["sourceId"]
         if unit_id not in units:
-            raise model.ProviderUnavailable
+            raise InvalidPlan("source_id", "Use only the source IDs supplied in this batch.")
         unit = units[unit_id]
-        terms = literal_terms(row.get("searchTerms"))
+        terms = literal_terms(row.get("searchTerms"), unit_id)
         if mode == "questionnaire":
             # User-authored wording is authoritative even if the provider adds a question.
             source_text, start, _ = unit
             question = source_text.strip()
             identity = unit_id
         else:
-            source_text, start = guide_anchor(row, unit)
+            try:
+                source_text, start = guide_anchor(row, unit)
+            except model.ProviderUnavailable:
+                raise InvalidPlan("source_quote", f"Copy an exact, contiguous sourceQuote from {unit_id}. "
+                                  "Include occurrence if the passage is repeated.") from None
             question = row.get("question")
             if not isinstance(question, str) or not WORD.search(question):
-                raise model.ProviderUnavailable
+                raise InvalidPlan("question", f"Write a question for the obligation in {unit_id}.")
             question = question.strip()
             identity = (start, question.casefold())
         if identity in planned:
-            raise model.ProviderUnavailable
+            raise InvalidPlan("duplicate", f"Remove the duplicate row for {unit_id}.")
         planned[identity] = {"question": question, "source": source_text, "start": start, "searchTerms": terms}
         required_ids.discard(unit_id)
     if required_ids:
-        raise model.ProviderUnavailable
+        raise InvalidPlan("missing_required", "Include the missing required source IDs: " + ", ".join(sorted(required_ids)) + ".")
     if mode == "questionnaire":
         return [planned[unit_id] for unit_id in units]
     return sorted(planned.values(), key=lambda item: item["start"])

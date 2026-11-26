@@ -19,6 +19,38 @@ test('guide subdivision retains Unicode scalars and whitespace verbatim', () => 
   assert.ok(chunks.every(chunk => chunk.isWellFormed()));
 });
 
+test('guide subdivision chooses the nearest complete sentence on either side of the midpoint', () => {
+  const first = 'Staff must retain the full register, including its supporting notes, for seven years.';
+  const last = 'Supervisors must sign.';
+  for (const duties of [[first, last], [last, first]]) {
+    const prefix = 'Outside the selected span. ';
+    const text = prefix + duties.join('  ') + ' More text outside.';
+    const span = { start: prefix.length, end: prefix.length + duties.join('  ').length };
+    assert.deepEqual(divide(span, text).map(part => text.slice(part.start, part.end)), [duties[0] + '  ', duties[1]]);
+  }
+});
+
+test('guide subdivision keeps a short single duty intact and can shrink long unbroken input', () => {
+  for (const text of ['Staff must retain audit records.  ', '1. File the reports under Sec. 12.',
+    'Staff must\n\nretain the complete record.']) {
+    assert.deepEqual(divide({ start: 0, end: text.length }, text), []);
+  }
+  const text = '🧭'.repeat(3001);
+  const chunks = divide({ start: 0, end: text.length }, text).map(part => text.slice(part.start, part.end));
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks.join(''), text);
+  assert.ok(chunks.every(chunk => chunk.isWellFormed()));
+});
+
+test('guide subdivision recognizes unpunctuated paragraphs and checklist items', () => {
+  for (const [first, rest] of [['Clerks file permit records\n\n', 'Managers review the files'],
+    ['Checklist\n(a) Retain the original permit\n', '(b) Keep the signed decision']]) {
+    const text = first + rest;
+    const parts = divide({ start: 0, end: text.length }, text);
+    assert.deepEqual(parts.map(part => text.slice(part.start, part.end)), [first, rest]);
+  }
+});
+
 test('guide page numbers reflect the physical source and trimmed selection', () => {
   const rows = [{ number: 7, text: '  Duty one.' }, { number: 11, text: 'Duty two.' }];
   const spans = pageSpans(rows, 2, 2);

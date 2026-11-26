@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from api import review as api
 from api._review import model, planner
-from api._review.search import InvalidRequest
+from api._review.search import InvalidRequest, ReviewPartTooLarge
 
 
 class PlannerTests(unittest.TestCase):
@@ -98,6 +98,43 @@ class PlannerTests(unittest.TestCase):
             with self.assertRaises(model.ProviderUnavailable):
                 planner.plan_criteria("guide", " A guide clause.", [("A guide clause.", 0)], "test-key", 100)
         invoke.assert_not_called()
+
+    def test_rebuilds_a_guide_batch_once_with_the_same_sources_and_deadline(self):
+        clauses = ["Clerks must sign the register.", "Staff must retain it for a year."]
+        guide = "\n".join(clauses)
+        units = [(c, guide.index(c)) for c in clauses]
+        rows = [{"sourceId": f"s{i}", "question": c, "searchTerms": ["register"]}
+                for i, c in enumerate(clauses, 1)]
+        attachments = [{"role": "source"}]
+        for first, hint in (({"criteria": rows[:1]}, "missing required source IDs: s2"),
+                            (model.MissingToolCall, "Call the record_search_plan tool exactly once")):
+            with self.subTest(hint=hint), patch.object(model, "invoke_tool", side_effect=[first, {"criteria": rows}]) as invoke:
+                plan = planner.plan_criteria("guide", guide, units, "test", 100, attachments=attachments)
+            self.assertEqual([r["source"] for r in plan], clauses)
+            initial, repair = invoke.call_args_list
+            self.assertEqual(initial.args[1:], repair.args[1:])
+            self.assertEqual(initial.kwargs, repair.kwargs)
+            self.assertIn(hint, repair.args[0])
+
+    def test_unverified_guide_never_becomes_a_partial_review(self):
+        guide = "Operators must sign the register."
+        payload = {"mode": "guide", "guide": guide, "documents": [], "allowModel": True,
+                   "modelSharingConsent": True, "requireComplete": True}
+        bad = {"criteria": [{"sourceId": "s1", "question": "Signed?", "sourceQuote": "Invented passage.",
+                             "searchTerms": ["register"]}]}
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test", "VERCEL": "1"}, clear=True):
+            with patch.object(model, "invoke_tool", return_value=bad) as invoke, \
+                 self.assertRaisesRegex(model.ProviderUnavailable, "could not verify a complete set of cited obligations"):
+                api.review(payload)
+            self.assertEqual(invoke.call_count, 2)
+            self.assertNotIn("Invented passage.", invoke.call_args.args[0])
+            with patch.object(model, "invoke_tool", side_effect=model.DeadlineExceeded) as timeout, \
+                 self.assertRaisesRegex(model.ProviderUnavailable, "timed out while planning"):
+                api.review(payload)
+            timeout.assert_called_once()
+            implicit = "On receipt, the clerk photographs the seal.\n\nAt renewal, the registrar signs the file."
+            with patch.object(model, "invoke_tool", side_effect=model.DeadlineExceeded), self.assertRaises(ReviewPartTooLarge):
+                api.review({**payload, "guide": implicit})
 
     def test_guide_only_requires_a_model_plan_and_preserves_the_source_anchors(self):
         clause = "The operator shall retain the forms and publish the fees."

@@ -959,6 +959,34 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   expect(output).toContain('Verify the final register.');
 });
 
+test('a guide planning timeout splits at complete duties and retry resumes at the failed page', async ({ page, context }) => {
+  const duties = ['Staff must retain the original inspection register and its signed copy for seven years.', 'Managers must sign.'];
+  const pdf = await printPdf(context, duties);
+  await page.goto('/#/new/guide');
+  await uploadPdf(page, 'Upload regulatory guide', 'Register.pdf', pdf);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  const sent = [];
+  await page.route('**/api/review', route => {
+    const { guide, pdfAttachments } = route.request().postDataJSON();
+    sent.push({ text: guide.trim().replace(/\s+/gu, ' '), pages: pdfAttachments[0].pages });
+    if (sent.length === 1) return route.fulfill({ status: 422, json: { code: 'review_part_too_large',
+      error: 'The model could not finish planning this review part within its budget.' } });
+    if (sent.length === 3) return route.fulfill({ status: 503, json: { error: 'Simulated planning outage.' } });
+    return route.continue();
+  });
+  const submit = page.getByRole('button', { name: 'Review obligations' });
+  await submit.click();
+  await expect(page.getByRole('alert')).toHaveText('Simulated planning outage.');
+  const parts = duties.map((text, i) => ({ text, pages: [i + 1] }));
+  expect(sent).toEqual([{ text: duties.join(' '), pages: [1, 2] }, ...parts]);
+  await submit.click();
+  await expect(page.getByRole('button', { name: 'Download action list' })).toBeVisible();
+  expect(sent.slice(3)).toEqual([parts[1]]);
+  const output = await report(page, 'Download action list');
+  expect(output).toContain('Register.pdf · p. 1');
+  expect(output).toContain('Register.pdf · p. 2');
+});
+
 test('a complete scanned form joins a question across transcription requests before assessment', async ({ page, context }) => {
   const printed = ['Who keeps inspection log 1?', 'Who keeps inspection log 2?', 'Who keeps the inspection log',
     'after the archive closes?', 'Who keeps inspection log 5?'];

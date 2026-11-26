@@ -126,7 +126,7 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
     options.signal.throwIfAborted();
     if (series.guide && !series.guide.slice(span.start, span.end).trim()) return;
     const key = series.name + '/' + span.start + '/' + span.end;
-    const parts = () => divide(span, series.guide);
+    let parts: Span[] | undefined;
     if (!cache.subdivided.has(key)) {
       const section = { ...series.section(span, partial), key, partial };
       try {
@@ -135,7 +135,8 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
         return;
       } catch (error) {
         if (!(error instanceof ReviewSizeError)) throw error;
-        if (!parts().length) {
+        parts = divide(span, series.guide);
+        if (!parts.length) {
           // A single-page original can carry large invisible resources. Re-encode its visible page.
           if (partial || !section.numbers.length) throw error;
           completed.push({ span, result: await send(options, cache, section, true) });
@@ -144,7 +145,7 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
       }
       cache.subdivided.add(key);
     }
-    for (const part of parts()) await processSpan(part, true);
+    for (const part of parts ?? divide(span, series.guide)) await processSpan(part, true);
   }
   for (const span of series.spans) {
     await processSpan(span, Boolean(series.alwaysPart || span.end - span.start < series.length));
