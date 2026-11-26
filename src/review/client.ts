@@ -1,12 +1,12 @@
 import {
-  MAX_GUIDE_CHARACTERS, MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
-  MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGES, MAX_QUESTION_CHARACTERS, MAX_QUESTIONS, MAX_REQUEST_BYTES,
+  MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
+  MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGES, MAX_REQUEST_BYTES, ReviewSizeError,
   type Policy, type Result, type ReviewInput,
 } from './model';
 
 export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(window.location.hostname);
 
-function hasText(value: unknown, maxLength: number): value is string {
+function hasText(value: unknown, maxLength = Infinity): value is string {
   return typeof value === 'string' && value.length <= maxLength && Boolean(value.trim());
 }
 
@@ -47,52 +47,85 @@ export function checkInput(input: ReviewInput) {
   if (!['questionnaire', 'guide'].includes(input.mode)) throw Error('Choose a valid review mode.');
   if (!Array.isArray(input.documents) || input.documents.length > MAX_POLICY_DOCUMENTS)
     throw Error('Include up to 18 policy documents.');
-  if (input.mode === 'questionnaire' && !input.documents.length)
+  if (input.mode === 'questionnaire' && !input.documents.length && !input.transcribeSourceOnly)
     throw Error('Add at least one policy to search for answers.');
   checkPolicies(input.documents);
 
   if (!input.readSourcePdf) checkSourceText(input);
+}
+
+export function encodeRequest(input: ReviewInput) {
   const documents = input.documents.map(({ id, title, pages }) => ({ id, title, pages }));
   const body = JSON.stringify({ ...input, documents });
   if (new TextEncoder().encode(body).length > MAX_REQUEST_BYTES)
-    throw Error('This review exceeds the 4 MB request limit. Select fewer pages or remove a policy file.');
+    throw new ReviewSizeError('The source and policies exceed the 4 MB transfer limit for this part.');
   return body;
 }
 
 function checkSourceText(input: ReviewInput) {
   if (input.mode === 'guide') {
-    if (!hasText(input.guide, MAX_GUIDE_CHARACTERS)) throw Error('Enter a guide containing up to 50,000 characters.');
+    if (!hasText(input.guide)) throw Error('Upload or paste your regulatory guide.');
   } else {
     const questions = input.questions;
-    if (!Array.isArray(questions) || !questions.length || questions.length > MAX_QUESTIONS ||
-      !questions.every((question) => hasText(question, MAX_QUESTION_CHARACTERS))) {
-      throw Error('Include 1–30 questions, each up to 2,000 characters.');
+    if (!Array.isArray(questions) || !questions.length || !questions.every((question) => hasText(question))) {
+      throw Error('Include at least one question. Each question needs text.');
     }
   }
 }
 
-export async function requestReview(input: ReviewInput, signal: AbortSignal): Promise<Result> {
+function waitForQuota(seconds: number, signal: AbortSignal) {
+  signal.throwIfAborted();
+  return new Promise<void>((resolve, reject) => {
+    const cancel = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', cancel);
+      resolve();
+    }, seconds * 1000);
+    signal.addEventListener('abort', cancel, { once: true });
+  });
+}
+
+async function postReview(body: string, signal: AbortSignal, onRateLimit?: (seconds: number) => void) {
+  for (;;) {
+    const response = await fetch('/api/review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal,
+    });
+    if (response.status !== 429) return response;
+    // The edge firewall and API can both throttle the shared network.
+    const retry = response.headers.get('Retry-After');
+    const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : NaN;
+    const wait = Number.isSafeInteger(seconds) && seconds > 0 ? seconds : 600;
+    await response.body?.cancel();
+    if (!onRateLimit) {
+      const minutes = Math.ceil(wait / 60);
+      throw Error(`This network has reached its limit of 30 review submissions per 10 minutes. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. Your inputs are still here.`);
+    }
+    onRateLimit(wait);
+    await waitForQuota(wait, signal);
+  }
+}
+
+function checkAttachments(input: ReviewInput) {
   const attachments = input.pdfAttachments ?? [];
   if (input.readSourcePdf && !attachments.some(file => file.role === 'source'))
     throw Error('Attach the source PDF before submitting this review.');
   if (input.documents.some(doc => doc.pdfFile && !attachments.some(file => file.role === 'policy' && file.documentId === doc.id)))
     throw Error('A policy PDF could not be attached. Try submitting the review again.');
   if (attachments.reduce((total, file) => total + file.pages.length, 0) > MAX_PDF_ATTACHMENT_PAGES)
-    throw Error(`Select up to ${MAX_PDF_ATTACHMENT_PAGES} PDF pages across this review.`);
-  const response = await fetch('/api/review', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: checkInput(input),
-    signal,
-  });
-  if (response.status === 429) {
-    // The edge firewall can return HTML. Both layers use the same ten-minute quota.
-    const retry = response.headers.get('Retry-After');
-    const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : NaN;
-    const minutes = Number.isSafeInteger(seconds) && seconds > 0 ? Math.ceil(seconds / 60) : 10;
-    throw Error(`This network has reached its limit of 30 review submissions per 10 minutes. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. Your inputs are still here.`);
-  }
+    throw new ReviewSizeError(`One transfer can include up to ${MAX_PDF_ATTACHMENT_PAGES} PDF pages.`);
+}
+
+export async function requestReview(input: ReviewInput, signal: AbortSignal, options?: { onRateLimit?: (seconds: number) => void }): Promise<Result> {
+  checkInput(input);
+  checkAttachments(input);
+  const response = await postReview(encodeRequest(input), signal, options?.onRateLimit);
   const body = await response.json().catch(() => null);
+  if (response.status === 413 || (response.status === 422 && body?.code === 'review_part_too_large')) {
+    throw new ReviewSizeError(body?.error || 'This part exceeds the review service transfer limit.');
+  }
   if (!response.ok || !body)
     throw Error(
       body?.error ||

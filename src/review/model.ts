@@ -28,11 +28,9 @@ export const MAX_POLICY_PAGES = 1200;
 export const MAX_POLICY_CHARACTERS = 2400000;
 export const MAX_POLICY_PAGE_CHARACTERS = 35000;
 export const MAX_POLICY_DOCUMENTS = 18;
-export const MAX_GUIDE_CHARACTERS = 50_000;
-export const MAX_QUESTIONS = 30;
-export const MAX_QUESTION_CHARACTERS = 2_000;
 export const MAX_REQUEST_BYTES = 4_000_000;
 export const MAX_PDF_ATTACHMENT_PAGES = 600;
+export class ReviewSizeError extends Error {}
 export type Evidence = {
   documentId: string;
   title: string;
@@ -80,6 +78,9 @@ export type ReviewInput = {
   modelSharingConsent?: boolean;
   pdfAttachments?: PdfAttachment[];
   readSourcePdf?: boolean;
+  documentPart?: boolean;
+  requireComplete?: boolean;
+  transcribeSourceOnly?: boolean;
 };
 export type Result = {
   mode: Mode;

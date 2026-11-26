@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { ChevronDown, ClipboardPaste, FilePenLine, FolderOpen, X } from 'lucide-react';
 import { isLoopback } from '../review/client';
-import { MAX_GUIDE_CHARACTERS, MAX_PDF_ATTACHMENT_PAGES, MAX_QUESTIONS, type Policy } from '../review/model';
+import type { Policy } from '../review/model';
 import { IntakeFile } from './IntakeFile';
 import { PdfViewer } from './PdfViewer';
 import { pdfScopeLabel, questionnaireRange, SourceRange, type RangeItem, type RangeSource } from './SourceRange';
@@ -15,6 +15,7 @@ export type IntakeSource = {
   selection?: string;
   rangeValue?: string;
   questions?: string[];
+  questionPages?: number[][];
   readSourcePdf?: boolean;
   showText?: boolean;
 };
@@ -30,6 +31,7 @@ export function sourceFromDocument(doc: Policy, isGuide: boolean): IntakeSource 
     document: doc,
     range: pageRange ? { unit: 'page', items: doc.pages, original: doc } : questionnaireRange(indexed, doc),
     questions,
+    questionPages: indexed.length ? indexed.map(item => item.pageNumbers) : undefined,
     readSourcePdf: Boolean(doc.pdfFile && (hasUnindexedPages || (!isGuide && !questions))),
   };
 }
@@ -52,6 +54,7 @@ function applyRange(source: IntakeSource, range: RangeSource, items: RangeItem[]
     ...source, document, selection, range, rangeValue, readSourcePdf,
     text: lines.join(range.unit === 'page' ? '\n\n' : '\n'),
     questions: range.unit === 'question' ? lines : undefined,
+    questionPages: range.unit === 'question' && original?.pdfFile ? items.map(item => item.pageNumbers!) : undefined,
   };
 }
 
@@ -87,13 +90,9 @@ function SourceText({ isGuide, source, questions, onChange }: Omit<SourceFieldsP
           id="intake-source"
           rows={5}
           value={source.text}
-          placeholder={isGuide ? 'Paste the section you want to review…' : 'Enter one question per line…'}
-          aria-describedby="source-format"
+          placeholder={isGuide ? 'Paste your regulatory guide…' : 'Paste your questionnaire or type a question…'}
           onChange={(event) => onChange({ text: event.target.value, name: source.name, showText: true })}
         />}
-        <p className="intake-help" id="source-format">
-          {isGuide ? 'Review up to 50,000 characters at a time.' : 'One question per line, up to 30 per review.'}
-        </p>
       </div>
     </div>
   );
@@ -121,9 +120,6 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
   const availableRange = useMemo(() => source.range ?? (isGuide || source.document?.pdfFile ? undefined : questionnaireRange(questions, source.document)),
     [isGuide, questions, source.range, source.document]);
   const doc = source.document;
-  const tooManyPages = doc?.pdfFile && doc.pages.length > MAX_PDF_ATTACHMENT_PAGES;
-  const tooMuchText = !source.readSourcePdf && (isGuide ? source.text.trim().length > MAX_GUIDE_CHARACTERS : questions.length > MAX_QUESTIONS);
-  const oversized = Boolean(tooManyPages || tooMuchText);
 
   return (
     <>
@@ -139,7 +135,6 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
           <SourceRange
             key={availableRange.original?.id ?? 'pasted'}
             source={availableRange}
-            oversized={oversized}
             pageKind={isGuide ? 'guide' : 'questionnaire'}
             appliedValue={source.rangeValue}
             onApply={(items, description, rangeValue) => onChange(applyRange(source, availableRange, items, isGuide, description, rangeValue))}
@@ -151,13 +146,6 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles }: 
         }}><X size={16} aria-hidden="true" /> Remove file</button>}
       </div>
       {doc?.pdfFile && <SourcePdf doc={doc} file={doc.pdfFile} source={source} />}
-      {tooManyPages && <output className="intake-notice">Choose a smaller range. A review can include up to {MAX_PDF_ATTACHMENT_PAGES} PDF pages across all files.</output>}
-      {tooMuchText && (
-        <output className="intake-notice">
-          {isGuide ? 'This guide exceeds 50,000 characters. Select a shorter section.'
-            : 'This questionnaire exceeds 30 questions. Choose a smaller item range.'}
-        </output>
-      )}
       {isLoopback && (
         <label className="intake-bundle">
           <FolderOpen size={15} aria-hidden="true" /> Import a prepared review (.json)

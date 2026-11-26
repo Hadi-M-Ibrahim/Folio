@@ -4,14 +4,16 @@ import { readFile } from 'node:fs/promises';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 // A colored registration square identifies each physical sheet even if Folio rasterizes a subset.
-const sheetColors = [[225, 38, 57], [27, 107, 199], [46, 154, 68], [151, 63, 200], [224, 138, 22]];
+function sheetColor(pageNumber) {
+  return [20 + (73 * pageNumber) % 221, 30 + (57 * pageNumber) % 211, 40 + (79 * pageNumber) % 199];
+}
 
-async function printPdf(context, lines, { scanned = false } = {}) {
+async function printPdf(context, lines, { scanned = false, fontSize = 16 } = {}) {
   const printer = await context.newPage();
   try {
     await printer.setContent(`<style>
       @page { size: 6in 4in; margin: 0; }
-      body { margin: 0; font: 16px Arial, sans-serif; }
+      body { margin: 0; font: ${fontSize}px Arial, sans-serif; }
       section { padding: 32px; }
       section + section { break-before: page; }
       i { display: block; height: 48px; width: 48px; }
@@ -40,7 +42,7 @@ async function printPdf(context, lines, { scanned = false } = {}) {
         sheet.append(square, paragraph);
         document.body.append(sheet);
       }
-    }, { lines, sheetColors, scanned });
+    }, { lines, sheetColors: lines.map((_, i) => sheetColor(i + 1)), scanned });
     return await printer.pdf({ preferCSSPageSize: true, printBackground: true });
   } finally {
     await printer.close();
@@ -62,7 +64,7 @@ async function expectPdfCanvas(viewer, title, number) {
   const canvas = viewer.getByRole('img', { name: `Page ${number} of ${title}`, exact: true });
   await expect(canvas).toBeVisible();
   // Sample the registration square inside the rendered page, away from its edge.
-  const expected = sheetColors[number - 1];
+  const expected = sheetColor(number);
   await expect.poll(() => canvas.evaluate((sheet, rgb) => {
     if (!sheet.width || !sheet.height) return false;
     const ctx = sheet.getContext('2d');
@@ -87,7 +89,7 @@ async function expectAttachedSheets(attachment, numbers) {
       try {
         await sheet.render({ canvas: target.canvas, viewport }).promise;
         const { data } = target.context.getImageData(36, 36, 1, 1);
-        for (const [channel, value] of sheetColors[originalPage - 1].entries()) {
+        for (const [channel, value] of sheetColor(originalPage).entries()) {
           expect(Math.abs(data[channel] - value)).toBeLessThan(12);
         }
         // The body under the square still contains the printed words.
@@ -421,8 +423,7 @@ test('editing a selected question batch clears its previous source attribution',
   await page.goto('/#/new/questionnaire');
   const questions = page.getByLabel('Questions', { exact: true });
   await pasteSource(page, 'questionnaire', Array.from({ length: 31 }, (_, index) => `${index + 1}. Who reviews record ${index + 1}?`).join('\n'));
-  await page.getByLabel(/Questionnaire items/).fill('29–30');
-  await page.getByRole('button', { name: 'Apply range' }).click();
+  await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '29–30');
   await expect(questions).toHaveValue('29. Who reviews record 29?\n30. Who reviews record 30?');
   await expect(page.getByText(/Questionnaire items 29–30/)).toBeVisible();
   await questions.fill('Who reviews the replacement log?');
@@ -602,3 +603,292 @@ for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]
     await expectPdfCanvas(page.getByRole('dialog'), 'Scanned policy.pdf', 1);
   });
 }
+
+async function finishDocumentReview(page, mode) {
+  const requests = [];
+  function capture(request) {
+    if (new URL(request.url()).pathname === '/api/review') requests.push(request);
+  }
+  page.on('request', capture);
+  try {
+    const guide = mode === 'guide';
+    await page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence', exact: true }).click();
+    const download = page.getByRole('button', { name: guide ? 'Download action list' : 'Download responses' });
+    const alert = page.getByRole('alert');
+    await expect(download.or(alert).first()).toBeVisible({ timeout: 60_000 });
+    await expect(alert).toHaveCount(0);
+    await expect(download).toBeVisible();
+  } finally {
+    page.off('request', capture);
+  }
+  const parts = [];
+  for (const request of requests) {
+    const response = await request.response();
+    const input = request.postDataJSON();
+    expect(input).toMatchObject({ mode, allowModel: true, modelSharingConsent: true });
+    parts.push({ input, result: await response.json(), calls: await providerCalls(response),
+      assessed: JSON.parse(await response.headerValue('x-test-assessed-criteria')) });
+  }
+  return parts;
+}
+
+async function selectLastFinding(page, questions) {
+  const queue = page.getByRole('complementary', { name: 'Review queue' });
+  const mobileToggle = queue.getByRole('button', { name: /Show list/ });
+  if (await mobileToggle.isVisible()) await mobileToggle.click();
+  await expect(queue.locator('.row-name')).toHaveText(questions);
+  await queue.locator('.queue-row').last().click();
+  await expect(page.getByRole('heading', { name: questions.at(-1), exact: true })).toBeVisible();
+}
+
+test('one submission reviews 65 native PDF questions in full and exports every response', async ({ page, context }) => {
+  test.setTimeout(120_000);
+  const questions = Array.from({ length: 65 }, (_, i) => `${i + 1}. Who keeps inspection log ${i + 1}?`);
+  questions[32] = '33. Who keeps the inspection log covering ' + 'archived inspection entries and '.repeat(73) + 'the final register?';
+  expect(questions[32].length).toBeGreaterThan(2000);
+  const sheets = Array.from({ length: 13 }, (_, i) => questions.slice(i * 5, i * 5 + 5).join('\n'));
+  const form = await printPdf(context, sheets, { fontSize: 8 });
+  const policyQuote = 'The registrar keeps the inspection log for every site.';
+  const policy = await printPdf(context, ['Car park hours vary.', policyQuote]);
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload questionnaire', 'Register.pdf', form);
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Register.pdf', 1);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await uploadPdf(page, 'Upload policy files', 'Records.pdf', policy);
+  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Records.pdf');
+  const parts = await finishDocumentReview(page, 'questionnaire');
+
+  expect(parts.length).toBeGreaterThan(1);
+  expect(parts.flatMap(({ input }) => input.questions)).toEqual(questions);
+  expect(parts.flatMap(({ result }) => result.findings.map(finding => finding.question))).toEqual(questions);
+  expect(parts.flatMap(({ assessed }) => assessed).sort()).toEqual(
+    questions.map(question => createHash('sha256').update(question).digest('hex')).sort(),
+  );
+  for (const { input, calls, result } of parts) {
+    const originalPages = [...new Set(input.questions.map(question => Math.floor(questions.indexOf(question) / 5) + 1))];
+    expect(input.pdfAttachments).toHaveLength(2);
+    const source = await expectAttachedSheets(input.pdfAttachments.find(pdf => pdf.role === 'source'), originalPages);
+    const attachedPolicy = input.pdfAttachments.find(pdf => pdf.role === 'policy');
+    const policyBlock = await expectAttachedSheets(attachedPolicy, [1, 2]);
+    expect(Buffer.from(attachedPolicy.data, 'base64').equals(policy)).toBe(true);
+    expect(source.title).toBe('Register.pdf');
+    expect(policyBlock).toMatchObject({ title: 'Records.pdf', documentId: input.documents[0].id });
+    expect(calls.map(call => call.tool)).toContain('record_search_plan');
+    expect(calls.map(call => call.tool)).toContain('record_review');
+    for (const call of calls) {
+      expect(call.documents).toEqual(call.tool === 'record_search_plan' ? [source] : [source, policyBlock]);
+    }
+    for (const finding of result.findings) {
+      expect(finding).toMatchObject({ analysisEngine: 'anthropic', supporting: [{ page: 2, quote: policyQuote }] });
+    }
+  }
+
+  await selectLastFinding(page, questions);
+  await page.getByRole('button', { name: /Records\.pdf.*p\. 2/ }).first().click();
+  await expectPdfCanvas(page.getByRole('dialog'), 'Records.pdf', 2);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Use suggested answer' }).click();
+  await page.getByRole('button', { name: 'Confirm response' }).click();
+  const output = await report(page, 'Download responses');
+  expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) =>
+    `## Question ${i + 1}. ${question.replace(/^([0-9]+)\./, '$1&#46;')}`));
+  expect(output.match(/^Response status — Confirmed$/gm)).toHaveLength(1);
+  expect(output.match(/^Response status — Pending$/gm)).toHaveLength(64);
+  const finalResponse = output.slice(output.indexOf('## Question 65.'), output.indexOf('## Evidence and search record'));
+  expect(finalResponse).toContain('Response status — Confirmed');
+  expect(finalResponse).toContain('Records.pdf, p. 2');
+  expect(finalResponse).toContain(policyQuote);
+});
+
+test('a full native guide preserves repeated Unicode-positioned duties across empty and populated parts', async ({ page, context }) => {
+  test.setTimeout(120_000);
+  const repeated = 'Clerks must sign the inspection log.';
+  const duties = Array.from({ length: 36 }, (_, i) => `Staff must retain inspection register ${i + 1}.`);
+  const sheets = Array.from({ length: 30 }, (_, i) =>
+    `🧭 Archive catalog ${i + 1}.\n` + 'The archive opened in the spring. '.repeat(63).trim());
+  sheets[0] = repeated + '\n' + sheets[0];
+  sheets[14] = duties.slice(0, 18).join('\n');
+  sheets[15] = duties.slice(18).join('\n');
+  sheets[29] += '\n' + repeated;
+  const guide = await printPdf(context, sheets, { fontSize: 8 });
+  await page.goto('/#/new/guide');
+  await uploadPdf(page, 'Upload regulatory guide', 'Archive.pdf', guide);
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive.pdf', 1);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  const parts = await finishDocumentReview(page, 'guide');
+
+  const guideParts = parts.map(({ input }) => input.guide);
+  expect(guideParts.join('').length).toBeGreaterThan(50_000);
+  const normalized = value => value.replace(/\s+/gu, ' ').trim();
+  const expectedGuide = sheets.map(normalized).join(' ');
+  expect(normalized(guideParts.join(''))).toBe(expectedGuide);
+  expect(parts.some(({ result }) => result.findings.length === 0)).toBe(true);
+  const questions = [repeated, ...duties, repeated];
+  expect(parts.flatMap(({ result }) => result.findings.map(finding => finding.question))).toEqual(questions);
+  let pageOffset = 0;
+  const positions = sheets.map((sheet, i) => {
+    const start = pageOffset;
+    const end = start + normalized(sheet).length;
+    pageOffset = end + 1;
+    return { number: i + 1, start, end };
+  });
+  let cursor = 0;
+  for (const { input, result, calls } of parts) {
+    expect(input.documents).toEqual([]);
+    expect(input.pdfAttachments).toHaveLength(1);
+    const [attachment] = input.pdfAttachments;
+    const text = normalized(input.guide);
+    const start = expectedGuide.indexOf(text, cursor);
+    expect(start).toBeGreaterThanOrEqual(cursor);
+    expect(expectedGuide.slice(cursor, start).trim()).toBe('');
+    cursor = start + text.length;
+    const originalPages = positions.filter(page => page.end > start && page.start < cursor).map(page => page.number);
+    const block = await expectAttachedSheets(attachment, originalPages);
+    expect(block).toMatchObject({ title: 'Archive.pdf', role: 'source' });
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call).toEqual({ tool: 'record_search_plan', documents: [block] });
+    const codePoints = Array.from(input.guide);
+    for (const { criterionStart, criterionEnd, criterionSource } of result.findings) {
+      expect(codePoints.slice(criterionStart, criterionEnd).join('')).toBe(criterionSource);
+    }
+  }
+  expect(cursor).toBe(expectedGuide.length);
+
+  await selectLastFinding(page, questions);
+  await page.getByRole('button', { name: /Archive\.pdf.*p\. 30/ }).click();
+  const citation = page.getByRole('dialog');
+  await expectPdfCanvas(citation, 'Archive.pdf', 30);
+  await expect(citation.getByRole('complementary', { name: 'Cited passage' })).toContainText(repeated);
+  await expect(citation.locator('.pdf-text-layer mark').first()).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByLabel('Action note').fill('Verify the final register.');
+  const output = await report(page, 'Download action list');
+  expect(output.match(/^### Obligation \d+$/gm)).toEqual(questions.map((_, i) => `### Obligation ${i + 1}`));
+  expect(output.match(/^> .+$/gm)).toEqual(questions.map(question => '> ' + question));
+  expect(output.slice(output.indexOf('### Obligation 38'))).toContain('Archive.pdf · p. 30');
+  expect(output).toContain('Verify the final register.');
+});
+
+test('a complete scanned form joins a question across transcription requests before assessment', async ({ page, context }) => {
+  const printed = ['Who keeps inspection log 1?', 'Who keeps inspection log 2?', 'Who keeps the inspection log',
+    'after the archive closes?', 'Who keeps inspection log 5?'];
+  const questions = [printed[0], printed[1], printed[2] + ' ' + printed[3], printed[4]];
+  const form = await printPdf(context, printed, { scanned: true });
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload questionnaire', 'Archive scan.pdf', form);
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive scan.pdf', 1);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', 'The registrar keeps the inspection log after the archive closes.');
+  const parts = await finishDocumentReview(page, 'questionnaire');
+
+  const transcripts = parts.filter(({ input }) => input.transcribeSourceOnly);
+  expect(transcripts.length).toBeGreaterThan(1);
+  const physicalPages = transcripts.flatMap(({ input }) => input.pdfAttachments[0].pages);
+  expect(physicalPages).toEqual([1, 2, 3, 4, 5]);
+  expect(transcripts.some(({ input }) => input.pdfAttachments[0].pages.at(-1) === 3)).toBe(true);
+  for (const { input, calls } of transcripts) {
+    expect(input.documents).toEqual([]);
+    expect(input.pdfAttachments).toHaveLength(1);
+    const [attachment] = input.pdfAttachments;
+    const source = await expectAttachedSheets(attachment, attachment.pages);
+    expect(source).toMatchObject({ title: 'Archive scan.pdf', role: 'source' });
+    for (const call of calls) expect(call).toEqual({ tool: 'record_pdf_pages', documents: [source] });
+  }
+  const reviews = parts.filter(({ input }) => !input.transcribeSourceOnly);
+  expect(reviews.flatMap(({ input }) => input.questions)).toEqual(questions);
+  expect(reviews.flatMap(({ result }) => result.findings.map(finding => finding.question))).toEqual(questions);
+  await selectLastFinding(page, questions);
+  const output = await report(page, 'Download responses');
+  expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) => `## Question ${i + 1}. ${question}`));
+});
+
+test('retrying a whole questionnaire resumes after the last successful part', async ({ page }, testInfo) => {
+  const questions = Array.from({ length: 32 }, (_, i) => `Who keeps inspection log ${i + 1}?`);
+  questions[16] = `Who keeps the outage log for case late-${testInfo.project.name}-${testInfo.repeatEachIndex}-${testInfo.retry}?`;
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await page.route('**/api/review', route => route.fulfill({
+    status: 429, body: '', headers: { 'Retry-After': '1' },
+  }), { times: 1 });
+  const firstAttempt = [];
+  function capture(response) {
+    if (new URL(response.url()).pathname === '/api/review') firstAttempt.push(response);
+  }
+  page.on('response', capture);
+  await page.getByRole('button', { name: 'Find evidence' }).click();
+  await expect(page.getByRole('alert')).toContainText('Anthropic could not complete the assessment.');
+  page.off('response', capture);
+  expect(firstAttempt.length).toBeGreaterThan(2);
+  expect(firstAttempt[0].status()).toBe(429);
+  expect(firstAttempt[1].request().postDataJSON()).toEqual(firstAttempt[0].request().postDataJSON());
+  expect(firstAttempt.at(-1).status()).toBe(503);
+  await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  const completedQuestions = firstAttempt.slice(1, -1).flatMap(response => {
+    expect(response.status()).toBe(200);
+    return response.request().postDataJSON().questions;
+  });
+  const retry = await finishDocumentReview(page, 'questionnaire');
+  expect(retry[0].input).toEqual(firstAttempt.at(-1).request().postDataJSON());
+  expect([...completedQuestions, ...retry.flatMap(({ input }) => input.questions)]).toEqual(questions);
+  await selectLastFinding(page, questions);
+  const output = await report(page, 'Download responses');
+  expect(output.match(/^## Question .+$/gm)).toHaveLength(questions.length);
+});
+
+test('cancelling a paused multipart review keeps completed work for the next submission', async ({ page }) => {
+  const questions = Array.from({ length: 25 }, (_, i) => `Who keeps inspection log ${i + 1}?`);
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  const requests = [];
+  await page.route('**/api/review', route => {
+    requests.push(route.request().postDataJSON());
+    return requests.length === 2
+      ? route.fulfill({ status: 429, body: '', headers: { 'Retry-After': '70' } })
+      : route.continue();
+  });
+  await page.getByRole('button', { name: 'Find evidence' }).click();
+  await expect(page.getByText(/Review paused at the submission limit/)).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel review' }).click();
+  await expect(page.getByRole('button', { name: 'Find evidence' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Registry.txt');
+
+  const resumed = await finishDocumentReview(page, 'questionnaire');
+  expect(resumed[0].input).toEqual(requests[1]);
+  expect([...requests[0].questions, ...resumed.flatMap(({ input }) => input.questions)]).toEqual(questions);
+  await selectLastFinding(page, questions);
+});
+
+function oversizedPdf(original) {
+  const trailer = original.lastIndexOf('startxref');
+  expect(trailer).toBeGreaterThan(0);
+  // One valid, unreferenced PDF comment makes the original larger than the encoded transfer budget.
+  return Buffer.concat([original.subarray(0, trailer), Buffer.from('%'), Buffer.alloc(3_200_000, 65),
+    Buffer.from('\n'), original.subarray(trailer)]);
+}
+
+test('large questionnaire and policy originals are automatically sent as visible PDF pages', async ({ page, context }) => {
+  const question = 'Who signs the inspection log?';
+  const form = oversizedPdf(await printPdf(context, [question]));
+  const policy = oversizedPdf(await printPdf(context, ['The registrar signs the inspection log.']));
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload questionnaire', 'Complete form.pdf', form);
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Complete form.pdf', 1);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await uploadPdf(page, 'Upload policy files', 'Signature policy.pdf', policy);
+  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Signature policy.pdf');
+  const response = await submitReview(page, 'questionnaire');
+  const sent = response.request().postDataJSON();
+  expect(sent.questions).toEqual([question]);
+  expect(sent.pdfAttachments).toHaveLength(2);
+  const block = await expectAttachedSheets(sent.pdfAttachments[0], [1]);
+  const policyBlock = await expectAttachedSheets(sent.pdfAttachments[1], [1]);
+  const calls = await providerCalls(response);
+  expect(calls[0].documents).toEqual([block]);
+  expect(calls.at(-1).documents).toEqual([block, policyBlock]);
+  await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
+});

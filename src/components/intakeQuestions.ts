@@ -5,6 +5,41 @@ const pageNumber = /^(?:page\s+)?\d+\s+(?:of|\/)\s+\d+$|^page\s+\d+$|^\d+$/i;
 const formTitle = /^(?:[\w&-]+\s+){0,6}(?:questionnaire|form)$/i;
 const answerField = /\(references?\s*:|^(?:[☐□]\s*)?yes\s+(?:[☐□]\s*)?no\b/i;
 
+// Printed item numbers are stronger boundaries than line wraps or follow-up sentences.
+export function questionsFromText(text: string): string[] {
+  const normalized = text.trim().replace(/\r\n?/g, '\n')
+    .replace(/(?<=[.!?])[^\S\n]+(?=(?:Q(?:uestion)?\s*)?\(?\d+(?:\.\d+)*[.):]\s+)/gi, '\n');
+  if (!normalized) return [];
+  const lines = normalized.split('\n').map(line => line.trim());
+  if (itemNumber.test(lines[0])) {
+    const questions: string[] = [];
+    for (const line of lines) {
+      if (itemNumber.test(line)) questions.push(line);
+      else if (line) questions[questions.length - 1] += ' ' + line;
+    }
+    return questions;
+  }
+  return normalized.split(/\n\s*\n/).flatMap(unmarkedQuestions);
+}
+
+function unmarkedQuestions(paragraph: string): string[] {
+  const lines = paragraph.split(/\n|(?<=\?)\s+(?=\S)/).map(line => line.trim()).filter(Boolean);
+  if (!lines.some(line => questionStart.test(line) || line.includes('?'))) return lines;
+  const questions: string[] = [];
+  let inChoices = false;
+  for (const line of lines) {
+    const previous = questions.at(-1);
+    const listItem = bullet.test(line) || itemNumber.test(line);
+    const choice: boolean = listItem && !questionStart.test(line.replace(bullet, '').replace(itemNumber, '')) &&
+      (inChoices || Boolean(previous?.endsWith(':')));
+    const startsPrompt = /^[A-Z]/.test(line) && questionStart.test(line);
+    if (!previous || (!choice && (listItem || startsPrompt || /[.!?]$/.test(previous)))) questions.push(line);
+    else questions[questions.length - 1] += ' ' + line;
+    inChoices = choice;
+  }
+  return questions;
+}
+
 type PdfLine = { text: string; page: number };
 export type PdfQuestion = { text: string; pageNumbers: number[] };
 

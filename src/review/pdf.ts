@@ -1,6 +1,6 @@
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { version as pdfVersion } from 'pdfjs-dist/package.json';
-import { MAX_REQUEST_BYTES, type PdfAttachment, type Policy } from './model';
+import { MAX_REQUEST_BYTES, ReviewSizeError, type PdfAttachment, type Policy } from './model';
 
 const maxAttachmentBytes = Math.floor(MAX_REQUEST_BYTES / 4) * 3;
 const pdfPageCounts = new WeakMap<File, number>();
@@ -20,7 +20,7 @@ export async function openPdf(file: File) {
 
 function checkAttachmentSize(bytes: number) {
   if (bytes >= maxAttachmentBytes) {
-    throw Error('These PDF pages exceed the 4 MB review limit after encoding. Select fewer pages or upload a smaller PDF.');
+    throw new ReviewSizeError('These PDF pages exceed the 4 MB transfer limit after encoding.');
   }
 }
 
@@ -113,15 +113,17 @@ export async function makePdfAttachment(
   }
   const attachment = { role, documentId: doc.id, title: doc.title, pages };
   const lastPage = pages[pages.length - 1];
-  const wholeFile = (count?: number) => !options?.renderSelectedPages && pages.length === count && lastPage === count;
-  if (wholeFile(pdfPageCounts.get(file))) return { ...attachment, data: await base64Pdf(file) };
+  // Large policy originals can include bulky embedded resources. Try a visual copy before requiring a narrower policy scope.
+  const keepOriginal = !options?.renderSelectedPages && (role !== 'policy' || file.size < maxAttachmentBytes);
+  const useOriginal = (count?: number) => keepOriginal && pages.length === count && lastPage === count;
+  if (useOriginal(pdfPageCounts.get(file))) return { ...attachment, data: await base64Pdf(file) };
 
   const task = await openPdf(file);
   try {
     const pdf = await task.promise;
     signal?.throwIfAborted();
     if (lastPage > pdf.numPages) throw Error('Choose pages within the original PDF.');
-    const blob = wholeFile(pdf.numPages) ? file : await selectedPagesPdf(pdf, pages, signal);
+    const blob = useOriginal(pdf.numPages) ? file : await selectedPagesPdf(pdf, pages, signal);
     signal?.throwIfAborted();
     return { ...attachment, data: await base64Pdf(blob) };
   } catch (error) {

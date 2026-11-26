@@ -1,6 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { questionsFromPdf, questionsFromPdfPages } from '../src/components/intakeQuestions.ts';
+import { questionsFromPdf, questionsFromPdfPages, questionsFromText } from '../src/components/intakeQuestions.ts';
+
+test('pasted numbered items keep wrapped text, follow-up sentences, and list choices', () => {
+  assert.deepEqual(questionsFromText(
+    '1. Who maintains the\r\ninspection report? Explain the process. 2. Which conditions apply:\r\n• First filing\r\n• Renewal\r\n\r\n3. Identify the reviewer.',
+  ), [
+    '1. Who maintains the inspection report? Explain the process.',
+    '2. Which conditions apply: • First filing • Renewal',
+    '3. Identify the reviewer.',
+  ]);
+});
+
+test('ordinary paste accepts paragraphs, adjacent questions, and line-separated prompts', () => {
+  assert.deepEqual(questionsFromText(
+    'Who maintains the records and\nwhere are they stored? When are they removed?\n\nIdentify the reviewer\nList the exceptions',
+  ), ['Who maintains the records and where are they stored?', 'When are they removed?', 'Identify the reviewer', 'List the exceptions']);
+  assert.deepEqual(questionsFromText('Retention period\nCertification authority'), ['Retention period', 'Certification authority']);
+  assert.deepEqual(questionsFromText('who signs? when is it due?'), ['who signs?', 'when is it due?']);
+  assert.deepEqual(questionsFromText(' \r\n\t'), []);
+});
+
+test('pasted questions preserve long prompts and full questionnaire order', () => {
+  const prompts = Array.from({ length: 95 }, (_, i) => `${i + 1}. Describe ${'record retention '.repeat(140)}for filing ${i + 1}.`);
+  assert.deepEqual(questionsFromText(prompts.join('\n')), prompts);
+});
 
 test('unnumbered questions survive a list of answer options', () => {
   const text = 'Who keeps records?\nWhich office must approve:\n• Renewals\n• Appeals\nHow quickly do they decide?';

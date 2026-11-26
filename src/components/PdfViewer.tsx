@@ -43,6 +43,13 @@ function markText(container: HTMLElement, quote: string, term: boolean) {
     if (cursor > offset) run.append(value.slice(cursor - offset));
     offset = end;
   }
+  const mark = container.querySelector('mark');
+  const scroll = container.closest<HTMLElement>('.pdf-scroll');
+  if (!mark || !scroll) return;
+  const markBox = mark.getBoundingClientRect(), scrollBox = scroll.getBoundingClientRect();
+  if (markBox.top < scrollBox.top || markBox.bottom > scrollBox.bottom) {
+    scroll.scrollTop += markBox.top - scrollBox.top - scroll.clientHeight / 3;
+  }
 }
 
 function PdfPage({ pdf, number, scale, fileName, highlight }: {

@@ -184,7 +184,7 @@ class PdfReviewTests(unittest.TestCase):
             with self.subTest(bad=bad), patch.object(model, "invoke_tool", return_value=bad) as invoke, \
                  self.assertRaises(model.ProviderUnavailable):
                 api.review(request)
-            invoke.assert_called_once()
+            self.assertEqual(invoke.call_count, 2 if bad.get("incomplete") else 1)
 
     def test_scanner_and_planner_share_deadline_and_respect_character_limits(self):
         request = payload()
@@ -197,3 +197,63 @@ class PdfReviewTests(unittest.TestCase):
         with patch.object(pdf_reader, "MAX_CHARS", len(ANNEX)), patch.object(model, "invoke_tool", return_value={"pages": rows}), \
              self.assertRaisesRegex(search.InvalidRequest, "policy characters"):
             api.review(request)
+
+
+    def test_transcription_only_bypasses_planner_and_policy_ocr_but_checks_consent_and_anchors(self):
+        request = payload()
+        del request["questions"]
+        request.update(readSourcePdf=True, documentPart=True, transcribeSourceOnly=True)
+        request["documents"][0]["pages"][0]["text"] = ""
+        long_question = "How do these conditions apply " + "through review " * 180 + "after renewal?"
+        questions = [f"Who files record {i}?" for i in range(40)] + [long_question]
+        source_rows = [{"number": 5, "text": "\n".join(questions)}]
+        for extra in ({}, {"documents": [], "pdfAttachments": request["pdfAttachments"][:1]}):
+            result, calls = self.run_provider({**request, **extra}, [{"pages": source_rows, "questions": questions}])
+            self.assertEqual([tool for tool, _, _ in calls], ["record_pdf_pages"])
+            self.assertEqual(result["sourcePages"], source_rows)
+            self.assertEqual(result["questions"], questions)
+            self.assertEqual((result["engine"], result["findings"]), ("anthropic", []))
+            self.assertNotIn("policyPageText", result)
+        source_rows[0]["text"] = ""
+        with patch.object(model, "invoke_tool", return_value={"pages": source_rows, "questions": ["Invented?"]}), \
+             self.assertRaisesRegex(model.ProviderUnavailable, "matched"):
+            api.review(request)
+        with patch.object(model, "invoke_tool") as invoke:
+            for flags in ({"modelSharingConsent": False}, {"allowModel": False}, {"readSourcePdf": False},
+                          {"documentPart": False}, {"pdfAttachments": request["pdfAttachments"][1:]}):
+                with self.subTest(flags=flags), self.assertRaises(search.InvalidRequest):
+                    api.review({**request, **flags})
+            invoke.assert_not_called()
+
+    def test_empty_scanned_questionnaire_parts_preserve_every_page_and_skip_assessment(self):
+        request = payload()
+        del request["questions"]
+        request.update(readSourcePdf=True, documentPart=True, pdfAttachments=[pdf_attachment("source", [2, 7])])
+        rows = [{"number": 2, "text": ""}, {"number": 7, "text": "Questionnaire cover"}]
+        result, calls = self.run_provider(request, [{"pages": rows, "questions": []}])
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["engine"], "anthropic")
+        self.assertEqual(result["sourcePages"], rows)
+        self.assertEqual([tool for tool, _, _ in calls], ["record_pdf_pages"])
+        blank_rows = [{**row, "text": ""} for row in rows]
+        blank, _ = self.run_provider(request, [{"pages": blank_rows}])
+        self.assertEqual((blank["questions"], blank["sourcePages"]), ([], blank_rows))
+        with patch.object(model, "invoke_tool", return_value={"pages": rows, "questions": []}), \
+             self.assertRaisesRegex(search.InvalidRequest, "No questionnaire prompts"):
+            api.review({**request, "documentPart": False})
+
+    def test_scan_batches_validate_a_question_continued_on_the_next_page(self):
+        pages = list(range(3, 3 + pdf_reader.SCAN_BATCH_PAGES + 1))
+        source = pdf_attachment("source", pages)
+        question = "Who signs the final report after the hearing?"
+        rows = [{"number": page, "text": ""} for page in pages]
+        rows[-2]["text"], rows[-1]["text"] = question.split(" after")
+        rows[-1]["text"] = "after" + rows[-1]["text"]
+        request = {"allowModel": True, "modelSharingConsent": True, "mode": "questionnaire", "readSourcePdf": True,
+                   "documentPart": True, "transcribeSourceOnly": True, "documents": [], "pdfAttachments": [source]}
+        result, calls = self.run_provider(request, [
+            {"pages": rows[:-1], "questions": [question]}, {"pages": rows[-1:], "questions": []},
+        ])
+        self.assertEqual([data["pages"] for _, _, data in calls], [pages[:-1], pages[-1:]])
+        self.assertEqual(result["sourcePages"], rows)
+        self.assertEqual(result["questions"], [question])

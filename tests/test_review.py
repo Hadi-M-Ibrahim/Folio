@@ -9,6 +9,7 @@ from api._review import model
 from api._review.search import (
     MAX_PAGE_NUMBER,
     InvalidRequest,
+    ReviewPartTooLarge,
     basic_plan,
     retrieve,
     validate,
@@ -67,13 +68,14 @@ class ReviewTests(unittest.TestCase):
                         self.assertEqual(row["totalSearchTerms"], 0)
         invoke.assert_not_called()
 
-    def test_guide_at_the_limit_keeps_every_clause_and_discloses_the_cap(self):
-        clauses = [f"The operator must retain record {i}." for i in range(30)]
+    def test_large_local_guide_keeps_every_clause_and_its_source_location(self):
+        clauses = [f"The operator must retain record {i}." for i in range(63)]
         guide = "\n".join(f"{i}. {clause}" for i, clause in enumerate(clauses, 1))
         result = api.review({"mode": "guide", "guide": guide, "documents": []})
         self.assertEqual([row["criterionSource"] for row in result["findings"]], clauses)
-        self.assertIn("30-criterion limit", result["notice"])
-        self.assertTrue(result["criterionLimitReached"])
+        self.assertFalse(result["criterionLimitReached"])
+        for row in result["findings"]:
+            self.assertEqual(guide[row["criterionStart"]:row["criterionEnd"]], row["criterionSource"])
 
     def test_new_model_phrase_is_actually_searched_and_ranked(self):
         data = sample(questions=["Is the protocol documented?"], documents=[{
@@ -117,14 +119,13 @@ class ReviewTests(unittest.TestCase):
 
     def test_validation_no_silent_truncation_or_duplicate_page_ids(self):
         for changes in (
-            {"questions": ["Q"] * 31}, {"questions": [7]}, {"questions": ["x" * 2001]},
+            {"questions": []}, {"questions": [7]}, {"questions": [" "]},
             {"documents": []}, {"mode": "guide", "guide": " ", "documents": []},
             {"mode": "guide", "guide": "1. ...", "documents": []}, {"mode": "guide", "guide": None, "documents": []},
             {"mode": "guide", "documents": None},
-            {"guide": "\n".join(f"{i}. Employees must follow rule {i}." for i in range(1, 32)), "mode": "guide"},
             {"documents": [{"id": "x", "title": "x", "pages": [{"number": 1, "text": "yes"}] * 2}]},
             {"documents": [{"id": "x", "title": "x", "pages": [{"number": 1, "text": ""}]}]},
-            {"allowModel": "false"}, {"modelSharingConsent": 1}, {"publicInputConsent": "true"}, {"publicInputConsent": 1},
+            {"documentPart": 1}, {"transcribeSourceOnly": "yes"}, {"requireComplete": "yes"}, {"transcribeSourceOnly": True}, {"allowModel": "false"}, {"modelSharingConsent": 1}, {"publicInputConsent": "true"}, {"publicInputConsent": 1},
         ):
             with self.subTest(changes=changes), self.assertRaises(InvalidRequest):
                 api.review(sample(**changes))
@@ -256,6 +257,54 @@ class ReviewTests(unittest.TestCase):
                 result = api.review(consented, local_operator=True)
                 self.assertEqual((result["planningEngine"], result["engine"]), ("anthropic", "anthropic"))
                 self.assertEqual(provider.call_count, 2)
+
+    def test_document_parts_fail_on_incomplete_assessments_and_offer_splitting_for_expired_budget(self):
+        questions = ["Which records apply?", "Who approves the records?"]
+        plan = {"criteria": [{"sourceId": f"s{n}", "searchTerms": ["records"]} for n in (1, 2)]}
+        one_row = {"assessments": [{"id": "q1", "answer": "Review needed.", "status": "needs_review",
+                                   "supporting": [], "counter": []}]}
+        payload = sample(questions=questions, allowModel=True, modelSharingConsent=True, documentPart=True)
+        with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True):
+            for response in (one_row, model.ProviderUnavailable):
+                with patch.object(model, "invoke_tool", side_effect=[plan, response]), \
+                     self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
+                    api.review(payload)
+            with patch.object(model, "invoke_tool", side_effect=[plan, model.OutputTruncated]), \
+                 self.assertRaises(ReviewPartTooLarge):
+                api.review(payload)
+            for flags in ({"requireComplete": True, "documentPart": False}, {"documentPart": True}):
+                for responses in ([plan, model.DeadlineExceeded], [model.DeadlineExceeded]):
+                    with patch.object(model, "invoke_tool", side_effect=responses), self.assertRaises(ReviewPartTooLarge):
+                        api.review({**payload, **flags})
+            with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable), \
+                 self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
+                api.review({**payload, "requireComplete": True, "documentPart": False})
+
+    def test_direct_large_questionnaire_returns_every_assessed_prompt_with_verified_policy_citations(self):
+        long_prompt = "Does the office keep records " + "for every listed case " * 135 + "after renewal?"
+        questions = [f"Who keeps the records for renewal {i}?" for i in range(38)] + [long_prompt]
+        quote = "The office keeps the renewal records."
+        payload = sample(questions=questions, allowModel=True, modelSharingConsent=True, documentPart=True,
+                         documents=[{"id": "r", "title": "Policy", "pages": [{"number": 7, "text": quote}]}])
+        def simulate(system, tool, inputs, key, deadline, max_tokens=3800):
+            if tool["name"] == "record_search_plan":
+                return {"criteria": [{"sourceId": unit["sourceId"], "searchTerms": ["records"]}
+                                     for unit in inputs["sources"]]}
+            return {"assessments": [
+                {"id": row["id"], "answer": quote, "status": "supported",
+                 "supporting": [{"passage": row["passages"][0]["passage"], "quote": quote}], "counter": []}
+                for row in inputs
+            ]}
+        with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True), \
+             patch.object(model, "invoke_tool", side_effect=simulate) as invoke:
+            result = api.review(payload)
+        rows = result["findings"]
+        self.assertEqual(result["reviewScope"], {"criteria": len(questions), "documents": 1, "pages": 1})
+        self.assertEqual([row["question"] for row in rows], questions)
+        self.assertEqual([row["id"] for row in rows], [f"q{n}" for n in range(1, 40)])
+        self.assertTrue(all(row["analysisEngine"] == "anthropic" and row["supporting"][0]["page"] == 7 for row in rows))
+        self.assertEqual(invoke.call_args.args[2][-1]["criterion"], long_prompt)
+        self.assertEqual(len({call.args[4] for call in invoke.call_args_list}), 1)
 
     def test_provider_call_cannot_start_after_deadline_and_uses_remaining_budget(self):
         with patch.object(model.time, "monotonic", return_value=100), patch.object(model, "open_provider_request") as send:

@@ -254,6 +254,8 @@
   border-top: 1px solid var(--line);
 }
 .intake-disclosure { max-width: 44ch; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.intake-progress { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.intake-progress svg { flex-shrink: 0; }
 .intake-primary {
   display: inline-flex;
   align-items: center;

@@ -26,9 +26,7 @@ if __name__ == "__main__" and not __package__:
 from api._review.search import (
     ADVERSE,
     MAX_CHARS,
-    MAX_CRITERIA,
     MAX_DOCUMENTS,
-    MAX_GUIDE_CHARS,
     MAX_PAGE_CHARS,
     MAX_PAGES,
     STOP,
@@ -139,8 +137,6 @@ def prepare_criteria(args, guide, questions):
     payload = {"mode": args.mode, "allowModel": False}
     if args.mode == "questionnaire":
         numbers = select_numbers(args.questions, max(questions))
-        if len(numbers) > MAX_CRITERIA:
-            raise ValueError(f"Select at most {MAX_CRITERIA} questions per review.")
         payload["questions"] = [f"{n}. {questions[n]}" for n in numbers]
         payload["selection"] = {"questionNumbers": numbers}
         criteria = [questions[n] for n in numbers]
@@ -148,8 +144,6 @@ def prepare_criteria(args, guide, questions):
         numbers = select_numbers(args.pages, len(guide))
         pages = [{"number": n, "text": page_text(guide[n - 1])} for n in numbers]
         text = "\n\n".join(page["text"] for page in pages)
-        if len(text) > MAX_GUIDE_CHARS:
-            raise ValueError("Select a smaller guide section (at most 50,000 characters per review).")
         payload["guide"] = text
         payload["sourceDocument"] = {"id": "submitted-guide", "title": Path(guide.name).name, "pages": pages}
         payload["selection"] = {"guidePages": numbers}

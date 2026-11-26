@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ListFilter } from 'lucide-react';
-import { MAX_GUIDE_CHARACTERS, MAX_PDF_ATTACHMENT_PAGES, MAX_QUESTIONS, type Policy } from '../review/model';
+import { MAX_PDF_ATTACHMENT_PAGES, type Policy } from '../review/model';
 import type { PdfQuestion } from './intakeQuestions';
 
 export type RangeItem = { number: number; text: string; pageNumbers?: number[] };
@@ -70,20 +70,15 @@ export function preparedGuide(value: unknown, guide: string, selected: unknown):
 
 function rangeError(source: RangeSource, pageKind: PageKind, selected: RangeItem[]): string {
   if (!selected.length) return 'No ' + (source.unit === 'page' ? 'pages' : 'questions') + ' in this selection.';
-  if (source.unit === 'question') return selected.length > MAX_QUESTIONS ? 'Select up to 30 questions per review.' : '';
-  if (source.original?.pdfFile && selected.length > MAX_PDF_ATTACHMENT_PAGES) {
-    return 'Select up to ' + MAX_PDF_ATTACHMENT_PAGES + ' PDF pages per review.';
-  }
-  if (pageKind === 'guide' && selected.every((p) => p.text.trim()) &&
-    selected.map((p) => p.text).join('\n\n').length > MAX_GUIDE_CHARACTERS) {
-    return 'Select a smaller guide section of up to 50,000 characters.';
+  if (pageKind === 'policy' && selected.length > MAX_PDF_ATTACHMENT_PAGES) {
+    return 'Select up to ' + MAX_PDF_ATTACHMENT_PAGES + ' policy PDF pages.';
   }
   return '';
 }
 
-export function SourceRange({ source, oversized, appliedValue, pageKind = 'guide', onApply }: {
+export function SourceRange({ source, oversized = false, appliedValue, pageKind = 'guide', onApply }: {
   source: RangeSource;
-  oversized: boolean;
+  oversized?: boolean;
   appliedValue?: string;
   pageKind?: PageKind;
   onApply: (items: RangeItem[], description: string | undefined, rangeValue: string) => void;
@@ -142,7 +137,7 @@ export function SourceRange({ source, oversized, appliedValue, pageKind = 'guide
           <button className="intake-secondary" type="button" onClick={apply}>Apply range</button>
         </div>
         {error ? <p className="intake-error" id={controlId + '-error'} role="alert">{error}</p> :
-          <p className="intake-help" id={controlId + '-help'}>{pages ? 'Use physical page numbers. Separate ranges with commas.' : 'Select up to 30 items. Separate ranges with commas.'}</p>}
+          <p className="intake-help" id={controlId + '-help'}>{pages ? 'Use physical page numbers. Separate ranges with commas.' : 'Separate item numbers or ranges with commas.'}</p>}
       </div>
     </div>
   );
