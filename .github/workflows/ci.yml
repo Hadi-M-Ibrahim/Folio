@@ -50,6 +50,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version-file: .python-version
-      - run: python -m pip install -r requirements/lint.txt
+      - run: python -m pip install -r requirements/lint.txt -r requirements/test.txt
       - run: python -m ruff check api scripts tests
-      - run: python -m unittest discover -s tests -v
+      - run: python -m coverage run --branch --source=api -m unittest discover -s tests -v
+      - name: Report API coverage
+        run: python -m coverage report --show-missing --precision=1 --format=markdown >> "$GITHUB_STEP_SUMMARY"

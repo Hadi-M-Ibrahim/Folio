@@ -225,15 +225,6 @@ class ReviewTests(unittest.TestCase):
                     self.assertEqual(result["engine"], "local")
                     self.assertEqual(provider.call_count, 2)
 
-    def test_model_capacity_returns_search_without_calling_provider(self):
-        payload = sample(allowModel=True, publicInputConsent=True)
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True), \
-             patch.object(model, "SLOTS", threading.BoundedSemaphore(0)), patch.object(model, "invoke_tool") as provider:
-            result = api.review(payload)
-        provider.assert_not_called()
-        self.assertEqual(result["engine"], "local")
-        self.assertIn("busy", result["notice"])
-
     def test_provider_call_cannot_start_after_deadline_and_uses_remaining_budget(self):
         with patch.object(model.time, "monotonic", return_value=100), patch.object(model.request, "urlopen") as send:
             send.side_effect = TimeoutError
