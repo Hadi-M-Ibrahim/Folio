@@ -1,22 +1,21 @@
 """Deterministic criterion extraction, passage ranking, and exact word-count evidence."""
 
 import base64
+import json
 import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from heapq import nsmallest
 
-MAX_CRITERIA = 30
 MAX_DOCUMENTS = 18
-MAX_GUIDE_CHARS = 50_000
-MAX_QUESTION_CHARS = 2_000
 MAX_PAGE_CHARS = 35_000
 MAX_PASSAGE_CHARS = 680
 MAX_PAGES = 1200
 MAX_CHARS = 2_400_000
 MAX_PDF_PAGES = 600
 MAX_REQUEST_BYTES = 4_000_000
+MAX_RESULT_BYTES = 4_000_000
 # The browser must be able to distinguish every citation's page number exactly.
 MAX_PAGE_NUMBER = (1 << 53) - 1
 
@@ -69,7 +68,7 @@ IMPERATIVE = re.compile(
     r"publish|consult|identify|inspect|sign|approve|complete|establish|implement|issue|monitor|"
     r"deliver|update|disclose|collect|use|follow|attach|prohibit|prevent|allow)\s+(?!of\b|was\b|is\b)\S", re.I,
 )
-LIST_MARK = r"(?:[-*•]|\(\d{1,3}\)|\d{1,3}[.)]|\([a-z]\)|[a-z][.)])"
+LIST_MARK = r"(?:[-*•]|\(\d+\)|\d+[.)]|\([a-z]\)|[a-z][.)])"
 BULLET = re.compile(r"^\s*" + LIST_MARK + r"\s+", re.I)
 GUIDE_BLOCK = re.compile(r"\n\s*\n|\n(?=[^\S\n]*" + LIST_MARK + r"\s+)", re.I)
 LIST_LEAD = re.compile(r"\b(?:must|shall|include|provide|required|requirements|checklist|submit)\b", re.I)
@@ -88,6 +87,16 @@ DEFINITION = re.compile(r"""^["'”’]?\s*(?:means\b|refers to\b|is defined as\
 
 class InvalidRequest(ValueError):
     pass
+
+
+class ReviewPartTooLarge(InvalidRequest):
+    pass
+
+
+def check_finding_count(count):
+    # The mandatory field names alone use more than 128 bytes for each finding.
+    if count * 128 > MAX_RESULT_BYTES:
+        raise ReviewPartTooLarge("The review results are too large. Select fewer questions or fewer policy pages.")
 
 
 def bounded_string(value, label, limit):
@@ -115,7 +124,7 @@ def is_list_lead(body):
     return LIST_LEAD.search(body, start) is not None
 
 
-def guide_criteria(guide):
+def guide_criteria(guide, *, document_part=False):
     chosen = []
     has_narrative = False
     checklist = False
@@ -140,23 +149,24 @@ def guide_criteria(guide):
                     or (listed and checklist and sentence_start == 0)):
                 offset = body_start + sentence_start + len(raw) - len(raw.lstrip())
                 chosen.append((clause, offset))
-    if not chosen and not has_narrative:
+    if not chosen and not has_narrative and not document_part:
         raise InvalidRequest("The guide needs a sentence or list item describing a review criterion.")
-    if len(chosen) > MAX_CRITERIA:
-        raise InvalidRequest(f"This guide has {len(chosen)} explicit criteria. Submit at most {MAX_CRITERIA} per review.")
     return chosen
 
 
 def source_criteria(mode, payload):
+    document_part = payload.get("documentPart", False)
     if mode == "guide":
-        guide = bounded_string(payload.get("guide"), "Guide", MAX_GUIDE_CHARS)
-        # Offsets address the input string including any leading whitespace.
-        shift = len(payload["guide"]) - len(payload["guide"].lstrip())
-        return [(q, shift + pos) for q, pos in guide_criteria(guide)]
+        guide = payload.get("guide")
+        if not isinstance(guide, str) or not (guide.strip() or document_part):
+            raise InvalidRequest("Provide guide text.")
+        return guide_criteria(guide, document_part=document_part)
     questions = payload.get("questions")
-    if not isinstance(questions, list) or not 1 <= len(questions) <= MAX_CRITERIA:
-        raise InvalidRequest(f"Provide 1 to {MAX_CRITERIA} questions.")
-    return [(bounded_string(q, "Each question", MAX_QUESTION_CHARS), None) for q in questions]
+    if not isinstance(questions, list) or not (questions or document_part):
+        raise InvalidRequest("Provide at least one question.")
+    if any(not isinstance(question, str) or not question.strip() for question in questions):
+        raise InvalidRequest("Each question must be nonempty text.")
+    return [(question.strip(), None) for question in questions]
 
 
 def validate_pdf(attachment):
@@ -210,11 +220,14 @@ def validate_attachments(attachments, docs):
 def validate(payload):
     if not isinstance(payload, dict) or payload.get("mode") not in ("questionnaire", "guide"):
         raise InvalidRequest("Choose questionnaire or guide mode.")
-    for flag in ("allowModel", "modelSharingConsent", "publicInputConsent", "readSourcePdf"):
+    for flag in ("allowModel", "modelSharingConsent", "publicInputConsent", "readSourcePdf", "documentPart", "transcribeSourceOnly", "requireComplete"):
         if type(payload.get(flag, False)) is not bool:
             raise InvalidRequest(f"{flag} must be true or false.")
     mode = payload["mode"]
-    docs = list(validated_documents(payload.get("documents"), mode))
+    transcript_only = payload.get("transcribeSourceOnly", False)
+    if transcript_only and not (payload.get("readSourcePdf") and payload.get("documentPart")):
+        raise InvalidRequest("Source transcription requires a PDF source document part.")
+    docs = list(validated_documents(payload.get("documents"), mode, transcript_only=transcript_only))
     attachments = payload.get("pdfAttachments", [])
     validate_attachments(attachments, payload["documents"])
     policy_pdfs = {a["documentId"] for a in attachments if a["role"] == "policy"}
@@ -226,10 +239,10 @@ def validate(payload):
     return mode, source_criteria(mode, payload), pages
 
 
-def validated_documents(docs, mode):
+def validated_documents(docs, mode, *, transcript_only=False):
     if not isinstance(docs, list) or len(docs) > MAX_DOCUMENTS:
         raise InvalidRequest(f"Provide a list of up to {MAX_DOCUMENTS} policy documents.")
-    if not docs and mode == "questionnaire":
+    if not docs and mode == "questionnaire" and not transcript_only:
         raise InvalidRequest("Provide at least one policy document with the questionnaire.")
     identifiers = set()
     for doc in docs:
@@ -539,6 +552,7 @@ class Index:
 
 
 def retrieve(pages, plan):
+    check_finding_count(len(plan))
     if not pages:
         return [{
             **criterion_fields(row, number),
@@ -548,4 +562,15 @@ def retrieve(pages, plan):
             "analysisEngine": "local",
         } for number, row in enumerate(plan, 1)]
     index = Index(pages, plan)
-    return [index.retrieve(row, i) for i, row in enumerate(plan, 1)]
+    findings = []
+    size = 0
+    for number, row in enumerate(plan, 1):
+        finding = index.retrieve(row, number)
+        # These fields survive model assessment. Stop before building a large result that
+        # cannot be returned, even if the provider's assessments were all one word long.
+        evidence = {key: finding[key] for key in ("question", "criterionSource", "candidates", "searchProof")}
+        size += len(json.dumps(evidence, ensure_ascii=True, separators=(",", ":")))
+        if size > MAX_RESULT_BYTES:
+            raise ReviewPartTooLarge("The review results are too large. Select fewer questions or fewer policy pages.")
+        findings.append(finding)
+    return findings

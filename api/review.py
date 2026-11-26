@@ -12,10 +12,16 @@ if __name__ == "__main__":
 
 from api._review.model import ProviderUnavailable, model_review
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit, network_key
-from api._review.search import MAX_CRITERIA, MAX_REQUEST_BYTES, InvalidRequest, validate
+from api._review.search import (
+    MAX_REQUEST_BYTES,
+    MAX_RESULT_BYTES,
+    InvalidRequest,
+    ReviewPartTooLarge,
+    validate,
+)
 
 MAX_BODY = MAX_REQUEST_BYTES
-MAX_RESPONSE = 4_000_000
+MAX_RESPONSE = MAX_RESULT_BYTES
 REVIEW_LIMIT = ReviewRateLimit()
 
 
@@ -37,14 +43,11 @@ def allowed_local_request(headers):
 def review(payload, *, local_operator=False):
     mode, criteria, pages = validate(payload)
     findings, notice, planner, read_text = model_review(payload, criteria, pages, local_operator)
-    criterion_limit_reached = mode == "guide" and len(findings) == MAX_CRITERIA
-    if criterion_limit_reached:
-        notice = (notice + f" This section reached the {MAX_CRITERIA}-criterion limit. Check the guide for additional requirements.").strip()
     used_model = planner == "anthropic" or any(f["analysisEngine"] == "anthropic" for f in findings)
     return {
         **read_text,
         "mode": mode, "engine": "anthropic" if used_model else "local",
-        "notice": notice, "findings": findings, "planningEngine": planner, "criterionLimitReached": criterion_limit_reached,
+        "notice": notice, "findings": findings, "planningEngine": planner, "criterionLimitReached": False,
         "reviewScope": {"documents": len(payload["documents"]), "pages": len(pages), "criteria": len(findings)},
     }
 
@@ -55,7 +58,7 @@ class handler(BaseHTTPRequestHandler):
         for part in json.JSONEncoder(ensure_ascii=True, separators=(",", ":")).iterencode(data):
             if len(body) + len(part) > MAX_RESPONSE:
                 status = 422
-                body = b'{"error":"The review results are too large. Select fewer questions or fewer policy pages."}'
+                body = b'{"code":"review_part_too_large","error":"The review results are too large. Select fewer questions or fewer policy pages."}'
                 break
             body.extend(part.encode("ascii"))
         self.send_response(status)
@@ -104,6 +107,8 @@ class handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "The request must contain valid UTF-8 JSON."})
         try:
             result = review(payload, local_operator=local_operator)
+        except ReviewPartTooLarge as exc:
+            return self.reply(422, {"code": "review_part_too_large", "error": str(exc)})
         except InvalidRequest as exc:
             return self.reply(422, {"error": str(exc)})
         except ProviderUnavailable as exc:

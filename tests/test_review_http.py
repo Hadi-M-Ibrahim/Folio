@@ -67,6 +67,7 @@ class HttpContractTests(unittest.TestCase):
         with patch.object(api, "MAX_RESPONSE", 256), patch.object(api, "review", return_value={"text": "é" * 80}):
             status, _, body = self.request()
         self.assertEqual(status, 422)
+        self.assertEqual(body["code"], "review_part_too_large")
         self.assertIn("Select fewer questions", body["error"])
 
     def test_local_operator_authority(self):

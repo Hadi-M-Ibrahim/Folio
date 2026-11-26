@@ -1,10 +1,11 @@
 import os
+import re
 import unittest
 from unittest.mock import patch
 
 from api import review as api
 from api._review import model, planner
-from api._review.search import MAX_CRITERIA, InvalidRequest
+from api._review.search import InvalidRequest
 
 
 class PlannerTests(unittest.TestCase):
@@ -123,17 +124,79 @@ class PlannerTests(unittest.TestCase):
                 api.review(payload)
             invoke.assert_called_once()
 
-    def test_guide_planner_reports_overflow_instead_of_returning_partial_extraction(self):
-        guide = "1. The operator must keep records.\n2. The operator must approve filings."
-        payload = {"mode": "guide", "guide": guide, "documents": [], "allowModel": True, "publicInputConsent": True}
-        rows = [{"sourceId": "s2", "question": f"Does the operator retain form {i}?", "searchTerms": ["form"]}
-                for i in range(MAX_CRITERIA + 1)]
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True):
-            for result in ({"exceedsLimit": True, "criteria": []}, {"criteria": rows}, {"criteria": rows[:MAX_CRITERIA]}):
-                with self.subTest(count=len(result["criteria"])), patch.object(model, "invoke_tool", return_value=result) as invoke:
-                    with self.assertRaisesRegex(InvalidRequest, "30 requirements"):
-                        api.review(payload)
-                    invoke.assert_called_once()
+    def test_single_dense_clause_is_subdivided_without_losing_or_duplicating_duties(self):
+        duties = [f"retain record {n:03d}" for n in range(67)]
+        clause = "The office must " + "; ".join(duties) + "."
+        guide = "📒\n\n" + clause
+        def simulate(system, tool, inputs, key, deadline, max_tokens):
+            rows = []
+            for unit in inputs["sources"]:
+                for match in re.finditer(r"retain record \d+", unit["text"]):
+                    rows.append({"sourceId": unit["sourceId"], "sourceQuote": match.group(),
+                                 "question": "Must the office " + match.group() + "?", "searchTerms": ["record"]})
+            if len(rows) > planner.PLAN_RESPONSE_ROWS:
+                return {"exceedsLimit": True, "criteria": []}
+            return {"criteria": rows}
+
+        with patch.object(model, "invoke_tool", side_effect=simulate) as invoke:
+            plan = planner.plan_criteria("guide", guide, [(clause, guide.index(clause))], "test-key", 100)
+        self.assertGreater(invoke.call_count, 3)
+        self.assertEqual([row["source"] for row in plan], duties)
+        for row in plan:
+            self.assertEqual(guide[row["start"]:row["start"] + len(row["source"])], row["source"])
+
+    def test_large_background_and_repeated_clauses_keep_distinct_global_offsets(self):
+        clause = "Operators must check the register."
+        guide = ("📄 History of this form. " * 2800) + "\n" + "\n".join([clause] * 45)
+        seen = []
+        def simulate(system, tool, inputs, key, deadline, max_tokens):
+            units = inputs["sources"]
+            self.assertLessEqual(sum(len(unit["text"]) for unit in units), planner.PLAN_BATCH_CHARS)
+            seen.extend(unit["text"] for unit in units)
+            return {"criteria": [{"sourceId": unit["sourceId"], "question": "Is the register checked?",
+                                  "searchTerms": ["register"]} for unit in units if unit["required"]]}
+
+        with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True), \
+             patch.object(model, "invoke_tool", side_effect=simulate):
+            result = api.review({"mode": "guide", "guide": guide, "documents": [], "allowModel": True,
+                                 "modelSharingConsent": True})
+        self.assertEqual(len([part for part in seen if part == clause]), 45)
+        self.assertEqual([row["criterionStart"] for row in result["findings"]],
+                         [m.start() for m in re.finditer(re.escape(clause), guide)])
+
+    def test_many_questions_and_long_prompt_are_planned_in_order_with_full_wording(self):
+        long_prompt = "Which procedures apply " + "to an exceptionally long set of conditions " * 700 + "after receipt?"
+        questions = ["Who records each renewal?"] * 35 + [long_prompt] + ["What is the deadline?"] * 7
+        received = []
+        def simulate(system, tool, inputs, key, deadline, max_tokens):
+            units = inputs["sources"]
+            self.assertLessEqual(len(units), planner.PLAN_BATCH_UNITS)
+            received.extend(unit["text"] for unit in units)
+            return {"criteria": [{"sourceId": unit["sourceId"], "searchTerms": ["renewal"]} for unit in reversed(units)]}
+
+        with patch.object(model, "invoke_tool", side_effect=simulate):
+            plan = planner.plan_criteria("questionnaire", questions, [], "test-key", 100)
+        self.assertEqual(questions, received)
+        self.assertEqual(questions, [row["question"] for row in plan])
+
+    def test_part_with_no_requirements_is_successful_only_when_the_planner_reports_none(self):
+        payload = {"mode": "guide", "guide": "Cover", "documents": [{
+            "id": "doc", "title": "Policy", "pages": [{"number": 1, "text": "General information."}]}],
+            "allowModel": True, "modelSharingConsent": True, "documentPart": True}
+        with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True):
+            with patch.object(model, "invoke_tool", return_value={"criteria": []}) as invoke:
+                result = api.review(payload)
+            invoke.assert_called_once()
+            self.assertEqual(result["findings"], [])
+            self.assertEqual((result["engine"], result["planningEngine"]), ("anthropic", "anthropic"))
+            with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable), \
+                 self.assertRaises(model.ProviderUnavailable):
+                api.review(payload)
+            with self.assertRaises(InvalidRequest):
+                api.review({**payload, "documentPart": False})
+            with patch.object(model, "invoke_tool", return_value={"criteria": []}), \
+                 self.assertRaises(model.ProviderUnavailable):
+                api.review({**payload, "guide": "Staff must retain the form."})
 
     def test_consented_hosted_inputs_in_both_modes_use_only_this_requests_evidence(self):
         clause = "The office must retain permit records for five years."

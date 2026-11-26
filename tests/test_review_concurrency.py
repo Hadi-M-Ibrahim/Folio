@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from api import review as api
 from api._review import model
-from api._review.search import InvalidRequest
 
 
 def questionnaire(label):
@@ -111,7 +110,7 @@ class ConcurrentReviewTests(unittest.TestCase):
 
             send.side_effect = None
             send.return_value = tool_response("record_search_plan", {"exceedsLimit": True})
-            with self.assertRaisesRegex(InvalidRequest, "limit"):
+            with self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
                 api.review(GUIDE)
 
             send.side_effect = RuntimeError("interrupted")

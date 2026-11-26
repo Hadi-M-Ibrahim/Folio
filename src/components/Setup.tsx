@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Check, LoaderCircle } from 'lucide-react';
-import { checkInput, isLoopback, requestReview } from '../review/client';
+import { checkInput, encodeRequest, isLoopback } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
 import { makePdfAttachment } from '../review/pdf';
+import { executeWholeReview } from '../review/wholeReview';
 import {
-  MAX_GUIDE_CHARACTERS, MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_DOCUMENTS, MAX_QUESTION_CHARACTERS,
-  MAX_QUESTIONS, MAX_REQUEST_BYTES, modeLabels, readScope, type Mode, type Policy, type Review, type ReviewInput, type Scope,
+  MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_DOCUMENTS, MAX_REQUEST_BYTES, ReviewSizeError, modeLabels, readScope,
+  type Mode, type PdfAttachment, type Policy, type Review, type ReviewInput, type Scope,
 } from '../review/model';
 import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
+import { questionsFromText } from './intakeQuestions';
 import { SourceFields, sourceFromDocument, type IntakeSource } from './SourceFields';
 import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
 import './intake.css';
@@ -40,7 +42,7 @@ const intakeCopy = {
 
 async function readPreparedReview(file: File) {
   if (!isLoopback) throw Error('Open prepared reviews in the local app.');
-  if (file.size > MAX_REQUEST_BYTES) throw Error('Use a prepared review smaller than 4 MB.');
+  if (file.size > 32 * 1024 * 1024) throw Error('Use a prepared review of up to 32 MB.');
   const input: ReviewInput & {
     corpusScope?: unknown;
     sourceDocument?: unknown;
@@ -78,19 +80,9 @@ async function readPreparedReview(file: File) {
 }
 
 function sourceError(mode: Mode, source: IntakeSource, questions: string[]): string {
-  if (source.document?.pdfFile && source.document.pages.length > MAX_PDF_ATTACHMENT_PAGES)
-    return 'Choose a range of up to ' + MAX_PDF_ATTACHMENT_PAGES + ' PDF pages.';
   if (source.readSourcePdf && source.document?.pdfFile) return '';
-  if (mode === 'guide') {
-    const guide = source.text.trim();
-    if (!guide) return 'Upload or paste your regulatory guide.';
-    if (guide.length > MAX_GUIDE_CHARACTERS) return 'Choose a guide section of up to 50,000 characters.';
-  } else {
-    if (!questions.length) return 'Upload or enter at least one state question.';
-    if (questions.length > MAX_QUESTIONS || questions.some((question) => question.length > MAX_QUESTION_CHARACTERS)) {
-      return 'Use up to 30 questions, with one question per line and up to 2,000 characters each.';
-    }
-  }
+  if (mode === 'guide' && !source.text.trim()) return 'Upload or paste your regulatory guide.';
+  if (mode === 'questionnaire' && !questions.length) return 'Upload or enter at least one state question.';
   return '';
 }
 
@@ -110,28 +102,29 @@ function sharingDisclosure(mode: Mode, source: IntakeSource, documents: Policy[]
   return 'Submitting sends your ' + subject + ' and relevant policy text to Anthropic.';
 }
 
-async function attachmentsForReview(source: IntakeSource, policies: Policy[], originals: Policy[], signal: AbortSignal) {
-  const files: { original: Policy; role: 'source' | 'policy'; pages: number[] }[] = [];
-  if (source.document?.pdfFile) {
-    files.push({ original: source.range?.original ?? source.document, role: 'source', pages: source.document.pages.map((p) => p.number) });
-  }
-  policies.forEach((doc, index) => {
-    if (doc.pdfFile) files.push({ original: originals[index], role: 'policy', pages: doc.pages.map((p) => p.number) });
-  });
-  if (files.reduce((count, file) => count + file.pages.length, 0) > MAX_PDF_ATTACHMENT_PAGES) {
-    throw Error('A review can include up to ' + MAX_PDF_ATTACHMENT_PAGES + ' PDF pages in total. Select fewer source or policy pages.');
+async function attachPolicies(input: ReviewInput, originals: Policy[], hasSourcePdf: boolean, signal: AbortSignal) {
+  const pdfs = input.documents.filter(doc => doc.pdfFile);
+  const availablePages = MAX_PDF_ATTACHMENT_PAGES - (hasSourcePdf ? 1 : 0);
+  if (pdfs.reduce((count, doc) => count + doc.pages.length, 0) > availablePages) {
+    throw Error('Select up to ' + availablePages + ' policy PDF pages' + (hasSourcePdf ? ' when reviewing a source PDF.' : ' in total.'));
   }
   const attachments = [];
   let encodedBytes = 0;
-  for (const { original, role, pages } of files) {
+  for (const doc of pdfs) {
     signal.throwIfAborted();
-    const itemSubset = role === 'source' && source.range?.unit === 'question' && Boolean(source.selection);
-    const attachment = await makePdfAttachment(original, role, pages, signal, { renderSelectedPages: itemSubset });
+    const original = originals.find(item => item.id === doc.id) ?? doc;
+    const attachment = await makePdfAttachment(original, 'policy', doc.pages.map(page => page.number), signal);
     encodedBytes += attachment.data.length;
     if (encodedBytes > MAX_REQUEST_BYTES) {
-      throw Error('The selected PDFs exceed the 4 MB request limit. Select fewer source or policy pages.');
+      throw Error('The selected policy PDFs exceed the 4 MB request limit. Select fewer policy pages.');
     }
     attachments.push(attachment);
+  }
+  try {
+    encodeRequest({ ...input, guide: undefined, questions: undefined, pdfAttachments: attachments });
+  } catch (error) {
+    if (!(error instanceof ReviewSizeError)) throw error;
+    throw Error('The selected policies exceed the 4 MB request limit. Select fewer policy pages or remove a policy.');
   }
   return attachments;
 }
@@ -154,10 +147,12 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const [busy, setBusy] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
-  const request = useRef<AbortController | null>(null);
+  const [request, setRequest] = useState<AbortController | null>(null);
+  const retry = useRef<{ input: ReviewInput; scope?: Scope; policyAttachments?: PdfAttachment[] } | null>(null);
   const isGuide = mode === 'guide';
   const copy = intakeCopy[mode];
-  const questions = useMemo(() => source.questions ?? (isGuide || source.readSourcePdf ? [] : source.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)), [source.questions, source.readSourcePdf, source.text, isGuide]);
+  const questions = useMemo(() => source.questions ?? (isGuide || source.readSourcePdf ? [] : questionsFromText(source.text)),
+    [source.questions, source.readSourcePdf, source.text, isGuide]);
   const sourcePath = '#/new/' + initialMode;
   const validationError = sourceError(mode, source, questions);
   const step = policyStep && !validationError ? 2 : 1;
@@ -167,12 +162,18 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     setLastError({ step, message });
   }
 
-  useEffect(() => () => request.current?.abort(), []);
+  useEffect(() => () => request?.abort(), [request]);
+  useEffect(() => {
+    retry.current = null;
+  }, [source.text, source.document, source.range, source.questionPages, source.readSourcePdf, source.selection,
+    questions, documents, mode, scope, draft.text, draft.title]);
   useEffect(() => {
     if (policyStep && step === 1) window.location.replace(sourcePath);
   }, [policyStep, step, sourcePath]);
   useEffect(() => {
-    if (step === 1) request.current?.abort();
+    if (step === 1) request?.abort();
+  }, [step, request]);
+  useEffect(() => {
     heading.current?.focus({ preventScroll: true });
     window.scrollTo(0, 0);
   }, [step, mode]);
@@ -262,6 +263,18 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     }
   }
 
+  function submission() {
+    if (!retry.current) {
+      const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
+      const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
+      if (!policies.length && !isGuide) throw Error('Upload a policy file or paste a policy to continue.');
+      const input = { ...inputWith(policies), allowModel: true, modelSharingConsent: true };
+      checkInput(input);
+      retry.current = { input, scope: includeDraft ? undefined : scope };
+    }
+    return retry.current;
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -274,17 +287,23 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         return;
       }
 
-      const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
-      const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
-      if (!policies.length && !isGuide) throw Error('Upload a policy file or paste a policy to continue.');
-      const input = { ...inputWith(policies), allowModel: true, modelSharingConsent: true };
-      checkInput(input);
+      const attempt = submission();
+      const { input } = attempt;
       const controller = new AbortController();
-      request.current = controller;
+      setRequest(controller);
       setBusy(copy.submitting);
-      const attachments = await attachmentsForReview(source, policies, originalDocuments, controller.signal);
+      attempt.policyAttachments ??= await attachPolicies(input, originalDocuments, Boolean(source.document?.pdfFile), controller.signal);
       controller.signal.throwIfAborted();
-      const result = await requestReview(attachments.length ? { ...input, pdfAttachments: attachments } : input, controller.signal);
+      const result = await executeWholeReview({
+        input,
+        sourceDocument: source.document,
+        sourceOriginal: source.range?.original ?? source.document,
+        questionPages: source.questionPages,
+        renderItemSubset: source.range?.unit === 'question' && Boolean(source.selection),
+        policyAttachments: attempt.policyAttachments,
+        signal: controller.signal,
+        onProgress: setBusy,
+      });
       if (!controller.signal.aborted) {
         onDone({
           key: crypto.randomUUID(),
@@ -293,18 +312,18 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
             ...input,
             ...(result.guide !== undefined && { guide: result.guide }),
             ...(result.questions && { questions: result.questions }),
-            documents: policies.map((doc) => withReturnedPages(doc, result.policyPageText?.find((record) => record.documentId === doc.id)?.pages)),
+            documents: input.documents.map((doc) => withReturnedPages(doc, result.policyPageText?.find((record) => record.documentId === doc.id)?.pages)),
           },
           result,
           sourceDocument: source.document && withReturnedPages(source.document, result.sourcePages),
           sourceSelection: source.selection,
-          scope: includeDraft ? undefined : scope,
+          scope: attempt.scope,
         });
       }
     } catch (cause) {
       if (!(cause instanceof Error && cause.name === 'AbortError')) setError(documentErrorMessage(cause));
     } finally {
-      request.current = null;
+      setRequest(null);
       setBusy('');
     }
   }
@@ -377,15 +396,23 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
             </fieldset>
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
             <div className="intake-actions">
-              {step === 2 && <p className="intake-disclosure" id="intake-sharing">
-                {sharingDisclosure(mode, source, documents)}
-              </p>}
-              <button type="submit" className="intake-primary" disabled={Boolean(busy)} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
-                <span>{busy || (step === 1 ? 'Continue to policies' : copy.submit)}</span>
-                {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
-              </button>
+              {request ? <>
+                <output className="intake-progress"><LoaderCircle size={16} className="intake-spinner" aria-hidden="true" />{busy}</output>
+                <button key="cancel" type="button" className="intake-secondary" onClick={event => {
+                  event.preventDefault();
+                  request.abort();
+                }}>Cancel review</button>
+              </> : <>
+                {step === 2 && <p className="intake-disclosure" id="intake-sharing">
+                  {sharingDisclosure(mode, source, documents)}
+                </p>}
+                <button type="submit" className="intake-primary" disabled={Boolean(busy)} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
+                  <span>{busy || (step === 1 ? 'Continue to policies' : copy.submit)}</span>
+                  {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+                </button>
+              </>}
             </div>
-            <output className="intake-sr-only">{busy}</output>
+            {!request && <output className="intake-sr-only">{busy}</output>}
           </form>
         </div>
       </div>

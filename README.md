@@ -9,9 +9,9 @@ Open [Folio](https://folio-policy-review.vercel.app).
 - **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open the cited page to check the suggested answer. Use a supported suggestion as a draft or write your own response. Confirm it with a citation or flag it for follow-up, then download your responses.
 - **Review a new policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
-Uploaded PDFs open in a page viewer. Choose questionnaire items or physical pages to narrow the review. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment. The workspace and export identify the selected range and keep the original page numbers.
+Upload the whole questionnaire or guide and submit it once. Folio processes long sources in sections, shows progress, and brings the findings back together in document order. Keep the tab open while the review runs. To focus on one section instead, choose questionnaire items or physical pages in the PDF viewer. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment.
 
-Submitting a review sends the selected PDF pages to Anthropic as document attachments, alongside the questions, guide text, and policy passages used for search. A whole-document review uses the original file. For a narrower range, Folio builds a PDF from the visible contents of the selected pages. If the attachments exceed the 4 MB request limit, choose fewer pages. Pasted text and text-file uploads use the text workflow. For scans, Folio uses machine-read text to locate quotations. Open the cited PDF page to check the wording. If the model is unavailable, the form keeps your inputs for retry. Download your work before refreshing or closing the tab.
+Each section sends the corresponding PDF pages to Anthropic as a document attachment, alongside the questions, guide text, and policies used to find evidence. Short reviews can use the original file. For a narrower range or a large source, Folio builds PDFs from the visible contents of the relevant pages. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. The form keeps your inputs and completed sections available for retry in the same tab. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section and must fit its 4 MB request budget. Download the final review before refreshing or closing it.
 
 ## Repository layout
 
@@ -42,7 +42,7 @@ Open the loopback URL printed by Vite. The UI proxies review requests to port 80
 
 ### Work with the supplied PDFs
 
-The private materials belong in the ignored `Materials/` directory. The local preparation tool searches physical PDF pages and writes review bundles under the ignored `.local-review/` directory. Pick a small batch for each review. The bundle records which pages were selected so a reviewer can see the scope of the search.
+The private materials belong in the ignored `Materials/` directory. The optional local preparation tool searches physical PDF pages and writes review bundles under the ignored `.local-review/` directory. The bundle records which pages were selected so a reviewer can see the scope of the search.
 
 For an existing PDF environment, uninstall the old `PyMuPDF` distribution before installing `requirements/pdf.txt`. Both packages provide the `pymupdf` module.
 
@@ -67,7 +67,7 @@ Run `python3 scripts/evaluate_followup.py` to check the synthetic cases and thei
 
 ## Checks and deployment
 
-Both workflows share a limit of 30 submissions from one IP address in 10 minutes. The Vercel Firewall rule **Folio review submissions** counts POSTs to `/api/review` and `/api/review/` per edge region. Each API worker also enforces the limit before reading documents. A limited request receives HTTP 429. The form uses the `Retry-After` header when available, keeps the inputs, and allows the analyst to retry. [Vercel rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
+Both workflows share a limit of 30 submissions from one IP address in 10 minutes. The Vercel Firewall rule **Folio review submissions** counts POSTs to `/api/review` and `/api/review/` per edge region. Each API worker also enforces the limit before reading documents. A limited request receives HTTP 429. A multi-part review waits for the quota to reset and then resumes. A single-request review keeps the inputs for retry. Both use the `Retry-After` header when available. [Vercel rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
 
 ```sh
 npm run lint

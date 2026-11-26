@@ -24,11 +24,13 @@ transport = threading.local()
 class BrowserReviewHandler(review.handler):
     def do_POST(self):
         transport.calls = []
+        transport.assessed = []
         super().do_POST()
 
     def end_headers(self):
         # The browser test can compare the actual provider bytes with its uploaded and selected PDFs.
         self.send_header("X-Test-Provider-Calls", json.dumps(getattr(transport, "calls", [])))
+        self.send_header("X-Test-Assessed-Criteria", json.dumps(getattr(transport, "assessed", [])))
         super().end_headers()
 
 
@@ -55,9 +57,22 @@ def read_scan(data):
     source = data["role"] == "source"
     pages = [{"number": n, "text": f"Who keeps inspection log {n}?" if source
               else f"The registrar keeps inspection log {n}."} for n in data["pages"]]
+    crossing = source and transport.calls[-1]["documents"][0]["title"] == "Archive scan.pdf"
+    if crossing:
+        for page in pages:
+            if page["number"] == 3:
+                page["text"] = "Who keeps the inspection log"
+            elif page["number"] == 4:
+                page["text"] = "after the archive closes?"
     result = {"pages": pages}
     if source and data["mode"] == "questionnaire":
-        result["questions"] = [page["text"] for page in pages]
+        result["questions"] = []
+        for page in pages:
+            if crossing and page["number"] == 4:
+                if 3 in data["pages"]:
+                    result["questions"][-1] += " " + page["text"]
+            else:
+                result["questions"].append(page["text"])
     return result
 
 
@@ -73,6 +88,7 @@ def search_plan(data):
 
 
 def assess(row):
+    transport.assessed.append(hashlib.sha256(row["criterion"].encode()).hexdigest())
     if row["criterion"].startswith("Who keeps the outage log for case ") and row["criterion"] not in failed_outage_cases:
         failed_outage_cases.add(row["criterion"])
         raise OSError("Simulated upstream outage")
@@ -113,6 +129,7 @@ if __name__ == "__main__":
         patch.object(model, "open_provider_request", provider_reply),
         patch.object(review, "REVIEW_LIMIT", review.ReviewRateLimit(limit=1000)),
     ):
-        with ThreadingHTTPServer(("127.0.0.1", 4178), BrowserReviewHandler) as server:
+        port = int(os.environ.get("FOLIO_TEST_API_PORT", "4178"))
+        with ThreadingHTTPServer(("127.0.0.1", port), BrowserReviewHandler) as server:
             server.local_operator = True
             server.serve_forever()
