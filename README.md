@@ -9,9 +9,9 @@ Open [Folio](https://folio-policy-review.vercel.app).
 - **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open the cited page to check the suggested answer. Use a supported suggestion as a draft or write your own response. Confirm it with a citation or flag it for follow-up, then download your responses.
 - **Review a new policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
-For a long source, select a batch of questions or a range of guide pages. The workspace and export identify the selected range. Uploaded guides retain their physical page numbers.
+Uploaded PDFs open in a page viewer. Choose questionnaire items or physical pages to narrow the review. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment. The workspace and export identify the selected range and keep the original page numbers.
 
-Submitting a review sends the selected questions or guide text and relevant policy passages to Anthropic. Folio verifies citations against the uploaded pages. If the model is unavailable, the form keeps your inputs for retry. Documents, responses, and decisions stay available in the current tab. Download your work before refreshing or closing it.
+Submitting a review sends the selected PDF pages to Anthropic as document attachments, alongside the questions, guide text, and policy passages used for search. A whole-document review uses the original file. For a narrower range, Folio builds a PDF from the visible contents of the selected pages. If the attachments exceed the 4 MB request limit, choose fewer pages. Pasted text and text-file uploads use the text workflow. For scans, Folio uses machine-read text to locate quotations. Open the cited PDF page to check the wording. If the model is unavailable, the form keeps your inputs for retry. Download your work before refreshing or closing the tab.
 
 ## Repository layout
 

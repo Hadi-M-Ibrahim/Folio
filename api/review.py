@@ -12,9 +12,9 @@ if __name__ == "__main__":
 
 from api._review.model import ProviderUnavailable, model_review
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit, network_key
-from api._review.search import MAX_CRITERIA, InvalidRequest, validate
+from api._review.search import MAX_CRITERIA, MAX_REQUEST_BYTES, InvalidRequest, validate
 
-MAX_BODY = 4_000_000
+MAX_BODY = MAX_REQUEST_BYTES
 MAX_RESPONSE = 4_000_000
 REVIEW_LIMIT = ReviewRateLimit()
 
@@ -36,12 +36,13 @@ def allowed_local_request(headers):
 
 def review(payload, *, local_operator=False):
     mode, criteria, pages = validate(payload)
-    findings, notice, planner = model_review(payload, criteria, pages, local_operator)
+    findings, notice, planner, read_text = model_review(payload, criteria, pages, local_operator)
     criterion_limit_reached = mode == "guide" and len(findings) == MAX_CRITERIA
     if criterion_limit_reached:
         notice = (notice + f" This section reached the {MAX_CRITERIA}-criterion limit. Check the guide for additional requirements.").strip()
     used_model = planner == "anthropic" or any(f["analysisEngine"] == "anthropic" for f in findings)
     return {
+        **read_text,
         "mode": mode, "engine": "anthropic" if used_model else "local",
         "notice": notice, "findings": findings, "planningEngine": planner, "criterionLimitReached": criterion_limit_reached,
         "reviewScope": {"documents": len(payload["documents"]), "pages": len(pages), "criteria": len(findings)},

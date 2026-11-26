@@ -116,3 +116,15 @@
   height: 28px;
   vertical-align: middle;
 }
+
+.pdf-citation {
+  max-height: 9rem;
+  overflow: auto;
+  padding: 12px 20px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.pdf-citation strong { color: var(--muted); font-size: 12px; font-weight: 550; }
+.pdf-citation blockquote { margin-top: 3px; overflow-wrap: anywhere; }

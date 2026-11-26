@@ -1,4 +1,5 @@
 import { MAX_POLICY_CHARACTERS, MAX_POLICY_PAGE_CHARACTERS, MAX_POLICY_PAGES, type Policy } from './model';
+import { openPdf } from './pdf';
 import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 
 const maxFileBytes = 32 * 1024 * 1024;
@@ -41,11 +42,9 @@ export async function readDocument(file: File, existingPolicies?: readonly Polic
     pages.push(page);
   }
 
-  if (/\.pdf$/i.test(name)) {
-    const pdfjs = await import('pdfjs-dist');
-    const { default: workerUrl } = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
-    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-    const loadingTask = pdfjs.getDocument({ data: await file.arrayBuffer() });
+  const isPdf = /\.pdf$/i.test(name);
+  if (isPdf) {
+    const loadingTask = await openPdf(file);
     try {
       const pdf = await loadingTask.promise;
       if (pdf.numPages > MAX_POLICY_PAGES) throw Error('A review supports up to 1,200 pages.');
@@ -70,8 +69,7 @@ export async function readDocument(file: File, existingPolicies?: readonly Polic
             }
             if (part) parts.push(part);
           }
-          const text = parts.join('').trim();
-          if (text) addPage({ number, text });
+          addPage({ number, text: parts.join('').trim() });
         } finally {
           reader.releaseLock();
           page.cleanup();
@@ -83,7 +81,6 @@ export async function readDocument(file: File, existingPolicies?: readonly Polic
   } else if (/\.(txt|md)$/i.test(name)) {
     for (const page of textPages(await file.text())) addPage(page);
   } else throw Error('Choose a PDF, TXT, or Markdown file.');
-  if (!pages.length)
-    throw Error(`No readable text in “${name}”. For a scanned PDF, run OCR and upload the text export.`);
-  return { id: crypto.randomUUID(), title: name, pages };
+  if (!pages.length) throw Error(`No readable text in “${name}”. Choose a document containing text.`);
+  return { id: crypto.randomUUID(), title: name, pages, ...(isPdf && { pdfFile: file }) };
 }
