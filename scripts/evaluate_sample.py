@@ -20,8 +20,11 @@ EXPECTED = [
 def evaluate(mode, sample):
     field = "questions" if mode == "questionnaire" else "guide"
     result = review({"mode": mode, field: sample[field], "documents": sample["documents"], "allowModel": True})
-    if result["engine"] != "anthropic":
-        print(f"{mode}: live assessment unavailable. {result['notice']}")
+    fully_live = result["planningEngine"] == "anthropic" and all(
+        finding["analysisEngine"] == "anthropic" for finding in result["findings"]
+    )
+    if not fully_live:
+        print(f"{mode}: live planner or assessment unavailable. {result['notice']}")
         return False
     # Compare by source identity; an extraction can reorder the guide obligations.
     sources = sample["questions"] if mode == "questionnaire" else [
@@ -44,11 +47,11 @@ def evaluate(mode, sample):
         for side in ("supporting", "counter"):
             cited[side] = {(e["documentId"], e["page"]) for row in rows for e in row[side]}
         correct_pages = (
-            (support is None or support in cited["supporting"])
-            and (counter is None or counter in cited["counter"])
+            cited["supporting"] == ({support} if support else set())
+            and cited["counter"] == ({counter} if counter else set())
         )
         matches += statuses == [expected] and correct_pages
-        pages_message = "" if correct_pages else " (expected source page missing)"
+        pages_message = "" if correct_pages else " (source pages differ from rubric)"
         print(f"{mode} {number}: expected {expected}, got {', '.join(statuses) or 'missing'}{pages_message}")
     print(f"{mode}: {matches} of {len(sources)} synthetic outcomes matched.")
     return len(result["findings"]) == len(sources) == matches
