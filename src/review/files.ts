@@ -6,6 +6,8 @@ const maxFileBytes = 32 * 1024 * 1024;
 const maxExtractedCharacters = 32_000_000;
 
 export function documentErrorMessage(error: unknown) {
+  if (error instanceof Error && error.name === 'PasswordException')
+    return 'This PDF is password-protected. Unlock it and upload the saved copy.';
   return error instanceof Error ? error.message : 'Could not read the document. Try again.';
 }
 
