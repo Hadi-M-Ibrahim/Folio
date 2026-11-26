@@ -4,7 +4,7 @@ Folio helps compliance analysts answer state questionnaires and turn regulatory 
 
 ## Use Folio
 
-Open [Folio](https://folio-policy-review.vercel.app) or [watch the 83-second walkthrough](Deliverables/folio-walkthrough.mp4).
+Open [Folio](https://folio-policy-review.vercel.app).
 
 - **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open a passage to verify its page, attach the quotation to a response, and confirm or flag the answer. Download the responses with their citations.
 - **Review a new policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
@@ -24,7 +24,6 @@ Keyword search is the default. Selecting Anthropic for a review sends the questi
 | `tests/` | API tests, offline fixtures, and browser tests for both workflows |
 | `requirements/` | Python packages for linting, test coverage, and local PDF tools |
 | `public/` | Icons and social preview artwork |
-| `Deliverables/` | Recorded walkthrough |
 
 ## Run locally
 
