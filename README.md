@@ -6,12 +6,12 @@ Folio helps compliance analysts answer state questionnaires and turn regulatory 
 
 Open [Folio](https://folio-policy-review.vercel.app).
 
-- **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open a passage to verify its page, attach the quotation to a response, and confirm or flag the answer. Download the responses with their citations.
+- **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open the cited page to check the suggested answer. Use a supported suggestion as a draft or write your own response. Confirm it with a citation or flag it for follow-up, then download your responses.
 - **Review a new policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
 For a long source, select a batch of questions or a range of guide pages. The workspace and export identify the selected range. Uploaded guides retain their physical page numbers.
 
-Keyword search is the default. Selecting Anthropic for a review sends the questions or guide and relevant policy text to the provider using a server-side key. The app holds documents, responses, and decisions in the current tab. Download your work before refreshing or closing it.
+Submitting a review sends the selected questions or guide text and relevant policy passages to Anthropic. Folio verifies citations against the uploaded pages. If the model is unavailable, the form keeps your inputs for retry. Documents, responses, and decisions stay available in the current tab. Download your work before refreshing or closing it.
 
 ## Repository layout
 
@@ -27,7 +27,7 @@ Keyword search is the default. Selecting Anthropic for a review sends the questi
 
 ## Run locally
 
-Use Python 3.12 and Node 22.23.5 or a newer 22.x release. Start the Python API in one terminal and Vite in another.
+Use Python 3.12 and Node 22.23.5 or a newer 22.x release. Set `ANTHROPIC_API_KEY` in the Python API’s environment to run reviews. Start the API in one terminal and Vite in another.
 
 ```sh
 python3 api/review.py
@@ -53,7 +53,7 @@ python3 -m venv .venv
 .venv/bin/python scripts/prepare_review.py guide --pages 11
 ```
 
-In the local app, open either workflow and select **Import a prepared review (.json)** on the first step. Local keyword retrieval works without credentials. For an operator-approved model run, set `ANTHROPIC_API_KEY` in the API process environment and set `REVIEW_ALLOW_CUSTOM_MODEL=1`. The reviewer also has to select model assessment for the individual request. That sends the relevant text to Anthropic. Leave the option off for local-only processing.
+In the local app, open either workflow and import the prepared review on the first step. Check the selected source and policies before submitting them for model review.
 
 ## How findings are produced
 
@@ -82,4 +82,4 @@ python3 -m venv .venv
 .venv/bin/python -m coverage report --show-missing --precision=1
 ```
 
-GitHub Actions runs Oxlint, TypeScript, the Vite build, desktop and mobile browser tests, Ruff, and the Python tests on pull requests and pushes to main. The backend job summary lists uncovered API lines and branches. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
+GitHub Actions runs Oxlint, TypeScript, the Vite build, desktop and mobile browser tests, Ruff, and the Python tests on pull requests and pushes to main. The backend job summary lists uncovered API lines and branches. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable.

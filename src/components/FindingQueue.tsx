@@ -1,5 +1,5 @@
 import { Check, Flag, Search, SlidersHorizontal, X } from 'lucide-react';
-import { policyActionLabels, statusLabels, type ReviewRow, type Status } from '../review/model';
+import { policyActionLabels, responseLabels, statusLabels, type ReviewRow, type Status } from '../review/model';
 
 export type QueueOptions = {
   search: string;
@@ -13,14 +13,13 @@ type Props = {
   currentIndex?: number;
   label: string;
   total: number;
-  reviewed: number;
   hasPolicies: boolean;
   options: QueueOptions;
   onChange: (changes: Partial<QueueOptions>) => void;
   onSelect: (index: number) => void;
 };
 
-export function FindingQueue({ rows, currentIndex, label, total, reviewed, hasPolicies, options, onChange, onSelect }: Props) {
+export function FindingQueue({ rows, currentIndex, label, total, hasPolicies, options, onChange, onSelect }: Props) {
   const { search, status, showStatuses, expanded } = options;
   return (
     <aside className="queue" aria-label="Review queue" data-expanded={expanded}>
@@ -37,16 +36,14 @@ export function FindingQueue({ rows, currentIndex, label, total, reviewed, hasPo
         <div className="queue-head">
           <div className="section-title">
             <h2>{label}</h2>
-            <span>
-              {reviewed}/{total} reviewed
-            </span>
+            <span>{total}</span>
           </div>
-          <div className="queue-controls">
+          {total > 5 && <div className="queue-controls">
             <div className="queue-search">
               <Search size={15} />
               <input
-                aria-label="Search findings"
-                placeholder="Search findings…"
+                aria-label={'Search ' + label.toLowerCase()}
+                placeholder={'Search ' + label.toLowerCase()}
                 value={search}
                 onChange={(e) => onChange({ search: e.target.value })}
               />
@@ -64,7 +61,7 @@ export function FindingQueue({ rows, currentIndex, label, total, reviewed, hasPo
             >
               <SlidersHorizontal size={16} />
             </button>}
-          </div>
+          </div>}
           {showStatuses && (
             <label className="filter-select">
               Status
@@ -94,7 +91,8 @@ export function FindingQueue({ rows, currentIndex, label, total, reviewed, hasPo
                   : <Check size={13} aria-label="Reviewed" />)}
             </span>
             <span className="row-status">
-              {decision?.action ? policyActionLabels[decision.action] : hasPolicies ? statusLabels[finding.status] : 'Action pending'}
+              {decision?.action ? policyActionLabels[decision.action] : decision?.value ? responseLabels[decision.value]
+                : hasPolicies ? statusLabels[finding.status] : 'Action pending'}
             </span>
           </button>
         ))}

@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import threading
 import unittest
 from contextlib import closing
@@ -7,6 +8,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 from api import review as api
+from api._review import model
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit
 
 
@@ -41,6 +43,25 @@ class HttpContractTests(unittest.TestCase):
         status, headers, _ = self.request(None, headers={"Content-Length": str(api.MAX_BODY + 1)})
         self.assertEqual(status, 413)
         self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_required_model_returns_503_and_the_same_request_can_be_retried(self):
+        payload = json.dumps({"mode": "guide", "guide": "Staff must keep records.", "documents": [],
+                              "allowModel": True, "modelSharingConsent": True})
+        plan = {"criteria": [{"sourceId": "s1", "question": "Do staff keep records?", "searchTerms": ["records"]}]}
+        for local in (True, False):
+            self.server.local_operator = local
+            with self.subTest(local=local), patch.dict(os.environ, {} if local else {"VERCEL": "1"}, clear=True), \
+                 patch.object(model, "invoke_tool", side_effect=[model.ProviderUnavailable, plan]) as invoke:
+                status, headers, body = self.request(payload)
+                self.assertEqual((status, headers["Cache-Control"]), (503, "no-store"))
+                self.assertIn("missing its Anthropic API key", body["error"])
+                invoke.assert_not_called()
+                with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+                    status, _, body = self.request(payload)
+                    self.assertEqual(status, 503)
+                    self.assertIn("Try again", body["error"])
+                    status, _, body = self.request(payload)
+                    self.assertEqual((status, body["engine"]), (200, "anthropic"))
 
     def test_large_result_returns_a_complete_error(self):
         with patch.object(api, "MAX_RESPONSE", 256), patch.object(api, "review", return_value={"text": "é" * 80}):

@@ -30,7 +30,8 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   const hasPolicies = documents.length > 0;
   const itemLabel = isGuide ? 'obligation' : 'question';
   const groupLabel = isGuide ? 'Obligations' : 'Questions';
-  const notice = review.input.allowModel || review.result.criterionLimitReached ? review.result.notice : '';
+  const outputLabel = isGuide ? 'Action list' : 'Responses';
+  const notice = review.result.notice;
   const scopeNote = review.scope ? `Search covers ${review.scope.selectedPages} selected pages of ${review.scope.sourcePages.toLocaleString()}.` : '';
   const rows = findings.map((finding, index) => {
     const key = review.key + '/' + finding.id;
@@ -41,8 +42,10 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
     (queue.status === 'all' || queue.status === finding.status) &&
     (finding.question + ' ' + finding.id).toLowerCase().includes(query),
   );
-  const current = visible.find(({ index }) => index === selected) ?? visible[0];
-  const next = current && visible.find(({ index }) => index > current.index);
+  const position = Math.max(0, visible.findIndex(({ index }) => index === selected));
+  const current = visible[position];
+  const previous = visible[position - 1];
+  const next = visible[position + 1];
   const entries = rows.flatMap(({ finding, index, decision }) => decision ? [{ finding, index, decision }] : []);
   const reviewed = entries.filter(({ decision }) => isGuide ? decision.action : decision.value).length;
 
@@ -57,7 +60,7 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
     if (focus || window.matchMedia('(max-width: 760px)').matches) {
       requestAnimationFrame(() => {
         detailRef.current?.querySelector<HTMLElement>('#finding-detail')?.focus({ preventScroll: true });
-        detailRef.current?.scrollIntoView({ block: 'nearest' });
+        detailRef.current?.scrollIntoView({ block: 'start' });
       });
     }
   }
@@ -67,44 +70,48 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
     if (doc) setSource({ doc, page: evidence.page, quote: evidence.quote, term });
   }
 
+  function openOutput() {
+    setNav('decisions');
+    requestAnimationFrame(() => document.getElementById('review-output')?.focus());
+  }
+
   return (
-    <section className="workspace">
-      <ReviewHeading review={review} />
+    <section className="workspace" data-single-item={findings.length <= 1}>
+      <ReviewHeading review={review} reviewed={reviewed} onDownload={() => exportReview(review, rows)} />
       <div className="review-toolbar">
         <nav className="mode-tabs" aria-label="This review">
-          <button aria-pressed={nav === 'findings'} onClick={() => setNav('findings')}>{groupLabel}</button>
+          <button aria-pressed={nav === 'findings'} onClick={() => setNav('findings')}>Review {groupLabel.toLowerCase()}</button>
+          <button aria-pressed={nav === 'decisions'} onClick={() => setNav('decisions')}>{outputLabel}</button>
           <button aria-pressed={nav === 'documents'} onClick={() => setNav('documents')}>Source documents</button>
-          <button aria-pressed={nav === 'decisions'} onClick={() => setNav('decisions')}>Decisions</button>
         </nav>
-        <button className="report-link" onClick={() => exportReview(review, rows)}>
-          <Download size={15} /> {isGuide ? 'Download action list' : 'Download responses'}
-        </button>
       </div>
       {nav === 'findings' && (
         <>
           {(notice || scopeNote) && <output className="run-notice">{[notice, scopeNote].filter(Boolean).join(' ')}</output>}
           <div className="work-grid">
-            <FindingQueue rows={visible} currentIndex={current?.index} label={groupLabel}
-              total={findings.length} reviewed={reviewed} hasPolicies={hasPolicies}
-              options={queue} onChange={updateQueue} onSelect={selectFinding} />
+            {findings.length > 1 && <FindingQueue rows={visible} currentIndex={current?.index} label={groupLabel}
+              total={findings.length} hasPolicies={hasPolicies}
+              options={queue} onChange={updateQueue} onSelect={selectFinding} />}
             <div ref={detailRef} className="detail-wrap">
               {current ? (
                 <>
                   <Inspector
                     key={current.key}
                     row={current}
+                    total={findings.length}
                     mode={mode}
                     documents={documents}
                     onOpen={openEvidence}
                     onGuide={() => setSource(guideLocation(review, current.finding))}
-                    guideCitation={isGuide ? guideCitation(review, current.finding) : undefined}
+                    guideCitation={isGuide && review.sourceDocument ? guideCitation(review, current.finding) : undefined}
                     onDecisionChange={(decision) => onDecisionChange(current.key, decision)}
                   />
-                  {next && (
-                    <button className="next-finding" onClick={() => selectFinding(next.index, true)}>
-                      Next {itemLabel}<ArrowRight size={16} />
+                  <nav className="finding-navigation" aria-label={groupLabel}>
+                    {previous && <button onClick={() => selectFinding(previous.index, true)}><ArrowLeft size={15} />Previous {itemLabel}</button>}
+                    <button onClick={() => next ? selectFinding(next.index, true) : openOutput()}>
+                      {next ? 'Next ' + itemLabel : 'View ' + outputLabel.toLowerCase()}<ArrowRight size={15} />
                     </button>
-                  )}
+                  </nav>
                 </>
               ) : (
                 <div className="empty-list">
@@ -122,7 +129,7 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
       )}
       {nav === 'documents' && <SourceDocuments review={review} onOpen={setSource} />}
       {nav === 'decisions' && (
-        <ReviewDecisions entries={entries} isGuide={isGuide} onSelect={(index) => {
+        <ReviewDecisions entries={entries} isGuide={isGuide} onReturn={() => selectFinding(selected, true)} onSelect={(index) => {
           updateQueue({ search: '', status: 'all' });
           selectFinding(index, true);
         }} />
@@ -132,20 +139,26 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   );
 }
 
-function ReviewHeading({ review }: { review: Review }) {
-  const { mode, documents } = review.input;
-  const scope = documents.length ? documents.length + (documents.length === 1 ? ' policy document' : ' policy documents') : 'Guide only';
+function ReviewHeading({ review, reviewed, onDownload }: { review: Review; reviewed: number; onDownload: () => void }) {
+  const isGuide = review.input.mode === 'guide';
   const summary = [
-    modeLabels[mode],
+    review.sourceDocument?.title,
     review.sourceSelection,
-    mode === 'guide' && review.result.planningEngine === 'local' ? 'Rule-based extraction' : undefined,
-    scope,
+    isGuide && !review.input.documents.length ? 'Guide only' : undefined,
+    reviewed + ' of ' + review.result.findings.length + ' reviewed',
   ];
   return (
     <header className="page-heading">
       <a className="back-link" href="#review-options"><ArrowLeft size={15} /> All reviews</a>
-      <h1 tabIndex={-1}>{review.title}</h1>
-      <p>{summary.filter(Boolean).join(' · ')}</p>
+      <div className="workspace-heading">
+        <div>
+          <h1 tabIndex={-1}>{isGuide ? 'Policy guide review' : 'Questionnaire review'}</h1>
+          <p>{summary.filter(Boolean).join(' · ')}</p>
+        </div>
+        <button className="report-link" onClick={onDownload}>
+          <Download size={16} /> {isGuide ? 'Download action list' : 'Download responses'}
+        </button>
+      </div>
     </header>
   );
 }
@@ -176,13 +189,14 @@ function SourceDocuments({ review, onOpen }: { review: Review; onOpen: (source: 
   );
 }
 
-function ReviewDecisions({ entries, isGuide, onSelect }: {
+function ReviewDecisions({ entries, isGuide, onSelect, onReturn }: {
   entries: (ReviewRow & { decision: Decision })[];
   isGuide: boolean;
   onSelect: (index: number) => void;
+  onReturn: () => void;
 }) {
   return (
-    <section className="library" aria-label="Review decisions">
+    <section className="library" id="review-output" tabIndex={-1} aria-label={isGuide ? 'Action list' : 'Responses'}>
       {entries.map(({ finding, decision, index }) => {
         const label = decision.action ? policyActionLabels[decision.action] : decision.value ? responseLabels[decision.value] : 'Draft';
         const text = decision.note || decision.answer;
@@ -197,9 +211,10 @@ function ReviewDecisions({ entries, isGuide, onSelect }: {
           </button>
         );
       })}
-      {!entries.length && <p className="empty-decisions">
-        {isGuide ? 'Policy actions you record will appear here.' : 'Your responses and decisions will appear here.'}
-      </p>}
+      {!entries.length && <div className="empty-decisions">
+        <p>{isGuide ? 'Choose an action for an obligation to start your list.' : 'Draft or flag a response to add it here.'}</p>
+        <button className="text-link" onClick={onReturn}>{isGuide ? 'Review obligations' : 'Review questions'} <ArrowRight size={14} /></button>
+      </div>}
     </section>
   );
 }

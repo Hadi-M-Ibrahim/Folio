@@ -1,5 +1,6 @@
 import { Check, Flag, X } from 'lucide-react';
-import { policyActionLabels, responseLabels, type Decision, type Evidence, type PolicyAction } from '../review/model';
+import { useRef } from 'react';
+import { policyActionLabels, responseLabels, samePassage, type Decision, type Evidence, type Finding } from '../review/model';
 
 type EditorProps = {
   decision?: Decision;
@@ -9,23 +10,18 @@ type EditorProps = {
 export function PolicyActionEditor({ decision, onChange }: EditorProps) {
   return (
     <>
-      <label className="decision-field">
-        Policy action
-        <select
-          value={decision?.action || ''}
-          onChange={(event) => {
-            const action = event.target.value as PolicyAction | '';
-            onChange({ action: action || undefined });
-          }}
-        >
-          <option value="">Choose an action</option>
-          {Object.entries(policyActionLabels).map(([action, label]) => (
-            <option key={action} value={action}>
-              {label}
-            </option>
+      <fieldset className="action-choices">
+        <legend>Policy action</legend>
+        <div>
+          {(['write', 'update', 'no_change'] as const).map(action => (
+            <label key={action}>
+              <input type="radio" name="policy-action" checked={decision?.action === action} onChange={() => onChange({ action })} />
+              {policyActionLabels[action]}
+            </label>
           ))}
-        </select>
-      </label>
+        </div>
+        {decision?.action && <button className="text-link clear-action" onClick={() => onChange({ action: undefined })}>Clear action</button>}
+      </fieldset>
       <label className="decision-field">
         Action note
         <textarea
@@ -39,7 +35,8 @@ export function PolicyActionEditor({ decision, onChange }: EditorProps) {
   );
 }
 
-export function ResponseEditor({ decision, onChange, onOpen, onRemoveCitation }: EditorProps & {
+export function ResponseEditor({ finding, decision, onChange, onOpen, onRemoveCitation }: EditorProps & {
+  finding: Finding;
   onOpen: (evidence: Evidence) => void;
   onRemoveCitation: (evidence: Evidence) => void;
 }) {
@@ -47,6 +44,16 @@ export function ResponseEditor({ decision, onChange, onOpen, onRemoveCitation }:
   const confirmed = decision?.value === 'confirmed';
   const flagged = decision?.value === 'flagged';
   const hasAnswer = !!decision?.answer?.trim();
+  const input = useRef<HTMLTextAreaElement>(null);
+  const verified = [...finding.supporting, ...finding.counter];
+  const canUseAnswer = !hasAnswer && finding.analysisEngine === 'anthropic' && verified.length > 0 &&
+    ['supported', 'mixed', 'contradicted'].includes(finding.status);
+
+  function useSuggestion() {
+    const additional = verified.filter(passage => !citations.some(citation => samePassage(citation, passage)));
+    onChange({ answer: finding.answer, citations: [...citations, ...additional] });
+    input.current?.focus();
+  }
 
   function toggleDisposition(value: NonNullable<Decision['value']>) {
     onChange({ value: decision?.value === value ? undefined : value });
@@ -54,15 +61,20 @@ export function ResponseEditor({ decision, onChange, onOpen, onRemoveCitation }:
 
   return (
     <>
-      <label className="decision-field">
-        Response for submission
+      <div className="decision-field">
+        <div className="response-label">
+          <label htmlFor="response-text">Response for submission</label>
+          {canUseAnswer && <button className="text-link" onClick={useSuggestion}>Use suggested answer</button>}
+        </div>
         <textarea
+          id="response-text"
+          ref={input}
           rows={3}
           placeholder="Write your response to this question."
           value={decision?.answer || ''}
           onChange={(event) => onChange({ answer: event.target.value })}
         />
-      </label>
+      </div>
       {citations.length > 0 && (
         <div className="response-citations">
           <h3>Response citations</h3>

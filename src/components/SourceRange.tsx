@@ -1,20 +1,25 @@
 import { useState } from 'react';
+import { ChevronDown, ListFilter } from 'lucide-react';
 import { MAX_GUIDE_CHARACTERS, MAX_QUESTIONS, type Policy } from '../review/model';
 
 export type RangeSource = {
   unit: 'page' | 'question';
   items: Policy['pages'];
   original?: Policy;
+  originalSelection?: string;
 };
 
-export function questionnaireRange(questions: string[], original?: Policy): RangeSource | undefined {
-  if (questions.length <= MAX_QUESTIONS) return undefined;
-  const numbers = questions.map((q) => Number(q.match(/^\s*(?:Q(?:uestion)?\s*)?\(?(\d+)[.):]\s+/i)?.[1]));
+export function questionnaireRange(questions: string[], original?: Policy, preparedNumbers?: unknown): RangeSource | undefined {
+  if (questions.length < 2) return undefined;
+  const numbers = Array.isArray(preparedNumbers) && preparedNumbers.length === questions.length
+    ? preparedNumbers
+    : questions.map((q) => Number(q.match(/^\s*(?:Q(?:uestion)?\s*)?\(?(\d+)[.):]\s+/i)?.[1]));
   const numbered = numbers.every((n, i) => Number.isSafeInteger(n) && n > 0 && (i === 0 || n > numbers[i - 1]));
   return {
     unit: 'question',
     items: questions.map((text, i) => ({ number: numbered ? numbers[i] : i + 1, text })),
     original,
+    originalSelection: preparedSelection(preparedNumbers, 'question'),
   };
 }
 
@@ -53,14 +58,16 @@ export function preparedGuide(value: unknown, guide: string, selected: unknown):
   return undefined;
 }
 
-export function SourceRange({ source, oversized, onApply }: {
+export function SourceRange({ source, oversized, appliedValue, onApply }: {
   source: RangeSource;
   oversized: boolean;
-  onApply: (items: Policy['pages'], description?: string) => void;
+  appliedValue?: string;
+  onApply: (items: Policy['pages'], description: string | undefined, rangeValue: string) => void;
 }) {
-  const [open, setOpen] = useState(oversized);
-  const [value, setValue] = useState('');
+  const [expanded, setExpanded] = useState<boolean>();
+  const [value, setValue] = useState(appliedValue ?? '');
   const [error, setError] = useState('');
+  const open = expanded ?? (oversized || Boolean(appliedValue));
   const { items, unit } = source;
   const pages = unit === 'page';
   const first = items[0].number;
@@ -89,15 +96,21 @@ export function SourceRange({ source, oversized, onApply }: {
       return;
     }
     setError('');
-    onApply(selected, selected.length === items.length ? undefined :
-      group + ' ' + formatRange(selected.map((item) => item.number)) + ' (' + selected.length + ' of ' + items.length + (pages ? ' readable pages).' : ' questions).'));
+    const formatted = formatRange(selected.map((item) => item.number));
+    const description = selected.length === items.length ? source.originalSelection :
+      group + ' ' + formatted + ' (' + selected.length + ' of ' + items.length + (pages ? ' readable pages).' : ' questions).');
+    setValue(formatted);
+    setExpanded(true);
+    onApply(selected, description, formatted);
   }
 
   return (
     <div className="intake-range">
       <button type="button" className="intake-text-button" aria-expanded={open} aria-controls="intake-range-controls"
-        onClick={() => setOpen(!open)}>
-        {open ? 'Hide range selection' : 'Choose ' + (pages ? 'guide pages' : 'questionnaire items')}
+        onClick={() => setExpanded(!open)}>
+        <ListFilter size={17} aria-hidden="true" />
+        {pages ? 'Choose guide pages' : 'Choose questionnaire items'}
+        <ChevronDown className="intake-chevron" size={14} aria-hidden="true" />
       </button>
       <div id="intake-range-controls" hidden={!open}>
         <label htmlFor="intake-range-value">{group} <span>({first}–{last})</span></label>

@@ -85,5 +85,7 @@ export async function requestReview(input: ReviewInput, signal: AbortSignal): Pr
     );
   if (!Array.isArray(body.findings) || !['anthropic', 'local'].includes(body.engine))
     throw Error('The review service returned an unexpected response. Try again.');
+  if (input.allowModel && body.engine !== 'anthropic')
+    throw Error('The AI review could not finish. Your inputs are still here. Try again.');
   return body as Result;
 }
