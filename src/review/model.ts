@@ -30,6 +30,13 @@ export type Evidence = {
   page: number;
   quote: string;
 };
+type SearchProof = {
+  term: string;
+  origin?: string;
+  totalHits?: number;
+  totalPages?: number;
+  matches: { documentId: string; page: number; count: number }[];
+};
 export type Finding = {
   id: string;
   question: string;
@@ -46,13 +53,14 @@ export type Finding = {
   counter: Evidence[];
   candidates: Evidence[];
   searchTerms: string[];
-  searchProof: {
-    term: string;
-    origin?: string;
-    totalHits?: number;
-    totalPages?: number;
-    matches: { documentId: string; page: number; count: number }[];
-  }[];
+  searchProof: SearchProof[];
+  followup?: {
+    reason: 'cross_reference' | 'definition' | 'apparent_conflict';
+    source: Evidence;
+    proof: SearchProof;
+    passages: Evidence[];
+    totalNewPassages: number;
+  };
 };
 export type ReviewInput = {
   mode: Mode;

@@ -79,6 +79,8 @@ REFERENCE_ABBREVIATION = re.compile(
     r"\b(?:secs?|subsecs?|arts?|chs?|paras?|pars?|pts?|nos?|regs?|figs?|vols?|pp?|dept|"
     r"e\.g|i\.e|cf|vs|(?:[a-z]\.)+[a-z])\.$", re.I,
 )
+REFERENCE_PREFIXES = {"", "§", "§§", "section", "sec.", "article", "appendix", "exhibit", "schedule", "part", "chapter"}
+DEFINITION = re.compile(r"""^["'”’]?\s*(?:means\b|refers to\b|is defined as\b|[:—–])""", re.I)
 
 
 class InvalidRequest(ValueError):
@@ -266,6 +268,115 @@ def phrase_hits(text, patterns):
             yield phrase, count
 
 
+def term_proof(term, origin, hits):
+    matches = [{"documentId": d, "page": p, "count": n} for (d, p), n in hits.most_common(24)]
+    return {"term": term, "origin": origin, "matches": matches, "totalPages": len(hits), "totalHits": sum(hits.values())}
+
+
+def literal_matches(term):
+    """Use the same token and phrase semantics as the initial search proof."""
+    if WORD.fullmatch(term):
+        folded = term.casefold()
+        return lambda body: (hit for hit in WORD.finditer(body) if hit[0].casefold() == folded)
+    return phrase_pattern(term).finditer
+
+
+def passage_spans(body):
+    cursor = 0
+    for piece in passages(body):
+        start = body.index(piece, cursor)
+        cursor = start + len(piece)
+        yield start, cursor
+
+
+def heading_with_context(body, spans, index, visible):
+    """Join a matching heading to previously unseen text using the exact PDF whitespace."""
+    start, end = spans[index]
+    next_start, next_end = spans[index + 1]
+    context = body[next_start:min(next_end, start + MAX_PASSAGE_CHARS)].rstrip()
+    if WORD.search(context) and context != body[start:end] and not any(context in quote for quote in visible):
+        return body[start:next_start + len(context)]
+    return None
+
+
+def heading_suffix(tail):
+    if not tail.strip(".:—–-\"'”’"):
+        return True
+    if len(tail) > 80 or "\n" in tail or tail.endswith((".", "!", "?")):
+        return False
+    return tail.startswith(("—", "–", "-", ":", ". ")) or tail[0].isupper()
+
+
+def followup_excerpt(body, spans, index, hit, visible):
+    start, end = spans[index]
+    piece = body[start:end]
+    prefix = body[start:hit.start()].strip(" \t\r\n\"'“‘").casefold()
+    tail = body[hit.end():end].strip()
+    if prefix in REFERENCE_PREFIXES and heading_suffix(tail) and hit.end() <= end and index + 1 < len(spans):
+        joined = heading_with_context(body, spans, index, visible)
+        if joined:
+            return 0, joined
+    if piece in visible or hit.end() - hit.start() > MAX_PASSAGE_CHARS:
+        return None
+    if hit.end() > end:
+        # The literal itself can straddle a paragraph or a fixed-length excerpt boundary.
+        start = max(start, hit.start() - 80, hit.end() - MAX_PASSAGE_CHARS)
+        end = min(len(body), start + MAX_PASSAGE_CHARS)
+    quote = body[start:end].strip()
+    if any(quote in old for old in visible):
+        return None
+    if DEFINITION.match(tail):
+        return 0, quote
+    return (1 if prefix in REFERENCE_PREFIXES else 2), quote
+
+
+def followup_page(body, hits, visible):
+    spans = list(passage_spans(body))
+    ranked = {}
+    hit_index = 0
+    for index, (_, end) in enumerate(spans):
+        hit = hits[hit_index]
+        if hit.start() >= end:
+            continue
+        excerpt = followup_excerpt(body, spans, index, hit, visible)
+        if excerpt:
+            rank, quote = excerpt
+            ranked[quote] = min(rank, ranked.get(quote, rank))
+        while hit_index < len(hits) and hits[hit_index].start() < end:
+            hit_index += 1
+        if hit_index == len(hits):
+            break
+    return ranked
+
+
+def followup_lookup(pages, term, candidates):
+    """Count all literal hits and return up to three new, directly matching source slices."""
+    visible = defaultdict(set)
+    for candidate in candidates:
+        visible[candidate["documentId"], candidate["page"]].add(candidate["quote"])
+    counts = Counter()
+    shortlist = []
+    total = 0
+    term = term.strip()
+    if term:
+        find_matches = literal_matches(term)
+        for key, (title, body) in pages.items():
+            hits = list(find_matches(body))
+            if not hits:
+                continue
+            counts[key] = len(hits)
+            ranked = followup_page(body, hits, visible.get(key, ()))
+            total += len(ranked)
+            for quote in nsmallest(3, ranked, key=ranked.get):
+                evidence = {"documentId": key[0], "title": title, "page": key[1], "quote": quote}
+                shortlist.append((ranked[quote], evidence))
+    return {
+        "proof": term_proof(term, "followup", counts),
+        "passages": [evidence for _, evidence in nsmallest(3, shortlist, key=lambda item: item[0])],
+        "totalNewPassages": total,
+    }
+
+
 class Index:
     def __init__(self, pages, plan):
         self.items = []
@@ -353,11 +464,7 @@ class Index:
                 origins.setdefault(form, "related_form")
         # Bound the visible search log for large inventories and report all omissions.
         visible_terms = list(origins)[:24]
-        proof = []
-        for term in visible_terms:
-            hits = self.page_hits[term]
-            matches = [{"documentId": d, "page": p, "count": n} for (d, p), n in hits.most_common(24)]
-            proof.append({"term": term, "origin": origins[term], "matches": matches, "totalPages": len(hits), "totalHits": sum(hits.values())})
+        proof = [term_proof(term, origins[term], self.page_hits[term]) for term in visible_terms]
         return {
             **criterion_fields(row, number),
             "status": "needs_review" if candidates else "insufficient",

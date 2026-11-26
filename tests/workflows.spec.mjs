@@ -72,6 +72,65 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(page.getByLabel('Response for submission')).toHaveValue('The facilities coordinator.');
 });
 
+for (const hasAppendix of [true, false]) {
+  test(`a follow-up search traces a cross-reference ${hasAppendix ? 'to a new passage' : 'with no new passages'}`, async ({ page }) => {
+    const question = 'Who files the inspection log?';
+    const term = 'Appendix B';
+    const sourceQuote = 'For inspection log assignments, see Appendix B.';
+    const appendixQuote = 'Appendix B assigns filing to the coordinator. Appendix B applies to all offices.';
+    const pages = hasAppendix ? [sourceQuote, appendixQuote] : [sourceQuote];
+    await page.route('**/api/review', (route) => {
+      const { id: documentId, title } = route.request().postDataJSON().documents[0];
+      const source = { documentId, title, page: 1, quote: sourceQuote };
+      const passages = hasAppendix ? [{ documentId, title, page: 2, quote: appendixQuote }] : [];
+      const matches = [{ documentId, page: 1, count: 1 }];
+      if (hasAppendix) matches.push({ documentId, page: 2, count: 2 });
+      return route.fulfill({ json: {
+        mode: 'questionnaire', engine: 'anthropic', notice: '',
+        findings: [{
+          id: 'Q1', question, status: 'needs_review', answer: 'Check the filing assignment.',
+          analysisEngine: 'anthropic', supporting: [], counter: [], candidates: [source],
+          searchTerms: ['inspection'], searchProof: [{ term: 'inspection', matches: [matches[0]] }],
+          followup: {
+            reason: 'cross_reference', source, proof: { term, origin: 'followup', matches },
+            passages, totalNewPassages: passages.length,
+          },
+        }],
+      } });
+    });
+    await page.goto('/#/new/questionnaire');
+    await page.getByLabel('Questions', { exact: true }).fill(question);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByLabel('Upload policy files').setInputFiles({
+      name: 'Filing.txt', mimeType: 'text/plain', buffer: Buffer.from(pages.join('\f')),
+    });
+    await page.getByRole('button', { name: 'Find evidence' }).click();
+    const toggle = page.getByRole('button', { name: 'Search trail' });
+    const followup = page.getByRole('region', { name: 'Follow-up search' });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(followup).toBeHidden();
+    await toggle.click();
+    await expect(followup).toContainText('cross-reference');
+    await expect(page.getByRole('article').filter({ hasText: /Ranked match/ })).toHaveCount(1);
+    const origin = followup.getByRole('article').filter({ hasText: 'Originating passage' });
+    await origin.getByRole('button', { name: /Filing.txt.*p\. 1/ }).click();
+    await expect(page.locator('dialog mark')).toHaveText(sourceQuote);
+    await page.keyboard.press('Escape');
+    await expect(followup.getByText(term, { exact: true })).toBeVisible();
+    await expect(followup.getByRole('button', { name: /p\. 1\s*1 hit/ })).toBeVisible();
+    if (hasAppendix) {
+      await followup.getByRole('button', { name: /p\. 2\s*2 hits/ }).click();
+      await expect(page.locator('dialog mark')).toHaveText([term, term]);
+      await page.keyboard.press('Escape');
+      const result = followup.getByRole('article').filter({ hasText: 'New passage from follow-up' });
+      await result.getByRole('button', { name: /Filing.txt.*p\. 2/ }).click();
+      await expect(page.locator('dialog mark')).toHaveText(appendixQuote);
+    } else {
+      await expect(followup).toContainText('This search found no new passages.');
+    }
+  });
+}
+
 test('a guide-only review produces an action list with a traceable source page', async ({ page }) => {
   const obligation = 'Teams must log the inspection date before handover.';
   await page.goto('/');

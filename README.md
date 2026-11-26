@@ -60,7 +60,11 @@ In the local app, open either workflow and select **Import a prepared review (.j
 
 The model planner proposes atomic guide obligations anchored to verbatim source text and suggests literal search phrases, including exceptions. The Python service keeps the requirement, search terms, source page, and exact quote together through retrieval and assessment. It ranks relevant passages, reserves room for possible exceptions, and exposes term matches alongside the recommendation. Before returning a model finding, it checks quoted text against the retrieved passage and its source page. Missing or invalid citations can downgrade the finding. A verified quotation proves the words appear on that page. The analyst still judges their scope and meaning.
 
-The staged handoffs adapt an idea from [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774). The shared evidence rubric and final verification step draw on [Aligning AI Teams](https://arxiv.org/abs/2611.17820). The papers evaluated other tasks. This implementation uses a bounded workflow and makes no claim about regulatory accuracy from those results.
+When a cross-reference, definition, or apparent conflict leaves a question open, the reviewer can request one more search for a literal term in a retrieved passage. Python searches the submitted policy pages and returns up to three new excerpts. The reviewer assesses them alongside the original evidence under the same citation checks and time budget. Open **Search trail** to inspect the reference, term, page hits, and new passages. An unresolved lookup stays flagged for review.
+
+The conditional handoff adapts an idea from [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774). The shared evidence rubric and independent citation verifier draw on [Aligning AI Teams](https://arxiv.org/abs/2611.17820).
+
+Run `python3 scripts/evaluate_followup.py` to check the synthetic cases and their scoring rules offline. With `ANTHROPIC_API_KEY` set, add `--live` to compare both reviewers using the same initial passages. The report includes missed exceptions, false contradictions, citation accuracy, token counts, and elapsed time. The cases have author-written labels and cover both workflows.
 
 ## Checks and deployment
 
