@@ -17,9 +17,9 @@ import {
   type Mode,
   type Policy,
   type Status,
-} from './review';
+} from '../review/model';
 
-export function Badge({ status }: { status: Status }) {
+function Badge({ status }: { status: Status }) {
   return (
     <span className={'badge ' + status}>
       <i />
@@ -27,7 +27,7 @@ export function Badge({ status }: { status: Status }) {
     </span>
   );
 }
-export function EvidenceCard({
+function EvidenceCard({
   evidence,
   kind,
   onOpen,

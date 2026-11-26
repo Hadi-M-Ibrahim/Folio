@@ -1,11 +1,12 @@
 """Run the fictional case in both modes and compare live findings to the authored rubric."""
 
-import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+if __name__ == "__main__" and not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from api._review.model import public_sample
 from api.review import review
 
 EXPECTED = [
@@ -41,7 +42,7 @@ def evaluate(mode, sample):
         if len(indices) == 1:
             observed[indices[0]].append(finding)
     matches = 0
-    for number, (rows, (expected, support, counter)) in enumerate(zip(observed, EXPECTED), 1):
+    for number, (rows, (expected, support, counter)) in enumerate(zip(observed, EXPECTED, strict=True), 1):
         statuses = [row["status"] for row in rows]
         cited = {}
         for side in ("supporting", "counter"):
@@ -58,6 +59,8 @@ def evaluate(mode, sample):
 
 
 if __name__ == "__main__":
-    sample = json.loads((ROOT / "api/sample.json").read_text())
+    sample = public_sample()
+    if not sample:
+        sys.exit("The fictional sample is missing or unreadable.")
     checks = [evaluate(mode, sample) for mode in ("questionnaire", "guide")]
     raise SystemExit(0 if all(checks) else 1)

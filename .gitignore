@@ -11,3 +11,4 @@ __pycache__/
 .venv/
 *.tsbuildinfo
 /.local-review/
+.ruff_cache/

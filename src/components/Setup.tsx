@@ -10,21 +10,19 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { Modal } from './Modal';
-import { readDocument } from './files';
+import { checkInput, isLoopback, requestReview } from '../review/client';
+import { sampleInput } from '../review/example';
+import { readDocument } from '../review/files';
 import {
-  checkInput,
-  isLoopback,
   modeLabels,
   readScope,
-  requestReview,
-  sampleInput,
   type Mode,
   type Policy,
   type Review,
   type ReviewInput,
   type Scope,
-} from './review';
+} from '../review/model';
+import { Modal } from './Modal';
 
 export function Setup({
   initialMode,
@@ -35,19 +33,19 @@ export function Setup({
   onClose: () => void;
   onDone: (review: Review) => void;
 }) {
-  const [mode, setMode] = useState(initialMode),
-    [source, setSource] = useState<'sample' | 'custom'>('sample');
-  const [questions, setQuestions] = useState(''),
-    [guide, setGuide] = useState(''),
-    [title, setTitle] = useState('');
-  const [documents, setDocuments] = useState<Policy[]>([]),
-    [policyTitle, setPolicyTitle] = useState(''),
-    [policyText, setPolicyText] = useState('');
-  const [entry, setEntry] = useState(false),
-    [model, setModel] = useState(true),
-    [error, setError] = useState('');
-  const [busy, setBusy] = useState(''),
-    controller = useRef<AbortController | null>(null);
+  const [mode, setMode] = useState(initialMode);
+  const [source, setSource] = useState<'sample' | 'custom'>('sample');
+  const [questions, setQuestions] = useState('');
+  const [guide, setGuide] = useState('');
+  const [title, setTitle] = useState('');
+  const [documents, setDocuments] = useState<Policy[]>([]);
+  const [policyTitle, setPolicyTitle] = useState('');
+  const [policyText, setPolicyText] = useState('');
+  const [entry, setEntry] = useState(false);
+  const [model, setModel] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const controller = useRef<AbortController | null>(null);
   const [importedQuestions, setImportedQuestions] = useState<string[]>();
   const [scope, setScope] = useState<Scope>();
   const sample = sampleInput(mode);
@@ -140,7 +138,6 @@ export function Setup({
                 : { guide: guide.trim() }),
               allowModel: isLoopback && model,
             };
-      checkInput(input);
       controller.current = new AbortController();
       setBusy('Running review…');
       const result = await requestReview(input, controller.current.signal);
@@ -372,20 +369,21 @@ export function Setup({
             </>
           )}
           {(source === 'sample' || isLoopback) && (
-            <label className="check-option">
+            <label className="check-option" htmlFor="model-assessment">
               <input
+                id="model-assessment"
                 type="checkbox"
+                aria-labelledby="model-label"
+                aria-describedby="model-description"
                 checked={model}
                 onChange={(e) => setModel(e.target.checked)}
               />
-              <span>
-                <strong>Request a model assessment</strong>
-                <small>
-                  {source === 'sample'
-                    ? 'Allow this synthetic sample to be sent to Anthropic if configured. Clear this option to use keyword retrieval.'
-                    : 'Allow this local server to send selected text to Anthropic if the operator enabled private model review.'}
-                </small>
-              </span>
+              <strong id="model-label">Request a model assessment</strong>
+              <small id="model-description">
+                {source === 'sample'
+                  ? 'Allow this synthetic sample to be sent to Anthropic if configured. Clear this option to use keyword retrieval.'
+                  : 'Allow this local server to send selected text to Anthropic if the operator enabled private model review.'}
+              </small>
             </label>
           )}
         </fieldset>

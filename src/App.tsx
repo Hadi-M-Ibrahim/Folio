@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
-  Download,
-  ChevronLeft,
   ChevronRight,
   ClipboardCheck,
+  Download,
   FileText,
   Flag,
   History,
@@ -14,14 +13,12 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { Inspector } from './Inspector';
-import { Modal } from './Modal';
-import { exportReview } from './exportReview';
-import { searchRanges } from './searchText';
-import { Setup } from './Setup';
+import { Inspector } from './components/Inspector';
+import { Setup } from './components/Setup';
+import { SourceDialog, type SourceLocation } from './components/SourceDialog';
+import { exampleReview, findingTitle } from './review/example';
+import { exportReview } from './review/exportReview';
 import {
-  exampleReview,
-  findingTitle,
   modeLabels,
   statusLabels,
   statusOrder,
@@ -31,15 +28,8 @@ import {
   type Policy,
   type Review,
   type Status,
-} from './review';
+} from './review/model';
 
-type SourceLocation = {
-  doc: Policy;
-  page: number;
-  quote: string;
-  term?: boolean;
-  exactOffset?: number;
-};
 type Entry = {
   key: string;
   reviewKey: string;
@@ -55,76 +45,6 @@ const navLabels = {
   log: 'Review log',
 };
 
-function SourceDialog({ location, onClose }: { location: SourceLocation; onClose: () => void }) {
-  const [pageNumber, setPageNumber] = useState(location.page);
-  const paperRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const paper = paperRef.current;
-    if (!paper) return;
-    const mark = paper.querySelector('mark');
-    if (mark) mark.scrollIntoView({ block: 'nearest' });
-    else paper.scrollTop = 0;
-  }, [location, pageNumber]);
-  const index = location.doc.pages.findIndex((p) => p.number === pageNumber);
-  const page = location.doc.pages[index];
-  const ranges =
-    !location.quote || !page || pageNumber !== location.page
-      ? []
-      : location.term
-        ? searchRanges(page.text, location.quote)
-        : (() => {
-            const offset = location.exactOffset;
-            const start =
-              offset !== undefined && page.text.startsWith(location.quote, offset)
-                ? offset
-                : page.text.indexOf(location.quote);
-            return start >= 0 ? [{ start, end: start + location.quote.length }] : [];
-          })();
-  let lastEnd = 0;
-  const content = ranges.flatMap(({ start, end }) => {
-    const before = page.text.slice(lastEnd, start);
-    lastEnd = end;
-    return [before, <mark key={start}>{page.text.slice(start, end)}</mark>];
-  });
-  return (
-    <Modal title={location.doc.title} subtitle="Source document" onClose={onClose} wide>
-      <div className="source-toolbar">
-        <span>
-          <FileText size={15} />
-          Page {pageNumber}
-        </span>
-        <div>
-          <button
-            className="icon-button"
-            disabled={index <= 0}
-            aria-label="Previous page"
-            onClick={() => setPageNumber(location.doc.pages[index - 1].number)}
-          >
-            <ChevronLeft size={16} />
-          </button>
-          <button
-            className="icon-button"
-            disabled={index === -1 || index >= location.doc.pages.length - 1}
-            aria-label="Next page"
-            onClick={() => setPageNumber(location.doc.pages[index + 1].number)}
-          >
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      </div>
-      <div className="source-paper" ref={paperRef}>
-        {page ? (
-          <>
-            {content}
-            {page.text.slice(lastEnd)}
-          </>
-        ) : (
-          'The cited page is unavailable in this review.'
-        )}
-      </div>
-    </Modal>
-  );
-}
 function readDecisions(): Entry[] {
   try {
     const value = JSON.parse(localStorage.getItem('folio.example-decisions.v1') || '[]');
@@ -149,13 +69,13 @@ export default function App() {
     questionnaire: exampleReview('questionnaire'),
     guide: exampleReview('guide'),
   }));
-  const [nav, setNav] = useState<keyof typeof navLabels>('workspace'),
-    [setup, setSetup] = useState(false),
-    [source, setSource] = useState<SourceLocation | null>(null);
-  const [selected, setSelected] = useState(0),
-    [search, setSearch] = useState(''),
-    [filter, setFilter] = useState<Status | 'all'>('all'),
-    [filters, setFilters] = useState(false);
+  const [nav, setNav] = useState<keyof typeof navLabels>('workspace');
+  const [setup, setSetup] = useState(false);
+  const [source, setSource] = useState<SourceLocation | null>(null);
+  const [selected, setSelected] = useState(0);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<Status | 'all'>('all');
+  const [filters, setFilters] = useState(false);
   const [entries, setEntries] = useState<Entry[]>(readDecisions);
   const [showQueue, setShowQueue] = useState(false);
   const detailRef = useRef<HTMLDivElement>(null);

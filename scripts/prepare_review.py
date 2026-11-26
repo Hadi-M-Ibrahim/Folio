@@ -1,6 +1,6 @@
 """Prepare a private review bundle from the supplied local PDFs.
 
-    python -m pip install -r scripts/requirements.txt
+    python -m pip install -r requirements/pdf.txt
     python scripts/prepare_review.py catalog
     python scripts/prepare_review.py questionnaire --questions 1-5
     python scripts/prepare_review.py guide --pages 11
@@ -23,13 +23,24 @@ from pathlib import Path
 try:
     import pymupdf
 except ImportError:
-    sys.exit("Install local PDF support with python -m pip install -r scripts/requirements.txt")
+    sys.exit("Install local PDF support with python -m pip install -r requirements/pdf.txt")
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from api._review.search import ADVERSE, MAX_CHARS, MAX_CRITERIA, MAX_PAGES, STOP, guide_criteria, validate, words
+if __name__ == "__main__" and not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from api._review.search import (
+    ADVERSE,
+    MAX_CHARS,
+    MAX_CRITERIA,
+    MAX_PAGES,
+    STOP,
+    guide_criteria,
+    validate,
+    words,
+)
 from api.review import MAX_BODY
 
+ROOT = Path(__file__).resolve().parents[1]
 
 QUESTION = re.compile(
     r"^(\d+)[.)]\s+((?:does|do|is|are|what|which|how|when|who|can|should|describe|provide)\b.*)",

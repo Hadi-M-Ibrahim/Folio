@@ -10,6 +10,19 @@ Open the sample case on [Folio](https://folio-policy-review.vercel.app). Select 
 
 The public sample and its policies are fictional. The opening case is a prepared example. The results of a new review identify whether Anthropic or keyword retrieval produced them. The public service accepts custom public text for keyword search. Only the bundled fictional inputs qualify for hosted model calls.
 
+## Repository layout
+
+| Directory | Contents |
+| --- | --- |
+| `src/components/` | Review setup, findings inspector, and source dialogs |
+| `src/review/` | Frontend review types, API client, fictional example, search, file import, and export |
+| `api/` | Python review endpoint, retrieval and citation verification, and shared fictional sample |
+| `scripts/` | Local PDF preparation and sample evaluation tools |
+| `tests/` | Offline tests for the API and review pipeline |
+| `requirements/` | Python packages for linting and optional local PDF tools |
+| `public/` | Icons and social preview artwork |
+| `Deliverables/` | Recorded walkthrough |
+
 ## Run locally
 
 Use Python 3.12 and Node 22.13 or newer. Start the Python API in one terminal and Vite in another.
@@ -31,7 +44,7 @@ The private materials belong in the ignored `Materials/` directory. The local pr
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -r scripts/requirements.txt
+.venv/bin/python -m pip install -r requirements/pdf.txt
 .venv/bin/python scripts/prepare_review.py questionnaire --questions 1-5
 .venv/bin/python scripts/prepare_review.py guide --pages 11
 ```
@@ -47,10 +60,14 @@ The staged handoffs adapt an idea from [Inference-Time Graph Engineering for Mul
 ## Checks and deployment
 
 ```sh
+npm run lint
 npm run build
-python3 -m unittest discover -s tests -p 'test_review*.py' -v
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements/lint.txt
+.venv/bin/python -m ruff check api scripts tests
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 With the server-side provider key configured, `python3 scripts/evaluate_sample.py` runs a live evaluation of the five fictional requirements in both modes. It compares outcomes with the authored rubric and exits unsuccessfully on a discrepancy. This consumes provider credits and can vary between runs. The offline CI suite uses controlled provider responses.
 
-GitHub Actions builds the frontend and runs the Python checks on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
+GitHub Actions runs Oxlint, TypeScript, the Vite build, Ruff, and the Python tests on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
