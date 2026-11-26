@@ -76,12 +76,13 @@ function rangeError(source: RangeSource, pageKind: PageKind, selected: RangeItem
   return '';
 }
 
-export function SourceRange({ source, oversized = false, appliedValue, pageKind = 'guide', onApply }: {
+export function SourceRange({ source, oversized = false, appliedValue, pageKind = 'guide', onApply, onEdit }: {
   source: RangeSource;
   oversized?: boolean;
   appliedValue?: string;
   pageKind?: PageKind;
   onApply: (items: RangeItem[], description: string | undefined, rangeValue: string) => void;
+  onEdit?: () => void;
 }) {
   const [expanded, setExpanded] = useState<boolean>();
   const [value, setValue] = useState(appliedValue ?? '');
@@ -133,7 +134,7 @@ export function SourceRange({ source, oversized = false, appliedValue, pageKind 
           <input id={controlId + '-value'} value={value} placeholder={first + '–' + Math.min(first + 2, last)}
             aria-describedby={controlId + (error ? '-error' : '-help')} aria-invalid={error ? true : undefined}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); apply(); } }}
-            onChange={(event) => { setValue(event.target.value); setError(''); }} />
+            onChange={(event) => { onEdit?.(); setValue(event.target.value); setError(''); }} />
           <button className="intake-secondary" type="button" onClick={apply}>Apply range</button>
         </div>
         {error ? <p className="intake-error" id={controlId + '-error'} role="alert">{error}</p> :

@@ -1,3 +1,4 @@
+import { sessionHeaders } from './reviewSession';
 import {
   MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
   MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGES, MAX_REQUEST_BYTES, ReviewSizeError,
@@ -88,10 +89,13 @@ function waitForQuota(seconds: number, signal: AbortSignal) {
   });
 }
 
-async function postReview(body: string, signal: AbortSignal, onRateLimit?: (seconds: number) => void) {
+type RequestOptions = { onRateLimit?: (seconds: number) => void; onResume?: () => void; mayWaitForQuota?: () => boolean };
+
+async function postReview(body: string, signal: AbortSignal, options?: RequestOptions) {
   for (;;) {
+    signal.throwIfAborted();
     const response = await fetch('/api/review', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...sessionHeaders(signal) }, body, signal,
     });
     if (response.status !== 429) return response;
     // The edge firewall and API can both throttle the shared network.
@@ -99,12 +103,15 @@ async function postReview(body: string, signal: AbortSignal, onRateLimit?: (seco
     const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : NaN;
     const wait = Number.isSafeInteger(seconds) && seconds > 0 ? seconds : 600;
     await response.body?.cancel();
-    if (!onRateLimit) {
+    signal.throwIfAborted();
+    if (!options?.onRateLimit || options.mayWaitForQuota?.() === false) {
       const minutes = Math.ceil(wait / 60);
       throw Error(`This network has reached its limit of 30 review submissions per 10 minutes. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. Your inputs are still here.`);
     }
-    onRateLimit(wait);
+    options.onRateLimit(wait);
     await waitForQuota(wait, signal);
+    signal.throwIfAborted();
+    options.onResume?.();
   }
 }
 
@@ -118,10 +125,10 @@ function checkAttachments(input: ReviewInput) {
     throw new ReviewSizeError(`One transfer can include up to ${MAX_PDF_ATTACHMENT_PAGES} PDF pages.`);
 }
 
-export async function requestReview(input: ReviewInput, signal: AbortSignal, options?: { onRateLimit?: (seconds: number) => void }): Promise<Result> {
+export async function requestReview(input: ReviewInput, signal: AbortSignal, options?: RequestOptions): Promise<Result> {
   checkInput(input);
   checkAttachments(input);
-  const response = await postReview(encodeRequest(input), signal, options?.onRateLimit);
+  const response = await postReview(encodeRequest(input), signal, options);
   const body = await response.json().catch(() => null);
   if (response.status === 413 || (response.status === 422 && body?.code === 'review_part_too_large')) {
     throw new ReviewSizeError(body?.error || 'This part exceeds the review service transfer limit.');

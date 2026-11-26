@@ -25,6 +25,7 @@ from .search import (
     retrieve,
     source_criteria,
 )
+from .sessions import check_session
 
 MODEL = "claude-sonnet-5-5"
 SLOTS = threading.BoundedSemaphore(2)
@@ -204,6 +205,7 @@ def read_provider_response(outgoing, deadline):
     call_deadline = min(deadline, time.monotonic() + CALL_SECONDS)
     retried = False
     while True:
+        check_session()
         timeout = call_deadline - time.monotonic()
         if retried and timeout < MIN_RETRY_BUDGET:
             raise ProviderUnavailable

@@ -23,18 +23,20 @@ type PolicyFieldsProps = {
   originalDocuments: Policy[];
   draft: PolicyDraft;
   onDraft: (value: PolicyDraft) => void;
-  onFiles: (files: File[]) => void;
+  onFiles: (files: File[]) => Promise<boolean>;
   onAdd: (policy: Policy) => void;
   onRemove: (id: string) => void;
   onRange: (id: string, pages: Policy['pages']) => void;
+  onEditRange?: () => void;
   onError: (message: string) => void;
 };
 
-function PolicyItem({ doc, original, onRemove, onRange }: {
+function PolicyItem({ doc, original, onRemove, onRange, onEditRange }: {
   doc: Policy;
   original: Policy;
   onRemove: (id: string) => void;
   onRange: PolicyFieldsProps['onRange'];
+  onEditRange?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
@@ -60,6 +62,7 @@ function PolicyItem({ doc, original, onRemove, onRange }: {
           {original.pages.length > 1 && <SourceRange source={{ unit: 'page', items: original.pages, original }}
             oversized={doc.pages.length > MAX_PDF_ATTACHMENT_PAGES}
             pageKind="policy" appliedValue={subset ? formatRange(pageNumbers) : undefined}
+            onEdit={onEditRange}
             onApply={(pages) => onRange(doc.id, pages)} />}
           <p className="intake-help">{pdfScopeLabel(pageNumbers, subset)}</p>
           <PdfViewer file={doc.pdfFile} pages={pageNumbers} />
@@ -78,13 +81,12 @@ function PolicyItem({ doc, original, onRemove, onRange }: {
   );
 }
 
-export function PolicyFields({ documents, originalDocuments, draft, onDraft, onFiles, onAdd, onRemove, onRange, onError }: PolicyFieldsProps) {
+export function PolicyFields({ documents, originalDocuments, draft, onDraft, onFiles, onAdd, onRemove, onRange, onEditRange, onError }: PolicyFieldsProps) {
   const pasteButton = useRef<HTMLButtonElement>(null);
 
   function add() {
     try {
       onAdd(pastedPolicy(draft, documents.length + 1));
-      onDraft(emptyPolicyDraft);
       onError('');
       pasteButton.current?.focus();
     } catch (cause) {
@@ -100,11 +102,12 @@ export function PolicyFields({ documents, originalDocuments, draft, onDraft, onF
 
   return (
     <>
-      <IntakeFile label="Upload policy files" detail="Drop one or more PDF, TXT or Markdown files here." multiple onFiles={onFiles} />
+      <IntakeFile label="Upload policy files" detail="Drop one or more PDF, TXT or Markdown files here."
+        describedBy="intake-intro" attachedFiles={documents.map(doc => doc.pdfFile)} multiple onFiles={onFiles} />
       {documents.length > 0 && (
         <ul className="intake-documents" aria-label="Added policies">
           {documents.map((doc, index) => <PolicyItem key={doc.id} doc={doc} original={originalDocuments[index]}
-            onRemove={remove} onRange={onRange} />)}
+            onRemove={remove} onRange={onRange} onEditRange={onEditRange} />)}
         </ul>
       )}
       <div>

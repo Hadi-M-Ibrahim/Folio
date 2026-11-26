@@ -3,13 +3,16 @@ import json
 import os
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from api import review as api
-from api._review import model
+from api._review import model, sessions
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit
+from tests.test_review_concurrency import questionnaire, tool_response
 
 
 class HttpContractTests(unittest.TestCase):
@@ -69,6 +72,65 @@ class HttpContractTests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(body["code"], "review_part_too_large")
         self.assertIn("Select fewer questions", body["error"])
+
+    def test_session_control_is_limited_separately_and_accepts_only_opaque_tokens(self):
+        self.server.local_operator = True
+        path = "/api/review-session"
+        with patch.object(api, "SESSION_LIMIT", ReviewRateLimit(limit=1)):
+            self.assertEqual(self.request(path=path, headers={"Sec-Fetch-Site": "same-site"})[0], 403)
+            self.assertEqual(self.request(path=path, headers={"Origin": "https://example.org"})[0], 403)
+            self.assertEqual(self.request("x" * 257, path=path)[0], 413)
+            self.assertEqual(self.request('{"private":"data"}', path=path)[0], 400)
+            status, headers, body = self.request(path=path)
+            self.assertEqual((status, headers["Cache-Control"]), (201, "no-store"))
+            self.assertRegex(body["token"], r"^[A-Za-z0-9_-]{43}$")
+            self.assertEqual(self.request(path=path)[0], 429)
+            self.assertEqual(self.request(json.dumps(body), path=path)[0], 200)
+            self.assertEqual(self.request(json.dumps(body), path=path)[0], 429)
+            self.assertEqual(api.REVIEW_LIMIT.clients, {})
+            with patch.object(api, "review") as work:
+                for token in (body["token"], "", "invented"):
+                    status, _, rejected = self.request(headers={"X-Folio-Review-Token": token})
+                    self.assertEqual((status, rejected["code"]), (409, "review_cancelled"))
+                work.assert_not_called()
+
+    def test_stopping_in_flight_prevents_assessment_and_transport_retry(self):
+        self.server.local_operator = True
+        path = "/api/review-session"
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "synthetic"}, clear=True), ThreadPoolExecutor(1) as pool:
+            for retry in (False, True):
+                with self.subTest(retry=retry):
+                    _, _, session = self.request(path=path)
+                    headers = {"X-Folio-Review-Token": session["token"]}
+                    started, resume = threading.Event(), threading.Event()
+
+                    def provider(_request, *, timeout, started=started, resume=resume, retry=retry):
+                        started.set()
+                        self.assertTrue(resume.wait(3))
+                        if retry:
+                            raise HTTPError("https://example.invalid", 503, "", {}, None)
+                        return tool_response("record_search_plan", {
+                            "criteria": [{"sourceId": "s1", "searchTerms": ["register"]}],
+                        })
+
+                    with patch.object(model, "open_provider_request", side_effect=provider) as send:
+                        pending = pool.submit(self.request, json.dumps(questionnaire("intake")), headers=headers)
+                        try:
+                            self.assertTrue(started.wait(3))
+                            self.assertEqual(self.request(json.dumps(session), path=path)[0], 200)
+                        finally:
+                            resume.set()
+                        status, _, result = pending.result(timeout=3)
+                        self.assertEqual((status, result["code"]), (409, "review_cancelled"))
+                        send.assert_called_once()
+
+    def test_stop_before_final_reply_discards_result(self):
+        self.server.local_operator = True
+        _, _, body = self.request(path="/api/review-session")
+        token = body["token"]
+        with patch.object(api, "review", side_effect=lambda *a, **kw: sessions.LOCAL_SESSIONS.cancel(sessions.session_key(token))):
+            status, _, result = self.request(headers={"X-Folio-Review-Token": token})
+        self.assertEqual((status, result["code"]), (409, "review_cancelled"))
 
     def test_local_operator_authority(self):
         for headers in [
