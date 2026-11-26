@@ -39,7 +39,8 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Start a review' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toHaveCount(0);
-  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await expect(page.getByRole('banner').getByRole('button', { name: 'Document privacy' })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Answer a questionnaire Find existing policy evidence for each state inquiry and prepare a cited response.', exact: true }).click();
   await page.getByLabel('Questions', { exact: true }).fill(question);
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page).toHaveURL(/questionnaire\/policies$/);
@@ -134,7 +135,8 @@ for (const hasAppendix of [true, false]) {
 test('a guide-only review produces an action list with a traceable source page', async ({ page }) => {
   const obligation = 'Teams must log the inspection date before handover.';
   await page.goto('/');
-  await page.getByRole('link', { name: /Review a policy guide/ }).click();
+  await page.getByRole('link', { name: /Review a new policy guide/ }).click();
+  await expect(page.getByRole('heading', { name: 'Review a new policy guide', exact: true })).toBeVisible();
   await page.getByLabel('Upload regulatory guide').setInputFiles({
     name: 'Handover.txt', mimeType: 'text/plain', buffer: Buffer.from('Introduction\f' + obligation),
   });

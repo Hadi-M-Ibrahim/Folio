@@ -106,7 +106,6 @@ textarea {
   min-height: 60px;
   margin: auto;
   display: flex;
-  justify-content: space-between;
   align-items: center;
   padding-inline: var(--gutter);
 }
@@ -118,10 +117,6 @@ textarea {
   letter-spacing: -0.035em;
 }
 .brand-icon { width: 30px; height: 30px; }
-.privacy-link { min-height: 44px; font-size: 14px; color: var(--muted); }
-.privacy-link:hover, .back-link:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
-.privacy-body { padding: 20px 24px 25px; line-height: 1.55; }
-.privacy-body p + p { margin-top: 12px; }
 
 .secondary {
   display: inline-flex;
@@ -711,6 +706,7 @@ main:focus, h1[tabindex='-1']:focus { outline: none; }
 .session-review small { margin-left: auto; }
 .session-review svg { flex-shrink: 0; }
 .back-link { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin-bottom: 19px; }
+.back-link:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
 .next-finding { display: flex; align-items: center; gap: 8px; margin: 28px 0 0 auto; font-size: 14px; padding: 8px 0; }
 .next-finding:hover { text-decoration: underline; text-underline-offset: 3px; }
 .workspace { max-width: 1320px; margin: auto; }
