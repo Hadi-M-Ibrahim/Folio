@@ -1,8 +1,10 @@
 # Folio
 
-Folio helps a compliance analyst answer a state questionnaire or turn a new policy guide into a list of requirements to review. Each finding links back to the policy language on a specific page. The analyst can inspect supporting and conflicting passages, open the literal search results, and record a decision.
+Folio helps a compliance analyst answer a state questionnaire or turn a new policy guide into a list of requirements to review. Each finding links back to the policy language on a specific page. The analyst can inspect supporting and conflicting passages, open the literal search results, and record a decision. The review log can export the findings and citations as Markdown.
 
 ## Try it
+
+[Watch the 77-second walkthrough](Deliverables/folio-walkthrough.mp4).
 
 Open the sample case on [Folio](https://folio-policy-review.vercel.app). Select the first grievance question and compare the general acknowledgment policy with the telephone exception. Open the source pages to decide whether the two instructions apply to the same members. Start a new review to run either the questionnaire or the regulatory guide through the Python service.
 
@@ -38,7 +40,7 @@ In the local app, start a new review, choose custom input, and import the genera
 
 ## How findings are produced
 
-The Python service keeps the requirement, search terms, source page, and exact quote together through retrieval and assessment. It ranks relevant passages, reserves room for possible exceptions, and exposes term matches alongside the recommendation. Before returning a model finding, it checks quoted text against the retrieved passage and its source page. Missing or invalid citations can downgrade the finding. A verified quotation proves the words appear on that page. The analyst still judges their scope and meaning.
+The model planner proposes atomic guide obligations anchored to verbatim source text and suggests literal search phrases, including exceptions. The Python service keeps the requirement, search terms, source page, and exact quote together through retrieval and assessment. It ranks relevant passages, reserves room for possible exceptions, and exposes term matches alongside the recommendation. Before returning a model finding, it checks quoted text against the retrieved passage and its source page. Missing or invalid citations can downgrade the finding. A verified quotation proves the words appear on that page. The analyst still judges their scope and meaning.
 
 The staged handoffs adapt an idea from [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774). The shared evidence rubric and final verification step draw on [Aligning AI Teams](https://arxiv.org/abs/2611.17820). The papers evaluated other tasks. This implementation uses a bounded workflow and makes no claim about regulatory accuracy from those results.
 
@@ -49,4 +51,4 @@ npm run build
 python3 -m unittest discover -s tests -p 'test_review*.py' -v
 ```
 
-GitHub Actions builds the frontend and runs the Python checks on pull requests and pushes to main. Vercel builds previews from GitHub and deploys main to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
+GitHub Actions builds the frontend and runs the Python checks on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.

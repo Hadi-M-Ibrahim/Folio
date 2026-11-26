@@ -109,7 +109,10 @@ class ReviewTests(unittest.TestCase):
         raw["counter"] = [correct]
         self.assertEqual(model.verify(row, raw, refs, pages)["status"], "needs_review")
         conflict_id = next(i for i, e in refs.items() if "verbal acknowledgment only" in e["quote"])
-        raw["counter"] = [{"passage": conflict_id, "quote": refs[conflict_id]["quote"]}]
+        scope = {**dict.fromkeys(model.SCOPE_FIELDS, "same"), "population": "overlaps",
+                 "eventComparison": "Both address acknowledgment of a grievance on receipt.",
+                 "dutyComparison": "Both address the staff obligation to acknowledge the grievance."}
+        raw["counter"] = [{"passage": conflict_id, "quote": refs[conflict_id]["quote"], "scope": scope}]
         self.assertEqual(model.verify(row, raw, refs, pages)["status"], "mixed")
 
     def test_no_key_returns_usable_evidence(self):
@@ -119,31 +122,26 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("not configured", result["notice"])
         self.assertTrue(result["findings"][0]["candidates"])
 
-    def test_two_stage_review_runs_suggested_searches_and_caches_only_canonical_sample(self):
-        calls = []
-
-        def fake_tool(_system, tool, data, _key, max_tokens=3800):
-            calls.append(tool["name"])
-            if tool["name"] == "record_search_plan":
-                return {"criteria": [{"sourceId": row["sourceId"], "searchTerms": ["verbal acknowledgment"]}
-                                     for row in data["sources"]]}
-            findings = []
-            for row in data:
-                self.assertEqual(row["criterionSource"], row["criterion"])
-                findings.append({"id": row["id"], "answer": "Evidence needs review.", "status": "insufficient",
-                                 "supporting": [], "counter": []})
-            return {"assessments": findings}
-
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True):
-            with patch.object(model, "invoke_tool", side_effect=fake_tool):
-                result = api.review(sample(allowModel=True))
-                cached = api.review(sample(allowModel=True))
-                custom = api.review(sample(allowModel=True, questions=["Does the plan use interpreters?"]))
-        self.assertEqual(calls, ["record_search_plan", "record_review"])
-        self.assertEqual((result["planningEngine"], result["engine"]), ("anthropic", "anthropic"))
-        self.assertEqual(result["findings"][0]["searchProof"][0]["totalHits"], 1)
-        self.assertEqual(cached["findings"], result["findings"])
-        self.assertEqual(custom["engine"], "local")
+    def test_verifier_rejects_neighboring_workflow_stage_as_counterevidence(self):
+        data = sample(questions=["Does the agency send an approval letter when the permit is issued?"],
+                      documents=[{"id": "permit", "title": "Permit policy", "pages": [{"number": 1, "text":
+                          "The agency sends an approval letter when a permit is issued.\n\n"
+                          "The agency does not send a letter acknowledging receipt of a permit application."}]}])
+        _, criteria, pages = validate(data)
+        row = retrieve(pages, basic_plan(criteria))[0]
+        refs = {f"p{i}": c for i, c in enumerate(row["candidates"], 1)}
+        support_id = next(i for i, e in refs.items() if "permit is issued" in e["quote"])
+        other_id = next(i for i, e in refs.items() if "acknowledging receipt" in e["quote"])
+        scope = {"actor": "same", "population": "same", "event": "different", "duty": "different",
+                 "eventComparison": "Permit issuance versus application receipt.",
+                 "dutyComparison": "Sending the decision versus acknowledging arrival."}
+        raw = {"status": "mixed", "answer": "The letters appear to conflict.",
+               "supporting": [{"passage": support_id, "quote": refs[support_id]["quote"]}],
+               "counter": [{"passage": other_id, "quote": refs[other_id]["quote"], "scope": scope}]}
+        checked = model.verify(row, raw, refs, pages)
+        self.assertEqual(checked["status"], "needs_review")
+        self.assertEqual(len(checked["supporting"]), 1)
+        self.assertEqual(checked["counter"], [])
 
     def test_provider_failure_still_returns_full_local_results(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True):
