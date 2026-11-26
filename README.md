@@ -28,7 +28,7 @@ Keyword search is the default. On the hosted site, submit only public documents.
 
 ## Run locally
 
-Use Python 3.12 and Node 22.13 or newer. Start the Python API in one terminal and Vite in another.
+Use Python 3.12 and Node 22.23.5 or a newer 22.x release. Start the Python API in one terminal and Vite in another.
 
 ```sh
 python3 api/review.py
@@ -44,6 +44,8 @@ Open the loopback URL printed by Vite. The UI proxies review requests to port 80
 ### Work with the supplied PDFs
 
 The private materials belong in the ignored `Materials/` directory. The local preparation tool searches physical PDF pages and writes review bundles under the ignored `.local-review/` directory. Pick a small batch for each review. The bundle records which pages were selected so a reviewer can see the scope of the search.
+
+For an existing PDF environment, uninstall the old `PyMuPDF` distribution before installing `requirements/pdf.txt`. Both packages provide the `pymupdf` module.
 
 ```sh
 python3 -m venv .venv
@@ -61,6 +63,8 @@ The model planner proposes atomic guide obligations anchored to verbatim source 
 The staged handoffs adapt an idea from [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774). The shared evidence rubric and final verification step draw on [Aligning AI Teams](https://arxiv.org/abs/2611.17820). The papers evaluated other tasks. This implementation uses a bounded workflow and makes no claim about regulatory accuracy from those results.
 
 ## Checks and deployment
+
+Both workflows share a limit of 30 submissions from one IP address in 10 minutes. The Vercel Firewall rule **Folio review submissions** counts POSTs to `/api/review` and `/api/review/` per edge region. Each API worker also enforces the limit before reading documents. A limited request receives HTTP 429. The form uses the `Retry-After` header when available, keeps the inputs, and allows the analyst to retry. [Vercel rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
 
 ```sh
 npm run lint

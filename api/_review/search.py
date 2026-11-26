@@ -8,6 +8,8 @@ from dataclasses import dataclass
 MAX_CRITERIA = 30
 MAX_PAGES = 1200
 MAX_CHARS = 2_400_000
+# The browser must be able to distinguish every citation's page number exactly.
+MAX_PAGE_NUMBER = (1 << 53) - 1
 
 WORD = re.compile(r"[^\W_]+(?:['’][^\W_]+)?", re.UNICODE)
 STOP = set("""
@@ -61,12 +63,12 @@ IMPERATIVE = re.compile(
 LIST_MARK = r"(?:[-*•]|\(\d{1,3}\)|\d{1,3}[.)]|\([a-z]\)|[a-z][.)])"
 BULLET = re.compile(r"^\s*" + LIST_MARK + r"\s+", re.I)
 GUIDE_BLOCK = re.compile(r"\n\s*\n|\n(?=[^\S\n]*" + LIST_MARK + r"\s+)", re.I)
-LIST_LEAD = re.compile(r"\b(?:must|shall|include|provide|required|requirements|checklist|submit)\b[^.!?]*:\s*$", re.I)
+LIST_LEAD = re.compile(r"\b(?:must|shall|include|provide|required|requirements|checklist|submit)\b", re.I)
 LIST_HEADING = re.compile(
     r"(?:(?:(?:application|filing|inspection|minimum|policy|reporting|submission|training) )?"
     r"(?:requirements|checklist)|required (?:documents|attachments|records))", re.I,
 )
-SENTENCE_END = re.compile(r"""[.!?]+["'’”)]*(?=\s|$)""")
+SENTENCE_END = re.compile(r"""(?<![.!?])[.!?]+["'’”)]*(?=\s|$)""")
 REFERENCE_ABBREVIATION = re.compile(
     r"\b(?:secs?|subsecs?|arts?|chs?|paras?|pars?|pts?|nos?|regs?|figs?|vols?|pp?|dept|"
     r"e\.g|i\.e|cf|vs|(?:[a-z]\.)+[a-z])\.$", re.I,
@@ -95,6 +97,13 @@ def guide_sentences(body):
         yield body[start:], start
 
 
+def is_list_lead(body):
+    if not body.rstrip().endswith(":"):
+        return False
+    start = max(body.rfind(mark) for mark in ".!?") + 1
+    return LIST_LEAD.search(body, start) is not None
+
+
 def guide_criteria(guide):
     chosen = []
     has_narrative = False
@@ -107,16 +116,14 @@ def guide_criteria(guide):
         body_start = start + len(block) - len(body)
         listed = body != block
         if not listed:
-            checklist = bool(LIST_HEADING.fullmatch(block.strip())) or (
-                block.rstrip().endswith(":") and bool(LIST_LEAD.search(block))
-            )
+            checklist = bool(LIST_HEADING.fullmatch(block.strip())) or is_list_lead(block)
         for raw, sentence_start in guide_sentences(body):
             clause = raw.strip()
             if not WORD.search(clause):
                 continue
             has_narrative |= len(WORD.findall(clause)) >= 3
             # A list introducer supplies context to the items that follow it.
-            if LIST_HEADING.fullmatch(clause) or (clause.endswith(":") and LIST_LEAD.search(clause)):
+            if LIST_HEADING.fullmatch(clause) or is_list_lead(clause):
                 continue
             if (OBLIGATION.search(clause) or IMPERATIVE.match(clause) or clause.endswith("?")
                     or (listed and checklist and sentence_start == 0)):
@@ -166,8 +173,9 @@ def validate(payload):
             raise InvalidRequest("Each document needs one or more pages.")
         has_text = False
         for page in doc["pages"]:
-            if not isinstance(page, dict) or type(page.get("number")) is not int or page["number"] < 1:
-                raise InvalidRequest("Each page needs a positive integer page number.")
+            if (not isinstance(page, dict) or type(page.get("number")) is not int
+                    or not 1 <= page["number"] <= MAX_PAGE_NUMBER):
+                raise InvalidRequest(f"Each page needs an integer page number from 1 to {MAX_PAGE_NUMBER:,}.")
             key = (doc_id, page["number"])
             if key in pages:
                 raise InvalidRequest("Page numbers must be unique within a document.")
@@ -298,7 +306,7 @@ class Index:
         groups = list(dict.fromkeys(group_for(w) for w in model_terms + terms))
         scores = Counter()
         for group in groups:
-            posting = self.postings[group]
+            posting = self.postings.get(group, ())
             idf = math.log1p((self.passage_count - len(posting) + .5) / (len(posting) + .5))
             weight = 2.0 if group in self.phrases else 1.0
             for index in posting:
@@ -311,8 +319,10 @@ class Index:
         candidates = [self.items[i].evidence for i in ranked if i in selected]
 
         literal_terms = list(dict.fromkeys(model_terms + terms))
+        requested = set(literal_terms)
         for group in groups:
-            literal_terms.extend(sorted(self.forms[group] - set(literal_terms)))
+            # Each related form belongs to exactly one group.
+            literal_terms.extend(form for form in sorted(self.forms.get(group, ())) if form not in requested)
         # Bound the visible search log for large inventories and report all omissions.
         proof = []
         for term in literal_terms[:24]:

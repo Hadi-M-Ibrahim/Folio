@@ -7,6 +7,32 @@ async function report(page, name) {
   return readFile(await (await download).path(), 'utf8');
 }
 
+for (const mode of ['guide', 'questionnaire']) {
+  test(`a rate-limited ${mode} keeps its inputs for retry`, async ({ page }) => {
+    const guide = mode === 'guide';
+    const source = guide ? 'Staff must keep a log.' : 'Who keeps the log?';
+    await page.goto('/#/new/' + mode);
+    await page.getByLabel(guide ? 'Guide text' : 'Questions', { exact: true }).fill(source);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    if (!guide) {
+      await page.getByLabel('Upload policy files').setInputFiles({
+        name: 'Log.txt', mimeType: 'text/plain', buffer: Buffer.from('Office staff keep the log.'),
+      });
+    }
+    const button = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
+    await page.route('**/api/review', (route) => route.fulfill({
+      status: 429, contentType: 'text/html', body: 'Too many requests',
+      headers: guide ? { 'Retry-After': '70' } : {},
+    }), { times: 1 });
+    await button.click();
+    await expect(page.getByRole('alert')).toHaveText(
+      `This network has reached its limit of 30 review submissions per 10 minutes. Try again in ${guide ? 2 : 10} minutes. Your inputs are still here.`,
+    );
+    await button.click();
+    await expect(page.getByRole('heading', { name: source, exact: true })).toBeVisible();
+  });
+}
+
 test('an analyst answers a question with an explicitly selected quotation', async ({ page }) => {
   const question = 'Who records the inspection date?';
   const policy = 'The facilities coordinator records the inspection date.';
@@ -86,4 +112,48 @@ test('editing a selected question batch clears its previous source attribution',
   await questions.fill('Who reviews the replacement log?');
   await expect(page.getByText(/Questionnaire items 29–30/)).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Apply range' })).toHaveCount(0);
+});
+
+test('Markdown exports keep document markup and multiline notes literal', async ({ page }) => {
+  const obligation = 'Teams must label each record with <unit> and [owner].';
+  await page.goto('/#/new/guide');
+  await page.getByLabel('Upload regulatory guide').setInputFiles({
+    name: 'Guide [draft].txt', mimeType: 'text/plain', buffer: Buffer.from(obligation),
+  });
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Review obligations' }).click();
+  await page.getByLabel('Action note').fill('Retain ![diagram](diagram.png).\n## Example heading');
+  const output = await report(page, 'Download action list');
+  expect(output).toContain('Guide &#91;draft&#93;');
+  expect(output).toContain('&#60;unit&#62; and &#91;owner&#93;');
+  expect(output).toContain('&#33;&#91;diagram&#93;(diagram.png)');
+  expect(output).toContain('&#35;&#35; Example heading');
+  expect(output).toContain('## Action pending');
+});
+
+test('intake checks page limits and can read a PDF after rejecting a file', async ({ page, context }) => {
+  await page.goto('/#/new/guide');
+  const upload = page.getByLabel('Upload regulatory guide');
+  await upload.setInputFiles({
+    name: 'Too many pages.txt', mimeType: 'text/plain', buffer: Buffer.from('Page\f'.repeat(1200) + 'Page'),
+  });
+  await expect(page.getByRole('alert')).toContainText('1,200 pages');
+
+  const pdfPage = await context.newPage();
+  await pdfPage.setContent('<p>Teams must record inspection dates.</p>');
+  const pdf = await pdfPage.pdf();
+  await pdfPage.close();
+  await upload.setInputFiles({ name: 'Guide.pdf', mimeType: 'application/pdf', buffer: pdf });
+  await expect(page.getByLabel('Guide text')).toHaveValue('Teams must record inspection dates.');
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  const policies = page.getByLabel('Upload policy files');
+  await policies.setInputFiles({
+    name: 'Policy.txt', mimeType: 'text/plain', buffer: Buffer.from('record\f'.repeat(1199) + 'record'),
+  });
+  const added = page.getByRole('list', { name: 'Added policies' });
+  await expect(added).toContainText('1200 pages');
+  await policies.setInputFiles({ name: 'Extra.txt', mimeType: 'text/plain', buffer: Buffer.from('record') });
+  await expect(page.getByRole('alert')).toContainText('1,200 pages');
+  await expect(added.getByRole('listitem')).toHaveCount(1);
 });

@@ -38,6 +38,13 @@ class ConcurrentReviewTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True))
 
+    def test_provider_transport_refuses_redirects(self):
+        opener = model.open_provider_request.__self__
+        redirect_handler, = [h for h in opener.handlers if isinstance(h, model.request.HTTPRedirectHandler)]
+        for status in (301, 302, 303, 307, 308):
+            with self.subTest(status=status):
+                self.assertIsNone(redirect_handler.redirect_request(None, None, status, "", {}, "https://example.invalid/"))
+
     def test_two_reviews_share_capacity_through_planning_and_assessment(self):
         assessing, planning = threading.Event(), threading.Event()
         finish_assessment, finish_plan = threading.Event(), threading.Event()
@@ -68,7 +75,7 @@ class ConcurrentReviewTests(unittest.TestCase):
                 "supporting": [{"passage": passage["passage"], "quote": passage["quote"]}], "counter": [],
             }]})
 
-        with patch.object(model.request, "urlopen", side_effect=respond) as send, ThreadPoolExecutor(3) as pool:
+        with patch.object(model, "open_provider_request", side_effect=respond) as send, ThreadPoolExecutor(3) as pool:
             try:
                 active = pool.submit(api.review, first)
                 self.assertTrue(assessing.wait(3), "First review never reached assessment")
@@ -100,7 +107,7 @@ class ConcurrentReviewTests(unittest.TestCase):
         self.assertTrue(model.SLOTS.acquire(blocking=False))
         self.addCleanup(model.SLOTS.release)
         plan = {"criteria": [{"sourceId": "s1", "question": GUIDE["guide"], "searchTerms": ["register"]}]}
-        with patch.object(model.request, "urlopen") as send:
+        with patch.object(model, "open_provider_request") as send:
             send.side_effect = TimeoutError
             self.assertEqual(api.review(GUIDE)["planningEngine"], "local")
 
@@ -131,9 +138,15 @@ class ConcurrentReviewTests(unittest.TestCase):
             "truncated": tool_response("record_review", assessment, stop_reason="max_tokens"),
             "unexpected tool": tool_response("other_tool", assessment),
             "invalid assessments": tool_response("record_review", {"assessments": {}}),
+            "duplicate calls": io.BytesIO(json.dumps({
+                "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "name": "record_review", "input": assessment}] * 2,
+            }).encode()),
+            "oversized envelope": io.BytesIO(tool_response("record_review", assessment).getvalue()
+                                             + b" " * model.MAX_RESPONSE_BYTES),
         }
         for label, response in invalid_responses.items():
-            with self.subTest(label), patch.object(model.request, "urlopen", side_effect=[
+            with self.subTest(label), patch.object(model, "open_provider_request", side_effect=[
                 tool_response("record_search_plan", plan), response,
             ]) as send:
                 result = api.review(payload)
@@ -145,7 +158,7 @@ class ConcurrentReviewTests(unittest.TestCase):
                 self.assertEqual(finding["supporting"], [])
                 self.assertEqual(finding["counter"], [])
 
-        with patch.object(model.request, "urlopen", side_effect=[
+        with patch.object(model, "open_provider_request", side_effect=[
             tool_response("record_search_plan", plan), tool_response("record_review", assessment),
         ]):
             retry = api.review(payload)

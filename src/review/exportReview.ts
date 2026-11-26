@@ -10,8 +10,22 @@ import {
 
 type Decisions = ReadonlyMap<string, { decision: Decision }>;
 
+// Character references render as literal text after Markdown has recognized its
+// block and inline syntax. Keep the report's own headings and quotes separate.
+function markdownText(text: string): string {
+  return text.replace(/\r\n?/g, '\n')
+    .replace(/[&<>\\`*_[\]{}#!|~^$+=:@-]/g, (character) => `&#${character.charCodeAt(0)};`)
+    .replace(/^([ \t]*\d{1,9})([.)])(?=[ \t]|$)/gm, (_, digits: string, delimiter: string) =>
+      `${digits}&#${delimiter.charCodeAt(0)};`)
+    .replace(/^[ \t]+/gm, (indent) => indent.replace(/./g, (space) => `&#${space.charCodeAt(0)};`));
+}
+
+function inlineText(text: string): string {
+  return markdownText(text.replace(/\s+/g, ' '));
+}
+
 function quoted(text: string): string[] {
-  return text.split(/\r?\n/).map((line) => '> ' + line);
+  return markdownText(text).split('\n').map((line) => '> ' + line);
 }
 
 function passages(label: string, entries: Evidence[]): string[] {
@@ -19,7 +33,7 @@ function passages(label: string, entries: Evidence[]): string[] {
   return [
     `**${label}**`,
     '',
-    ...entries.flatMap((e) => [`${e.title}, p. ${e.page}`, '', ...quoted(e.quote), '']),
+    ...entries.flatMap((e) => [`${inlineText(e.title)}, p. ${e.page}`, '', ...quoted(e.quote), '']),
   ];
 }
 
@@ -41,14 +55,14 @@ export function exportReview(review: Review, decisions: Decisions): void {
   const lines = [
     isGuide ? '# Policy action list' : '# Questionnaire responses',
     '',
-    review.title,
+    inlineText(review.title),
     '',
   ];
 
-  if (review.sourceSelection) lines.push('Source selection — ' + review.sourceSelection, '');
+  if (review.sourceSelection) lines.push('Source selection — ' + inlineText(review.sourceSelection), '');
   if (guideOnly && result.planningEngine) {
     const method = result.planningEngine === 'anthropic' ? 'Model-assisted' : 'Local';
-    lines.push(`Review method — ${method} obligation extraction`, '', result.notice, '');
+    lines.push(`Review method — ${method} obligation extraction`, '', markdownText(result.notice), '');
   }
 
   if (isGuide) {
@@ -58,23 +72,23 @@ export function exportReview(review: Review, decisions: Decisions): void {
       if (!obligations.length) continue;
       lines.push('## ' + (action ? policyActionLabels[action] : 'Action pending'), '');
       for (const { finding, number, decision } of obligations) {
-        lines.push(`### Obligation ${number}`, '', guideCitation(review, finding), '');
+        lines.push(`### Obligation ${number}`, '', inlineText(guideCitation(review, finding)), '');
         if (finding.criterionSource) lines.push(...quoted(finding.criterionSource), '');
         if (finding.criterionSource !== finding.question) {
-          lines.push('Review criterion — ' + finding.question, '');
+          lines.push('Review criterion — ' + markdownText(finding.question), '');
         }
-        lines.push('Action note — ' + (decision?.note?.trim() || 'None recorded.'), '');
+        lines.push('Action note — ' + markdownText(decision?.note?.trim() || 'None recorded.'), '');
         if (decision) lines.push('Last edited — ' + decision.at, '');
       }
     }
   } else {
     for (const { finding, number, decision } of rows) {
       lines.push(
-        `## Question ${number}. ${finding.question}`,
+        `## Question ${number}. ${inlineText(finding.question)}`,
         '',
         'Response status — ' + responseStatus(decision),
         '',
-        decision?.answer?.trim() || 'No response entered.',
+        markdownText(decision?.answer?.trim() || 'No response entered.'),
         '',
         ...passages('Reviewer-selected citations', decision?.citations ?? []),
       );
@@ -88,7 +102,7 @@ export function exportReview(review: Review, decisions: Decisions): void {
       '',
       `Review method — ${result.engine === 'anthropic' ? 'Model-assisted assessment' : 'Keyword retrieval'}`,
       '',
-      result.notice,
+      markdownText(result.notice),
       '',
       `Reviewed policy documents — ${input.documents.length} documents, ${input.documents.reduce((n, d) => n + d.pages.length, 0)} pages.`,
       '',
@@ -107,7 +121,7 @@ export function exportReview(review: Review, decisions: Decisions): void {
         '',
         `${method} — ${statusLabels[finding.status]}`,
         '',
-        finding.answer,
+        markdownText(finding.answer),
         '',
         ...passages('Supporting policy evidence', finding.supporting),
         ...passages('Counterevidence', finding.counter),
@@ -119,7 +133,7 @@ export function exportReview(review: Review, decisions: Decisions): void {
       }
       if (finding.searchTerms.length) {
         const termCount = finding.totalSearchTerms ?? finding.searchTerms.length;
-        lines.push(`Search terms (${finding.searchTerms.length} of ${termCount}) — ${finding.searchTerms.join(', ')}`, '');
+        lines.push(`Search terms (${finding.searchTerms.length} of ${termCount}) — ${finding.searchTerms.map(inlineText).join(', ')}`, '');
       }
     }
   }

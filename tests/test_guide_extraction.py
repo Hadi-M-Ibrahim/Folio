@@ -33,6 +33,12 @@ class GuideExtractionTests(unittest.TestCase):
         result = api.review(guide_input(guide))
         self.assertEqual([row["criterionSource"] for row in result["findings"]], duties)
 
+    def test_only_the_final_sentence_introduces_a_required_list(self):
+        guide = ("The sample indexes include Record A.....12. Examples:\n- Example form\n\n"
+                 "Examples appear on page 12. Applicants must submit:\n- Signed permit")
+        result = api.review(guide_input(guide))
+        self.assertEqual([row["criterionSource"] for row in result["findings"]], ["Signed permit"])
+
     def test_background_does_not_exhaust_the_cap_and_all_context_reaches_the_planner(self):
         description = " ".join(f"This guide was revised in year {1990 + i}." for i in range(31))
         duty = "Teams must retain inspection records."
