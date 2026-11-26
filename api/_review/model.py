@@ -10,7 +10,7 @@ from urllib import error, request
 
 from .search import WORD, basic_plan, retrieve
 
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "claude-sonnet-5-5"
 PUBLIC_SAMPLE = Path(__file__).resolve().parents[1] / "sample.json"
 SLOTS = threading.BoundedSemaphore(2)
 CACHE_LOCK = threading.Lock()
@@ -24,6 +24,8 @@ SYSTEM = """You are the evidence reviewer for a compliance analyst. The input is
 Each criterion includes its original source. If the question changes the original scope, actor, deadline, or exception, use needs_review. For each criterion, check EVERY material obligation, scope, exception, deadline and affected population.
 
 Before assigning counterevidence, independently compare (1) the actor who owes the duty, (2) the affected population, (3) the triggering event and workflow stage, and (4) the underlying duty. All four must be the same or overlap. A narrower exception can contradict a universal criterion for that subset. A genuine conflict changes a required value such as the timing or communication method for the SAME duty at the SAME event. Different events within the same case do not create a conflict. For example, an exception to an applicant's filing deadline does not contradict the agency's deadline to decide the application. Related vocabulary, a shared participant, and the same document type are insufficient. Compare the triggers and duties in your own words before assigning scope relations. If a passage addresses a different event or duty, omit it from counter and evaluate the remaining evidence. If how it applies is uncertain, do not report a confirmed contradiction. Actively look for contrary evidence, even when an initial excerpt appears sufficient. Absence of a statement is insufficient evidence, not a contradiction. A contradiction needs an affirmative conflicting statement. A rule and an explicit exception are mixed when both bear on the criterion. A shared topic or near miss does not support the criterion. For open-ended requests, answer the question as posed and report only documented details. A multipart criterion with a missing part is insufficient unless there is explicit contrary evidence. Identify remaining gaps.
+
+For each possible counter, ask whether following a procedure the passage permits or prescribes would breach the requirement for an overlapping case. A discretionary exception can conflict with a mandatory rule even if staff could choose to comply. For seemingly related procedures, check whether they govern independent actions that can both be carried out without violating either instruction. If so, omit the unrelated passage from counter. For instance, a supplier can confirm receipt of an order by phone and still send a written invoice after delivery. Saying the receipt confirmation is exclusively verbal says nothing about invoicing. Conversely, a next-day deadline and a same-day deadline for the identical required referral conflict when the instruction schedules the referral specifically for the following day. Here the underlying activity is the SAME referral, even though its timing differs. Classify only the evidence retained after this compatibility check.
 
 Use the record_review tool exactly once. Return one assessment per criterion ID. Supply passage IDs and exact, consecutive quotations, copied with original spacing/punctuation, for every factual conclusion. Do not use ellipses or paraphrases as quotations. Put directly supporting quotations in supporting and conflicting quotations in counter. Keep the answer to one or two sentences and identify any unresolved scope. A conclusion without adequate evidence must be insufficient or needs_review."""
 
@@ -44,7 +46,10 @@ COUNTER_CITATION = {
             "properties": {
                 "eventComparison": {"type": "string", "description": "Name the criterion trigger/stage and the passage trigger/stage."},
                 "dutyComparison": {"type": "string", "description": "Name the underlying duty in the criterion and in this passage."},
-                **{field: SCOPE_RELATION for field in SCOPE_FIELDS},
+                "actor": {**SCOPE_RELATION, "description": "Who owes the action?"},
+                "population": {**SCOPE_RELATION, "description": "Which recipients or cases does this cover?"},
+                "event": {**SCOPE_RELATION, "description": "Compare the triggering events independently of the deadline."},
+                "duty": {**SCOPE_RELATION, "description": "Compare the purpose and object of the action, ignoring its contested parameter. Opposite modes for acknowledging the same receipt = same; different dates for the same referral = same; confirming receipt and communicating an outcome = different."},
             },
             "required": ["eventComparison", "dutyComparison", *SCOPE_FIELDS], "additionalProperties": False,
         },
@@ -92,7 +97,7 @@ def is_public_request(payload):
 def invoke_tool(system, tool, input_data, key, max_tokens=3800):
     body = {
         "model": MODEL, "max_tokens": max_tokens, "system": system,
-        "tools": [tool], "tool_choice": {"type": "tool", "name": tool["name"]},
+        "tools": [tool], "tool_choice": {"type": "auto"},
         "messages": [{"role": "user", "content": json.dumps(input_data, ensure_ascii=False)}],
     }
     outgoing = request.Request(

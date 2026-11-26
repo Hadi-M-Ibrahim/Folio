@@ -51,4 +51,6 @@ npm run build
 python3 -m unittest discover -s tests -p 'test_review*.py' -v
 ```
 
+With the server-side provider key configured, `python3 scripts/evaluate_sample.py` runs a live evaluation of the five fictional requirements in both modes. It compares outcomes with the authored rubric and exits unsuccessfully on a discrepancy. This consumes provider credits and can vary between runs. The offline CI suite uses controlled provider responses.
+
 GitHub Actions builds the frontend and runs the Python checks on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
