@@ -4,8 +4,10 @@ export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(wi
 
 export function checkInput(input: ReviewInput) {
   if (!['questionnaire', 'guide'].includes(input.mode)) throw Error('Choose a valid review mode.');
-  if (!Array.isArray(input.documents) || !input.documents.length || input.documents.length > 18)
-    throw Error('Include between 1 and 18 policy documents.');
+  if (!Array.isArray(input.documents) || input.documents.length > 18)
+    throw Error('Include up to 18 policy documents.');
+  if (input.mode === 'questionnaire' && !input.documents.length)
+    throw Error('Add at least one policy to search for answers.');
   let totalPages = 0,
     totalChars = 0;
   const ids = new Set<string>();

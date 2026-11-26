@@ -53,10 +53,13 @@ export type ReviewInput = {
   guide?: string;
   documents: Policy[];
   allowModel?: boolean;
+  publicInputConsent?: boolean;
 };
 export type Result = {
   mode: Mode;
-  engine: 'anthropic' | 'local' | 'example';
+  engine: 'anthropic' | 'local';
+  planningEngine?: 'anthropic' | 'local';
+  criterionLimitReached?: boolean;
   notice: string;
   findings: Finding[];
 };
@@ -75,10 +78,31 @@ export function readScope(value: unknown): Scope | undefined {
 }
 export type Review = {
   scope?: Scope;
+  sourceDocument?: Policy;
+  sourceSelection?: string;
   key: string;
   title: string;
   input: ReviewInput;
   result: Result;
-  sample: boolean;
 };
-export type Decision = { value: 'confirmed' | 'flagged'; at: string };
+export type PolicyAction = 'write' | 'update' | 'no_change';
+export const policyActionLabels: Record<PolicyAction, string> = {
+  write: 'Write new policy',
+  update: 'Update existing policy',
+  no_change: 'No change',
+};
+export type Decision = {
+  value?: 'confirmed' | 'flagged';
+  answer?: string;
+  citations?: Evidence[];
+  action?: PolicyAction;
+  note?: string;
+  at: string;
+};
+
+export function guideSourceLabel(finding: Finding): string {
+  const { criterionStart, criterionEnd } = finding;
+  return criterionStart != null && criterionEnd != null && criterionEnd > criterionStart
+    ? `Source guide · characters ${criterionStart + 1}–${criterionEnd}`
+    : 'Source guide';
+}

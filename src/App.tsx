@@ -1,449 +1,131 @@
-import { useRef, useState } from 'react';
-import {
-  BookOpen,
-  Check,
-  ChevronRight,
-  ClipboardCheck,
-  Download,
-  FileText,
-  Flag,
-  History,
-  LibraryBig,
-  Search,
-  SlidersHorizontal,
-  X,
-} from 'lucide-react';
-import { Inspector } from './components/Inspector';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
+import { Modal } from './components/Modal';
+import { ReviewWorkspace } from './components/ReviewWorkspace';
 import { Setup } from './components/Setup';
-import { SourceDialog, type SourceLocation } from './components/SourceDialog';
-import { exampleReview, findingTitle } from './review/example';
-import { exportReview } from './review/exportReview';
-import {
-  modeLabels,
-  statusLabels,
-  statusOrder,
-  type Decision,
-  type Evidence,
-  type Mode,
-  type Policy,
-  type Review,
-  type Status,
-} from './review/model';
+import { isLoopback } from './review/client';
+import { modeLabels, type Decision, type Mode, type Review } from './review/model';
 
-type Entry = {
-  key: string;
-  reviewKey: string;
-  finding: string;
-  title: string;
-  mode: Mode;
-  reviewTitle: string;
-  decision: Decision;
-};
-const navLabels = {
-  workspace: 'Workspace',
-  documents: 'Documents',
-  log: 'Review log',
-};
-
-function readDecisions(): Entry[] {
-  try {
-    const value = JSON.parse(localStorage.getItem('folio.example-decisions.v1') || '[]');
-    return Array.isArray(value)
-      ? value.filter(
-          (e) =>
-            e &&
-            typeof e.key === 'string' &&
-            typeof e.title === 'string' &&
-            e.reviewKey?.startsWith('example-') &&
-            ['confirmed', 'flagged'].includes(e.decision?.value) &&
-            Number.isFinite(Date.parse(e.decision.at)),
-        )
-      : [];
-  } catch {
-    return [];
-  }
+function onHashChange(notify: () => void) {
+  window.addEventListener('hashchange', notify);
+  return () => window.removeEventListener('hashchange', notify);
 }
+
+function currentPath() {
+  return window.location.hash.slice(1);
+}
+
+const workflows = [
+  {
+    mode: 'questionnaire',
+    title: 'Answer a questionnaire',
+    description: 'Find policy evidence for each state question and prepare a cited response.',
+    Icon: ClipboardList,
+  },
+  {
+    mode: 'guide',
+    title: 'Review a policy guide',
+    description: 'Identify the obligations and decide which policies to write or update.',
+    Icon: BookOpen,
+  },
+] as const;
+
+function Home({ reviews }: { reviews: Review[] }) {
+  return (
+    <section className="review-home" aria-labelledby="home-title">
+      <h1 id="home-title" tabIndex={-1}>Start a review</h1>
+      <div className="workflow-list">
+        {workflows.map(({ mode, title, description, Icon }) => (
+          <a className="workflow-option" key={mode} href={'#/new/' + mode}>
+            <span aria-hidden="true" className={'workflow-icon ' + mode}><Icon size={25} /></span>
+            <span className="workflow-copy">
+              <span className="workflow-title">{title}</span>
+              <span className="workflow-description">{description}</span>
+            </span>
+            <ArrowRight aria-hidden="true" size={24} />
+          </a>
+        ))}
+      </div>
+      {reviews.length > 0 && (
+        <section className="session-reviews" aria-labelledby="session-title">
+          <h2 id="session-title">Reviews in this tab</h2>
+          {reviews.map((review) => (
+            <a className="session-review" key={review.key} href={'#/review/' + review.key}>
+              <span>{review.title}</span><small>{modeLabels[review.input.mode]}</small>
+              <ArrowRight aria-hidden="true" size={17} />
+            </a>
+          ))}
+        </section>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
-  const [mode, setMode] = useState<Mode>('questionnaire');
-  const [reviews, setReviews] = useState<Record<Mode, Review>>(() => ({
-    questionnaire: exampleReview('questionnaire'),
-    guide: exampleReview('guide'),
-  }));
-  const [nav, setNav] = useState<keyof typeof navLabels>('workspace');
-  const [setup, setSetup] = useState(false);
-  const [source, setSource] = useState<SourceLocation | null>(null);
-  const [selected, setSelected] = useState(0);
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<Status | 'all'>('all');
-  const [filters, setFilters] = useState(false);
-  const [entries, setEntries] = useState<Entry[]>(readDecisions);
-  const [showQueue, setShowQueue] = useState(false);
-  const detailRef = useRef<HTMLDivElement>(null);
-  const review = reviews[mode],
-    findings = review.result.findings;
-  const byKey = new Map(entries.map((e) => [e.key, e]));
-  const visible = findings
-    .map((f, i) => ({ f, i }))
-    .filter(
-      ({ f }) =>
-        (filter === 'all' || filter === f.status) &&
-        (findingTitle(f) + ' ' + f.question + ' ' + f.id).toLowerCase().includes(search.toLowerCase()),
-    );
-  const currentRow = visible.find(({ i }) => i === selected) || visible[0];
-  const current = currentRow?.f;
-  const reviewed = findings.filter((f) => byKey.has(review.key + '/' + f.id)).length;
-  function resetSelection() {
-    setSelected(0);
-    setSearch('');
-    setFilter('all');
-    setFilters(false);
-    setShowQueue(false);
+  const path = useSyncExternalStore(onHashChange, currentPath);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [decisions, setDecisions] = useState(new Map<string, { decision: Decision }>());
+  const [privacyOpen, setPrivacyOpen] = useState(false);
+  const setupMode: Mode | undefined = workflows.find(({ mode }) =>
+    path === '/new/' + mode || path === '/new/' + mode + '/policies',
+  )?.mode;
+  const review = reviews.find((item) => path === '/review/' + item.key);
+
+  useEffect(() => {
+    const title = review?.title ?? (setupMode ? modeLabels[setupMode] : 'Policy review');
+    document.title = title + ' · Folio';
+    window.scrollTo(0, 0);
+    const heading = document.querySelector<HTMLElement>('main h1');
+    heading?.focus({ preventScroll: true });
+  }, [path, review, setupMode]);
+
+  function openReview(newReview: Review) {
+    setReviews((current) => [newReview, ...current]);
+    window.location.hash = '/review/' + newReview.key;
   }
-  function switchMode(m: Mode) {
-    if (m !== mode) {
-      setMode(m);
-      resetSelection();
-    }
+
+  function saveDecision(key: string, decision?: Decision) {
+    setDecisions((current) => {
+      const next = new Map(current);
+      if (decision) next.set(key, { decision });
+      else next.delete(key);
+      return next;
+    });
   }
-  function acceptReview(r: Review) {
-    setReviews((prev) => ({ ...prev, [r.input.mode]: r }));
-    setMode(r.input.mode);
-    setNav('workspace');
-    resetSelection();
-    setSetup(false);
-  }
-  function openEvidence(e: Evidence, term = false) {
-    const doc = review.input.documents.find((d) => d.id === e.documentId);
-    if (doc) setSource({ doc, page: e.page, quote: e.quote, term });
-  }
-  function openGuide() {
-    const text = review.input.guide;
-    if (!text || !current) return;
-    const doc: Policy = {
-      id: 'source-guide',
-      title: 'Source regulatory guide',
-      pages: [{ number: 1, text }],
-    };
-    const exactOffset =
-      current.criterionStart == null
-        ? undefined
-        : Array.from(text).slice(0, current.criterionStart).join('').length;
-    setSource({ doc, page: 1, quote: current.criterionSource || current.question, exactOffset });
-  }
-  function decide(value?: Decision['value']) {
-    if (!current) return;
-    const key = review.key + '/' + current.id;
-    const next = entries.filter((e) => e.key !== key);
-    if (value)
-      next.unshift({
-        key,
-        reviewKey: review.key,
-        finding: current.id,
-        title: findingTitle(current),
-        mode,
-        reviewTitle: review.title,
-        decision: { value, at: new Date().toISOString() },
-      });
-    setEntries(next);
-    try {
-      localStorage.setItem(
-        'folio.example-decisions.v1',
-        JSON.stringify(next.filter((e) => e.reviewKey.startsWith('example-'))),
-      );
-    } catch {
-      /* Decisions remain in this tab. */
-    }
-  }
+
   return (
     <>
-      <a href="#main" className="skip-link">
-        Skip to content
-      </a>
+      <a href="#main" className="skip-link" onClick={(e) => {
+        e.preventDefault();
+        document.querySelector<HTMLElement>('main')?.focus();
+      }}>Skip to content</a>
       <header className="app-header">
         <div className="header-inner">
-          <a href="#main" className="brand" onClick={() => setNav('workspace')} aria-label="Folio workspace">
-            <img className="brand-icon" src="/folio.svg" width="35" height="35" alt="" />
+          <a href="#/" className="brand" aria-label="Folio home">
+            <img className="brand-icon" src="/folio.svg" width="32" height="32" alt="" />
             Folio
           </a>
-          <nav aria-label="Primary">
-            {(Object.keys(navLabels) as (keyof typeof navLabels)[]).map((n) => (
-              <button key={n} aria-current={n === nav ? 'page' : undefined} onClick={() => setNav(n)}>
-                {navLabels[n]}
-              </button>
-            ))}
-          </nav>
-          <button className="primary new-review" onClick={() => setSetup(true)}>
-            New review
-          </button>
+          <button className="privacy-link" onClick={() => setPrivacyOpen(true)}>Document privacy</button>
         </div>
       </header>
-      <main id="main">
-        <header className="page-heading">
-          <h1>
-            {nav === 'workspace' ? review.title : nav === 'documents' ? 'Source documents' : 'Review log'}
-          </h1>
-          <p>
-            {nav === 'workspace'
-              ? [
-                  review.result.engine === 'example'
-                    ? 'Prepared sample'
-                    : review.sample
-                      ? 'Fictional sample'
-                      : 'Custom review',
-                  review.result.engine === 'example'
-                    ? null
-                    : review.result.engine === 'anthropic'
-                      ? 'Model-assisted'
-                      : 'Keyword retrieval',
-                  `${review.input.documents.length} policy ${review.input.documents.length === 1 ? 'document' : 'documents'}`,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
-              : review.title}
-          </p>
-        </header>
-        <div className="review-toolbar">
-          {nav !== 'log' && (
-            <div className="mode-tabs" aria-label="Review mode">
-              {(['questionnaire', 'guide'] as const).map((m) => (
-                <button key={m} aria-pressed={m === mode} onClick={() => switchMode(m)}>
-                  {modeLabels[m]}
-                </button>
-              ))}
-            </div>
-          )}
-          <button className="report-link" onClick={() => exportReview(review, byKey)}>
-            <Download size={15} /> Download report
-          </button>
-        </div>
-        {nav === 'workspace' && (
-          <>
-            {review.result.engine !== 'example' && (
-              <div className="run-notice">
-                <span>
-                  {review.result.notice}
-                  {review.scope &&
-                    ` Search covers ${review.scope.selectedPages} selected pages from ${review.scope.sourcePages.toLocaleString()} source pages.`}
-                </span>
-              </div>
-            )}
-            <div className="work-grid">
-              <aside className="queue" aria-label="Review queue" data-expanded={showQueue}>
-                <button
-                  className="mobile-queue"
-                  aria-expanded={showQueue}
-                  aria-controls="review-queue"
-                  onClick={() => setShowQueue(!showQueue)}
-                >
-                  {mode === 'guide' ? 'Obligations' : 'Questions'} ({findings.length})
-                  <span>{showQueue ? 'Hide list' : 'Show list'}</span>
-                </button>
-                <div id="review-queue">
-                  <div className="queue-head">
-                    <div className="section-title">
-                      <h2>{mode === 'guide' ? 'Obligations' : 'Questions'}</h2>
-                      <span>
-                        {reviewed}/{findings.length} reviewed
-                      </span>
-                    </div>
-                    <div className="queue-controls">
-                      <label className="queue-search">
-                        <Search size={15} />
-                        <input
-                          aria-label="Search findings"
-                          placeholder="Search findings…"
-                          value={search}
-                          onChange={(e) => setSearch(e.target.value)}
-                        />
-                        {search && (
-                          <button aria-label="Clear search" onClick={() => setSearch('')}>
-                            <X size={13} />
-                          </button>
-                        )}
-                      </label>
-                      <button
-                        className={'filter-button ' + (filters || filter !== 'all' ? 'active' : '')}
-                        aria-label="Filter by finding status"
-                        aria-expanded={filters}
-                        onClick={() => setFilters(!filters)}
-                      >
-                        <SlidersHorizontal size={16} />
-                      </button>
-                    </div>
-                    {filters && (
-                      <label className="filter-select">
-                        Status
-                        <select value={filter} onChange={(e) => setFilter(e.target.value as Status | 'all')}>
-                          <option value="all">All statuses</option>
-                          {statusOrder.map((s) => (
-                            <option key={s} value={s}>
-                              {statusLabels[s]}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                  </div>
-                  <div className="queue-items">
-                    {visible.map(({ f, i }) => {
-                      const decision = byKey.get(review.key + '/' + f.id)?.decision;
-                      return (
-                        <button
-                          className={'queue-row ' + (i === currentRow?.i ? 'selected' : '')}
-                          key={f.id}
-                          aria-pressed={i === currentRow?.i}
-                          onClick={() => {
-                            setSelected(i);
-                            setShowQueue(false);
-                            if (window.matchMedia('(max-width: 760px)').matches)
-                              requestAnimationFrame(() => {
-                                detailRef.current
-                                  ?.querySelector<HTMLElement>('#finding-detail')
-                                  ?.focus({ preventScroll: true });
-                                detailRef.current?.scrollIntoView({ block: 'start' });
-                              });
-                          }}
-                        >
-                          <span className="row-top">
-                            <span className="row-name">{findingTitle(f)}</span>
-                            {decision &&
-                              (decision.value === 'confirmed' ? (
-                                <Check size={13} aria-label="Confirmed" />
-                              ) : (
-                                <Flag size={13} aria-label="Flagged" />
-                              ))}
-                          </span>
-                          <span className={'row-status ' + f.status}>{statusLabels[f.status]}</span>
-                        </button>
-                      );
-                    })}
-                    {!visible.length && (
-                      <div className="empty-list">
-                        <Search size={20} />
-                        <p>No matching findings</p>
-                        {(search || filter !== 'all') && (
-                          <button
-                            className="text-link"
-                            onClick={() => {
-                              setSearch('');
-                              setFilter('all');
-                            }}
-                          >
-                            Clear filters
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </aside>
-              <div ref={detailRef} className="detail-wrap">
-                {current ? (
-                  <Inspector
-                    key={review.key + '/' + current.id}
-                    finding={current}
-                    mode={mode}
-                    documents={review.input.documents}
-                    onOpen={openEvidence}
-                    onGuide={openGuide}
-                    index={currentRow.i}
-                    decision={byKey.get(review.key + '/' + current.id)?.decision}
-                    decide={decide}
-                  />
-                ) : (
-                  <div className="panel empty-list">
-                    <BookOpen />
-                    <p>
-                      {findings.length
-                        ? 'Select a different filter to see findings.'
-                        : 'No requirements extracted from this input.'}
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </>
-        )}
-        {nav === 'documents' && (
-          <section className="panel library">
-            <header>
-              <div className="section-title">
-                <LibraryBig size={19} />
-                <h2>{review.title}</h2>
-              </div>
-              <span>{review.input.documents.length} documents</span>
-            </header>
-            {review.input.documents.map((doc) => (
-              <button
-                className="library-row"
-                key={doc.id}
-                onClick={() => setSource({ doc, page: doc.pages[0].number, quote: '' })}
-              >
-                <span className="doc-icon">
-                  <FileText size={22} />
-                </span>
-                <span>
-                  <strong>{doc.title}</strong>
-                  <small>
-                    {doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'} in review
-                  </small>
-                </span>
-                <ChevronRight size={17} />
-              </button>
-            ))}
-          </section>
-        )}
-        {nav === 'log' && (
-          <section className="panel library">
-            <header>
-              <div className="section-title">
-                <History size={19} />
-                <h2>Reviewer decisions</h2>
-              </div>
-              <span>{entries.length} recorded</span>
-            </header>
-            {entries.length ? (
-              entries.map((e) => (
-                <div className="log-row" key={e.key}>
-                  <span className={'decision-tag ' + e.decision.value}>
-                    {e.decision.value === 'confirmed' ? <Check size={16} /> : <Flag size={15} />}
-                  </span>
-                  <div>
-                    <strong>{e.title}</strong>
-                    <p>
-                      {e.reviewTitle} · {modeLabels[e.mode]} ·{' '}
-                      {e.decision.value === 'confirmed' ? 'Confirmed' : 'Flagged for follow-up'}
-                    </p>
-                  </div>
-                  <time dateTime={e.decision.at}>
-                    {new Date(e.decision.at).toLocaleString(undefined, {
-                      month: 'short',
-                      day: 'numeric',
-                      hour: 'numeric',
-                      minute: '2-digit',
-                    })}
-                  </time>
-                </div>
-              ))
-            ) : (
-              <div className="empty-state">
-                <ClipboardCheck size={30} />
-                <h3>No decisions yet</h3>
-                <p>Confirm a finding or flag it for follow-up in the workspace.</p>
-                <button className="secondary" onClick={() => setNav('workspace')}>
-                  Open workspace
-                </button>
-              </div>
-            )}
-            <p className="log-hint">
-              Prepared example decisions are saved in this browser. Decisions from new reviews stay in this
-              tab.
-            </p>
-          </section>
-        )}
+      <main id="main" tabIndex={-1}>
+        {setupMode ? (
+          <Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = '/'; }} onDone={openReview} />
+        ) : review ? (
+          <ReviewWorkspace key={review.key} review={review} decisions={decisions} onDecisionChange={saveDecision} />
+        ) : <Home reviews={reviews} />}
       </main>
-      {setup && <Setup initialMode={mode} onClose={() => setSetup(false)} onDone={acceptReview} />}{' '}
-      {source && <SourceDialog location={source} onClose={() => setSource(null)} />}
+      {privacyOpen && (
+        <Modal title="Document privacy" onClose={() => setPrivacyOpen(false)}>
+          <div className="privacy-body">
+            <p>{isLoopback
+              ? 'Running a review sends the documents to the Python service on this computer.'
+              : 'Use public documents on this site. Running a review sends their text to the Folio server. Use the local app for private policies.'}</p>
+            <p>Model assessment is optional. Enabling it sends the questions or guide and relevant policy passages to Anthropic.</p>
+            <p>Responses and policy actions stay in this tab. Download your work before refreshing or closing it.</p>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }

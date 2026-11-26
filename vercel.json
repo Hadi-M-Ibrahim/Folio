@@ -3,7 +3,6 @@
   "framework": "vite",
   "functions": {
     "api/review.py": {
-      "includeFiles": "api/sample.json",
       "maxDuration": 180
     }
   },

@@ -1,24 +1,27 @@
 # <img src="public/folio.svg" alt="" width="40" height="40" align="absmiddle"> Folio
 
-Folio helps a compliance analyst answer a state questionnaire or turn a new policy guide into a list of requirements to review. Each finding links back to the policy language on a specific page. The analyst can inspect supporting and conflicting passages, open the literal search results, and record a decision. Use Download report to export the findings and citations as Markdown.
+Folio helps compliance analysts answer state questionnaires and turn regulatory guides into a policy worklist. Start either workflow with your own documents.
 
-## Try it
+## Use Folio
 
-[Watch the 77-second walkthrough](Deliverables/folio-walkthrough.mp4).
+Open [Folio](https://folio-policy-review.vercel.app) or [watch the 83-second walkthrough](Deliverables/folio-walkthrough.mp4).
 
-Open the sample case on [Folio](https://folio-policy-review.vercel.app). Select the first grievance question and compare the general acknowledgment policy with the telephone exception. Open the source pages to decide whether the two instructions apply to the same members. Start a new review to run either the questionnaire or the regulatory guide through the Python service.
+- **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open a passage to verify its page, attach the quotation to a response, and confirm or flag the answer. Download the responses with their citations.
+- **Review a policy guide.** Upload or paste the guide. Add existing policies to check coverage, or proceed with the guide alone. Review each obligation in its original context, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
-The public sample and its policies are fictional. The opening case is a prepared example. The results of a new review identify whether Anthropic or keyword retrieval produced them. The public service accepts custom public text for keyword search. Only the bundled fictional inputs qualify for hosted model calls.
+For a long source, select a batch of questions or a range of guide pages. The workspace and export identify the selected range. Uploaded guides retain their physical page numbers.
+
+Keyword search is the default. On the hosted site, submit only public documents. Selecting Anthropic for a review sends the questions or guide and relevant policy text to the provider using a server-side key. The app holds documents, responses, and decisions in the current tab. Download your work before refreshing or closing it.
 
 ## Repository layout
 
 | Directory | Contents |
 | --- | --- |
 | `src/components/` | Review setup, findings inspector, and source dialogs |
-| `src/review/` | Frontend review types, API client, fictional example, search, file import, and export |
-| `api/` | Python review endpoint, retrieval and citation verification, and shared fictional sample |
-| `scripts/` | Local PDF preparation and sample evaluation tools |
-| `tests/` | Offline tests for the API and review pipeline |
+| `src/review/` | Frontend review types, API client, page citations, file import, and report export |
+| `api/` | Python review endpoint, retrieval, and citation verification |
+| `scripts/` | Private PDF preparation tool |
+| `tests/` | API tests, offline fixtures, and browser tests for both workflows |
 | `requirements/` | Python packages for linting and optional local PDF tools |
 | `public/` | Icons and social preview artwork |
 | `Deliverables/` | Recorded walkthrough |
@@ -49,7 +52,7 @@ python3 -m venv .venv
 .venv/bin/python scripts/prepare_review.py guide --pages 11
 ```
 
-In the local app, start a new review, choose custom input, and import the generated JSON. Local keyword retrieval works without credentials. For an operator-approved model run, set `ANTHROPIC_API_KEY` in the API process environment and set `REVIEW_ALLOW_CUSTOM_MODEL=1`. The reviewer also has to select model assessment for the individual request. That sends the relevant text to Anthropic. Leave the option off for local-only processing.
+In the local app, open either workflow and select **Import a prepared review (.json)** on the first step. Local keyword retrieval works without credentials. For an operator-approved model run, set `ANTHROPIC_API_KEY` in the API process environment and set `REVIEW_ALLOW_CUSTOM_MODEL=1`. The reviewer also has to select model assessment for the individual request. That sends the relevant text to Anthropic. Leave the option off for local-only processing.
 
 ## How findings are produced
 
@@ -61,13 +64,14 @@ The staged handoffs adapt an idea from [Inference-Time Graph Engineering for Mul
 
 ```sh
 npm run lint
+npm run test:unit
 npm run build
+npx playwright install --only-shell chromium
+npm run test:e2e
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements/lint.txt
 .venv/bin/python -m ruff check api scripts tests
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-With the server-side provider key configured, `python3 scripts/evaluate_sample.py` runs a live evaluation of the five fictional requirements in both modes. It compares outcomes with the authored rubric and exits unsuccessfully on a discrepancy. This consumes provider credits and can vary between runs. The offline CI suite uses controlled provider responses.
-
-GitHub Actions runs Oxlint, TypeScript, the Vite build, Ruff, and the Python tests on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.
+GitHub Actions runs Oxlint, TypeScript, the Vite build, desktop and mobile browser tests, Ruff, and the Python tests on pull requests and pushes to main. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable. A missing or unavailable provider leaves the exact text search usable.

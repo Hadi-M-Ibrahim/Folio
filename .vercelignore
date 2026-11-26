@@ -18,3 +18,4 @@ scripts/
 .ruff_cache/
 requirements/
 ruff.toml
+test-results/

@@ -46,8 +46,31 @@ FAMILIES = (
 )
 FAMILY = {word: group.split()[0] for group in FAMILIES for word in group.split()}
 ADVERSE = re.compile(r"\b(?:no|not|only|except(?:ion)?|exclude[ds]?|unless|instead|next|waiv\w*|verbal|restrict\w*|later|delay\w*)\b", re.I)
-OBLIGATION = re.compile(r"\b(?:must|shall|should|required|requires?|may not|prohibited|ensure|verify|confirm|determine|check|assess|evaluate|review whether|obligated|responsible for|need to|needs to)\b", re.I)
-BULLET = re.compile(r"^\s*(?:[-*•]|\(?\d{1,3}[.)]|[a-z][.)])\s+", re.I)
+OBLIGATION = re.compile(
+    r"\b(?:must|shall|should|cannot|may (?:not|only)|no (?:\w+\s+){1,4}(?:may|can)|(?:has|have|needs?|ought) to|"
+    r"requir(?:es?|ed)|prohibit(?:s|ed)|forbid(?:s|den)|obligat(?:ed|ory)|mandatory|responsible for|"
+    r"(?:not|never) (?:allowed|permitted)|(?:is|are) (?:permitted|allowed) only)\b", re.I,
+)
+IMPERATIVE = re.compile(
+    r"^(?:(?:if|when|before|after|upon|unless|for)\b[^,]{1,300},\s*)?"
+    r"(?:please\s+)?(?:do not|never|ensure|verify|confirm|determine|check|assess|evaluate|review|"
+    r"retain|record|submit|notify|report|maintain|document|keep|file|provide|include|obtain|send|"
+    r"publish|consult|identify|inspect|sign|approve|complete|establish|implement|issue|monitor|"
+    r"deliver|update|disclose|collect|use|follow|attach|prohibit|prevent|allow)\s+(?!of\b|was\b|is\b)\S", re.I,
+)
+LIST_MARK = r"(?:[-*•]|\(\d{1,3}\)|\d{1,3}[.)]|\([a-z]\)|[a-z][.)])"
+BULLET = re.compile(r"^\s*" + LIST_MARK + r"\s+", re.I)
+GUIDE_BLOCK = re.compile(r"\n\s*\n|\n(?=[^\S\n]*" + LIST_MARK + r"\s+)", re.I)
+LIST_LEAD = re.compile(r"\b(?:must|shall|include|provide|required|requirements|checklist|submit)\b[^.!?]*:\s*$", re.I)
+LIST_HEADING = re.compile(
+    r"(?:(?:(?:application|filing|inspection|minimum|policy|reporting|submission|training) )?"
+    r"(?:requirements|checklist)|required (?:documents|attachments|records))", re.I,
+)
+SENTENCE_END = re.compile(r"""[.!?]+["'’”)]*(?=\s|$)""")
+REFERENCE_ABBREVIATION = re.compile(
+    r"\b(?:secs?|subsecs?|arts?|chs?|paras?|pars?|pts?|nos?|regs?|figs?|vols?|pp?|dept|"
+    r"e\.g|i\.e|cf|vs|(?:[a-z]\.)+[a-z])\.$", re.I,
+)
 
 
 class InvalidRequest(ValueError):
@@ -60,38 +83,58 @@ def bounded_string(value, label, limit):
     return value.strip()
 
 
+def guide_sentences(body):
+    """Yield original spans, keeping dotted legal references and internal line wrapping."""
+    start = 0
+    for end in SENTENCE_END.finditer(body):
+        if end.group() == "." and REFERENCE_ABBREVIATION.search(body[max(start, end.end() - 32):end.end()]):
+            continue
+        yield body[start:end.end()], start
+        start = end.end()
+    if start < len(body):
+        yield body[start:], start
+
+
 def guide_criteria(guide):
-    # Preserve offsets and exact text, including internal PDF line wrapping.
-    blocks = re.split(r"\n\s*\n|\n(?=\s*(?:[-*•]|\(?\d{1,3}[.)]|[a-z][.)])\s+)", guide)
-    candidates = []
+    chosen = []
+    has_narrative = False
+    checklist = False
     position = 0
-    for block in blocks:
+    for block in GUIDE_BLOCK.split(guide):
         start = guide.find(block, position)
         position = start + len(block)
         body = BULLET.sub("", block, count=1)
         body_start = start + len(block) - len(body)
-        for match in re.finditer(r".+?(?:[.!?;]+(?=\s|$)|\Z)", body, re.S):
-            raw = match.group()
+        listed = body != block
+        if not listed:
+            checklist = bool(LIST_HEADING.fullmatch(block.strip())) or (
+                block.rstrip().endswith(":") and bool(LIST_LEAD.search(block))
+            )
+        for raw, sentence_start in guide_sentences(body):
             clause = raw.strip()
-            if not clause:
+            if not WORD.search(clause):
                 continue
-            offset = body_start + match.start() + len(raw) - len(raw.lstrip())
-            candidates.append((clause, offset, bool(BULLET.match(block))))
-    explicit = [c for c in candidates if OBLIGATION.search(c[0]) or c[2]
-                or (c[0].endswith((".", "?", "!", ";")) and len(WORD.findall(c[0])) >= 4)]
-    chosen = explicit or [c for c in candidates if len(WORD.findall(c[0])) >= 4]
-    if not chosen:
+            has_narrative |= len(WORD.findall(clause)) >= 3
+            # A list introducer supplies context to the items that follow it.
+            if LIST_HEADING.fullmatch(clause) or (clause.endswith(":") and LIST_LEAD.search(clause)):
+                continue
+            if (OBLIGATION.search(clause) or IMPERATIVE.match(clause) or clause.endswith("?")
+                    or (listed and checklist and sentence_start == 0)):
+                offset = body_start + sentence_start + len(raw) - len(raw.lstrip())
+                chosen.append((clause, offset))
+    if not chosen and not has_narrative:
         raise InvalidRequest("The guide needs a sentence or list item describing a review criterion.")
     if len(chosen) > MAX_CRITERIA:
-        raise InvalidRequest(f"This guide produced {len(chosen)} clauses. Submit at most {MAX_CRITERIA} per review.")
-    return [(clause, offset) for clause, offset, _ in chosen]
+        raise InvalidRequest(f"This guide has {len(chosen)} explicit criteria. Submit at most {MAX_CRITERIA} per review.")
+    return chosen
 
 
 def validate(payload):
     if not isinstance(payload, dict) or payload.get("mode") not in ("questionnaire", "guide"):
         raise InvalidRequest("Choose questionnaire or guide mode.")
-    if type(payload.get("allowModel", False)) is not bool:
-        raise InvalidRequest("allowModel must be true or false.")
+    for consent in ("allowModel", "publicInputConsent"):
+        if type(payload.get(consent, False)) is not bool:
+            raise InvalidRequest(f"{consent} must be true or false.")
     mode = payload["mode"]
     if mode == "guide":
         guide = bounded_string(payload.get("guide"), "Guide", 50000)
@@ -104,8 +147,10 @@ def validate(payload):
             raise InvalidRequest(f"Provide 1 to {MAX_CRITERIA} questions.")
         criteria = [(bounded_string(q, "Each question", 2000), None) for q in questions]
     docs = payload.get("documents")
-    if not isinstance(docs, list) or not 1 <= len(docs) <= 18:
-        raise InvalidRequest("Provide 1 to 18 plan documents.")
+    if not isinstance(docs, list) or len(docs) > 18:
+        raise InvalidRequest("Provide a list of up to 18 policy documents.")
+    if not docs and mode == "questionnaire":
+        raise InvalidRequest("Provide at least one policy document with the questionnaire.")
     identifiers = set()
     pages = {}
     size = 0
@@ -176,6 +221,14 @@ def basic_plan(criteria):
     return [{"question": q, "source": q, "start": pos, "searchTerms": []} for q, pos in criteria]
 
 
+def criterion_fields(row, number):
+    start = row["start"]
+    return {
+        "id": f"q{number}", "question": row["question"], "criterionSource": row["source"],
+        "criterionStart": start, "criterionEnd": start + len(row["source"]) if start is not None else None,
+    }
+
+
 def normalize_term(text):
     return " ".join(text.casefold().split())
 
@@ -240,7 +293,6 @@ class Index:
 
     def retrieve(self, row, number):
         question = row["question"]
-        offset = row["start"]
         model_terms = list(dict.fromkeys(normalize_term(t) for t in row["searchTerms"]))
         terms = list(dict.fromkeys(w for w in words(question) if w not in STOP))
         groups = list(dict.fromkeys(group_for(w) for w in model_terms + terms))
@@ -269,8 +321,7 @@ class Index:
             origin = "model" if term in model_terms else ("criterion" if term in terms else "related_form")
             proof.append({"term": term, "origin": origin, "matches": matches, "totalPages": len(hits), "totalHits": sum(hits.values())})
         return {
-            "id": f"q{number}", "question": question, "criterionSource": row["source"],
-            "criterionStart": offset, "criterionEnd": offset + len(row["source"]) if offset is not None else None,
+            **criterion_fields(row, number),
             "status": "needs_review" if candidates else "insufficient",
             "answer": ("Review the ranked passages to decide whether they address this criterion."
                        if candidates else "The search terms returned no source passages. Evidence is insufficient for a decision."),
@@ -281,5 +332,13 @@ class Index:
 
 
 def retrieve(pages, plan):
+    if not pages:
+        return [{
+            **criterion_fields(row, number),
+            "status": "needs_review", "answer": "No existing policies were supplied for comparison.",
+            "supporting": [], "counter": [], "candidates": [], "totalCandidatePassages": 0,
+            "plannedTerms": row["searchTerms"], "searchTerms": [], "searchProof": [], "totalSearchTerms": 0,
+            "analysisEngine": "local",
+        } for number, row in enumerate(plan, 1)]
     index = Index(pages, plan)
     return [index.retrieve(row, i) for i, row in enumerate(plan, 1)]
