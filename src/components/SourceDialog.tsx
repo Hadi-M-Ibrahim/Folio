@@ -1,35 +1,24 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
-import type { Policy } from '../review/model';
+import type { SourceLocation } from '../review/guideSource';
 import { searchRanges } from '../review/searchText';
 import { Modal } from './Modal';
 
-export type SourceLocation = {
-  doc: Policy;
-  page: number;
-  quote: string;
-  term?: boolean;
-  exactOffset?: number;
-};
-
 function highlightPage(text: string, page: number, location: SourceLocation) {
-  const { quote, exactOffset, term } = location;
-  if (!quote || page !== location.page) return text;
-
-  if (!term) {
-    const start =
-      exactOffset !== undefined && text.startsWith(quote, exactOffset) ? exactOffset : text.indexOf(quote);
+  const { quote, marks, term } = location;
+  if (!quote) return text;
+  let hits;
+  if (marks) {
+    hits = marks.filter((mark) => mark.page === page);
+  } else if (page !== location.page) {
+    return text;
+  } else if (term) {
+    hits = searchRanges(text, quote);
+  } else {
+    const start = text.indexOf(quote);
     if (start < 0) return text;
-    return (
-      <>
-        {text.slice(0, start)}
-        <mark>{quote}</mark>
-        {text.slice(start + quote.length)}
-      </>
-    );
+    hits = [{ start, end: start + quote.length }];
   }
-
-  const hits = searchRanges(text, quote);
   return (
     <>
       {hits.map(({ start, end }, index) => (
@@ -60,9 +49,9 @@ export function SourceDialog({ location, onClose }: { location: SourceLocation; 
       <div className="source-toolbar">
         <span>
           <FileText size={15} />
-          Page {pageNumber}
+          {location.unpaginated ? 'Submitted text' : 'Page ' + pageNumber}
         </span>
-        <div>
+        {location.doc.pages.length > 1 && <div>
           <button
             className="icon-button"
             disabled={index <= 0}
@@ -79,7 +68,7 @@ export function SourceDialog({ location, onClose }: { location: SourceLocation; 
           >
             <ChevronRight size={16} />
           </button>
-        </div>
+        </div>}
       </div>
       <div className="source-paper" ref={paperRef}>
         {page ? highlightPage(page.text, page.number, location) : 'The cited page is unavailable in this review.'}

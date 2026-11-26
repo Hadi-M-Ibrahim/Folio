@@ -1,7 +1,7 @@
 """Turn guide obligations and questions into source-anchored search plans."""
 
 from . import model
-from .search import MAX_CRITERIA, WORD
+from .search import MAX_CRITERIA, WORD, InvalidRequest
 
 MAX_TERMS = 8
 MAX_TERM_CHARS = 80
@@ -12,11 +12,11 @@ SYSTEM = """Plan a compliance analyst's literal Ctrl-F searches. Your only input
 
 In questionnaire mode, return one row per source ID. Keep each question intact, in its original order. Supply only sourceId and searchTerms.
 
-In guide mode, identify independently testable obligations. Split compound requirements when their actions can independently succeed or fail. For each row write one concise question preserving the actor, action, scope, timing, qualifiers, and exceptions that apply to that obligation. Separate obligations may use the same source ID and verbatim sentence. Cover every required source unit. Examine the other units for additional requirements and for context such as headings. Skip headings or background on their own.
+In guide mode, identify independently testable obligations. Split compound requirements when their actions can independently succeed or fail. For each row write one concise question preserving the actor, action, scope, timing, qualifiers, and exceptions that apply to that obligation. Separate obligations may use the same source ID and verbatim sentence. Cover every required source unit. Examine all optional source text for implied obligations, such as procedures that assign an actor an action without saying "must". Use surrounding headings and qualifications to establish scope. Skip publication history, examples and descriptive background on their own. If the guide contains no reviewable obligations, return an empty criteria array.
 
 Anchor each guide row to its sourceId. Omit sourceQuote when the whole unit is a suitable citation. Otherwise copy an exact contiguous passage into sourceQuote, preserving all spacing and punctuation. Use a quote for long units (over 2000 characters) and units marked optional. If that quote repeats within the unit, provide its 1-based occurrence.
 
-For each row choose 1 to 8 short literal strings an analyst could actually search for in plan text. Prefer distinctive domain terms, acronyms, synonymous wording, and alternate expressions for deadlines. Include likely wording for contrary rules or exceptions specific to that requirement. Keep terms literal. Avoid Boolean expressions, wildcards, generic standalone terms, and long copies of the question. These are hypotheses for a search, never evidence. Call record_search_plan once, listing at most 30 rows."""
+For each row choose 1 to 8 short literal strings an analyst could actually search for in plan text. Prefer distinctive domain terms, acronyms, synonymous wording, and alternate expressions for deadlines. Include likely wording for contrary rules or exceptions specific to that requirement. Keep terms literal. Avoid Boolean expressions, wildcards, generic standalone terms, and long copies of the question. These are hypotheses for a search, never evidence. Call record_search_plan once, listing at most 30 rows. If covering the guide would require more than 30 rows, set exceedsLimit to true."""
 
 TERM_ARRAY = {
     "type": "array", "minItems": 1, "maxItems": MAX_TERMS,
@@ -27,8 +27,8 @@ TOOL = {
     "description": "Record source-anchored obligations and proposed literal searches.",
     "input_schema": {
         "type": "object", "required": ["criteria"], "additionalProperties": False,
-        "properties": {"criteria": {
-            "type": "array", "minItems": 1, "maxItems": MAX_CRITERIA,
+        "properties": {"exceedsLimit": {"type": "boolean"}, "criteria": {
+            "type": "array", "minItems": 0, "maxItems": MAX_CRITERIA,
             "items": {
                 "type": "object", "required": ["sourceId", "searchTerms"],
                 "additionalProperties": False,
@@ -100,13 +100,19 @@ def guide_anchor(row, unit):
     return quote, start + position
 
 
-def plan_criteria(mode, source, fallback, key):
+def plan_criteria(mode, source, fallback, key, deadline):
     """Call once after model authorization. Raise ProviderUnavailable to use local extraction."""
     units = {f"s{i}": unit for i, unit in enumerate(source_units(mode, source, fallback), 1)}
     inputs = [{"sourceId": unit_id, "text": text, "required": required}
               for unit_id, (text, _, required) in units.items()]
-    response = model.invoke_tool(SYSTEM, TOOL, {"mode": mode, "sources": inputs}, key, max_tokens=6000)
+    response = model.invoke_tool(SYSTEM, TOOL, {"mode": mode, "sources": inputs}, key, deadline, max_tokens=6000)
     rows = response.get("criteria") if isinstance(response, dict) else None
+    if mode == "guide" and isinstance(response, dict) and (
+        response.get("exceedsLimit") is True or (isinstance(rows, list) and len(rows) > MAX_CRITERIA)
+    ):
+        raise InvalidRequest(f"The guide exceeds the limit of {MAX_CRITERIA} requirements. Submit a smaller guide section.")
+    if mode == "guide" and not fallback and rows == []:
+        raise InvalidRequest("No reviewable obligation was identified in this guide section. Select a section describing a policy duty.")
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_CRITERIA:
         raise model.ProviderUnavailable
 
@@ -140,6 +146,8 @@ def plan_criteria(mode, source, fallback, key):
         seen_ids.add(unit_id)
         planned.append((unit_id, {"question": question, "source": source_text, "start": start, "searchTerms": terms}))
     if any(required and unit_id not in seen_ids for unit_id, (_, _, required) in units.items()):
+        if mode == "guide" and len(rows) == MAX_CRITERIA:
+            raise InvalidRequest(f"The planner reached {MAX_CRITERIA} requirements before covering the guide. Submit a smaller section.")
         raise model.ProviderUnavailable
     if mode == "questionnaire":
         by_id = dict(planned)

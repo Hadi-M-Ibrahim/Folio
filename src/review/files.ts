@@ -17,7 +17,9 @@ export async function readDocument(file: File): Promise<Policy> {
         const page = await pdf.getPage(number);
         const content = await page.getTextContent();
         const text = content.items
-          .map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : ' ') : ''))
+          // pdf.js emits word spaces in the text items. A font or ligature
+          // change can also start a new item in the middle of a word.
+          .map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : '') : ''))
           .join('')
           .trim();
         if (text) pages.push({ number, text });

@@ -11,7 +11,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api._review.model import model_review
-from api._review.search import InvalidRequest, validate
+from api._review.search import MAX_CRITERIA, InvalidRequest, validate
 
 MAX_BODY = 4_000_000
 
@@ -19,9 +19,12 @@ MAX_BODY = 4_000_000
 def review(payload, *, local_operator=False):
     mode, criteria, pages = validate(payload)
     findings, notice, planner = model_review(payload, criteria, pages, local_operator)
+    criterion_limit_reached = mode == "guide" and len(findings) == MAX_CRITERIA
+    if criterion_limit_reached:
+        notice += f" This section reached the {MAX_CRITERIA}-criterion limit. Check the guide for additional requirements."
     return {
         "mode": mode, "engine": "anthropic" if any(f["analysisEngine"] == "anthropic" for f in findings) else "local",
-        "notice": notice, "findings": findings, "planningEngine": planner,
+        "notice": notice, "findings": findings, "planningEngine": planner, "criterionLimitReached": criterion_limit_reached,
         "reviewScope": {"documents": len(payload["documents"]), "pages": len(pages), "criteria": len(findings)},
     }
 

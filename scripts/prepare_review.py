@@ -132,12 +132,16 @@ def prepare_criteria(args, guide, questions):
         criteria = [(questions[n], None) for n in numbers]
     else:
         numbers = select_numbers(args.pages, len(guide))
-        text = "\n\n".join(page_text(guide[n - 1]) for n in numbers)
+        pages = [{"number": n, "text": page_text(guide[n - 1])} for n in numbers]
+        text = "\n\n".join(page["text"] for page in pages)
         if len(text) > 50000:
             raise ValueError("Select a smaller guide section (at most 50,000 characters per review).")
         payload["guide"] = text
+        payload["sourceDocument"] = {"id": "submitted-guide", "title": Path(guide.name).name, "pages": pages}
         payload["selection"] = {"guidePages": numbers}
         criteria = guide_criteria(text)
+        if not criteria:
+            raise ValueError("No explicit duty found for selecting policy pages. Choose a different section or upload the guide directly to Folio.")
     return payload, criteria
 
 
