@@ -179,7 +179,7 @@ class PlannerTests(unittest.TestCase):
                             {"number": number + 1, "text": "Hours of operation are posted downstairs."},
                         ]}
                         payload = {"mode": mode, **source, "documents": [doc],
-                                   "allowModel": True, "publicInputConsent": True}
+                                   "allowModel": True, "modelSharingConsent": True}
                         invoke.reset_mock()
                         result = api.review(payload)
                         self.assertEqual(invoke.call_count, 2)

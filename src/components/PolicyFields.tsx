@@ -92,7 +92,7 @@ export function PolicyFields({
         <span>
           <strong id="intake-model-label">Use Anthropic for this review</strong>
           <small id="intake-model-description">
-            {isLoopback ? 'Allow the local server to send selected text to Anthropic if the operator has enabled it.' : 'I confirm these documents are public and agree to send selected text to Anthropic.'}
+            {isLoopback ? 'Allow the local server to send selected text to Anthropic if the operator has enabled it.' : 'Send the questions or guide and relevant policy passages to Anthropic.'}
           </small>
         </span>
       </label>

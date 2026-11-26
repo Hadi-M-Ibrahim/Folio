@@ -11,7 +11,7 @@ Open [Folio](https://folio-policy-review.vercel.app) or [watch the 83-second wal
 
 For a long source, select a batch of questions or a range of guide pages. The workspace and export identify the selected range. Uploaded guides retain their physical page numbers.
 
-Keyword search is the default. On the hosted site, submit only public documents. Selecting Anthropic for a review sends the questions or guide and relevant policy text to the provider using a server-side key. The app holds documents, responses, and decisions in the current tab. Download your work before refreshing or closing it.
+Keyword search is the default. Selecting Anthropic for a review sends the questions or guide and relevant policy text to the provider using a server-side key. The app holds documents, responses, and decisions in the current tab. Download your work before refreshing or closing it.
 
 ## Repository layout
 

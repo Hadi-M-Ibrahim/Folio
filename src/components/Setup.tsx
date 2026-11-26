@@ -128,7 +128,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
       documents: policies,
       ...(isGuide ? { guide: source.text.trim() } : { questions }),
       allowModel,
-      ...(!isLoopback && allowModel ? { publicInputConsent: true } : {}),
+      ...(!isLoopback && allowModel ? { modelSharingConsent: true } : {}),
     };
   }
 
@@ -286,7 +286,6 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         </fieldset>
         {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
         <div className="intake-actions">
-          {!isLoopback && <p className="intake-privacy">Use public documents. Running a review sends their text to Folio.</p>}
           <button type="submit" className="intake-primary" disabled={Boolean(busy)}>
             <span>{busy || (step === 1 ? 'Continue' : copy.submit)}</span>
             {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}

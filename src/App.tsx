@@ -120,7 +120,7 @@ export default function App() {
           <div className="privacy-body">
             <p>{isLoopback
               ? 'Running a review sends the documents to the Python service on this computer.'
-              : 'Use public documents on this site. Running a review sends their text to the Folio server. Use the local app for private policies.'}</p>
+              : 'Running a review sends the selected document text to Folio.'}</p>
             <p>Model assessment is optional. Enabling it sends the questions or guide and relevant policy passages to Anthropic.</p>
             <p>Responses and policy actions stay in this tab. Download your work before refreshing or closing it.</p>
           </div>

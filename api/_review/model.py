@@ -335,8 +335,9 @@ def model_review(payload, criteria, pages, local_operator=False):
         return local_review(criteria, pages)
     hosted = os.environ.get("VERCEL")
     if hosted:
-        if hosted != "1" or not payload.get("publicInputConsent", False):
-            return local_review(criteria, pages, "Hosted model review requires consent to send public inputs to Anthropic.")
+        sharing_consent = payload.get("modelSharingConsent", payload.get("publicInputConsent", False))
+        if hosted != "1" or not sharing_consent:
+            return local_review(criteria, pages, "Enable Anthropic for this review to share selected text with the model.")
     elif not (local_operator and os.environ.get("REVIEW_ALLOW_CUSTOM_MODEL") == "1"):
         return local_review(criteria, pages, "Model review requires an enabled local operator server.")
     key = os.environ.get("ANTHROPIC_API_KEY")
