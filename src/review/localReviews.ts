@@ -143,9 +143,17 @@ function findingRange(reviewKey: string) {
   return IDBKeyRange.bound([reviewKey], [reviewKey, []]);
 }
 
+function restoreFinding(state: FindingState): FindingState {
+  // In the original guide editor, choosing a disposition saved the action immediately.
+  if (state.resolved === undefined && state.decision?.action && !state.decision.value) {
+    return { ...state, resolved: true, decision: { ...state.decision, value: 'confirmed' } };
+  }
+  return state;
+}
+
 async function findingsIn(tx: IDBTransaction, key: string): Promise<Map<string, FindingState>> {
   const rows: FindingEntry[] = await request(tx.objectStore('findings').getAll(findingRange(key)));
-  return new Map(rows.map(row => [row.findingKey, row.state]));
+  return new Map(rows.map(row => [row.findingKey, restoreFinding(row.state)]));
 }
 
 export function readFindings(key: string): Promise<Map<string, FindingState>> {
@@ -220,7 +228,7 @@ export function claimSavedReview(key: string, expectedOwner: string, newOwner: s
 }
 
 export function mergeFinding(previous: FindingState | undefined, changes: FindingState): FindingState {
-  const state = { ...previous, ...changes };
+  const state = { resolved: false, ...previous, ...changes };
   if (state.decision?.value !== previous?.decision?.value) state.resolved = !!state.decision?.value;
   return state;
 }
@@ -239,7 +247,7 @@ async function moveEntry(catalog: IDBObjectStore, meta: CatalogEntry, direction:
 async function editFinding(store: IDBObjectStore, reviewKey: string, findingKey: string, changes: FindingState) {
   const key = [reviewKey, findingKey];
   const previous: FindingEntry | undefined = await request(store.get(key));
-  const state = mergeFinding(previous?.state, changes);
+  const state = mergeFinding(previous && restoreFinding(previous.state), changes);
   if (state.decision || state.resolved) store.put({ reviewKey, findingKey, state } satisfies FindingEntry);
   else store.delete(key);
 }

@@ -136,6 +136,17 @@ export const responseLabels: Record<NonNullable<Decision['value']>, string> = {
   flagged: 'Flagged for follow-up',
 };
 
+export function decisionStatusLabel(decision: Decision, mode: Mode): string {
+  if (!decision.value) return 'Draft';
+  if (mode === 'guide' && decision.value === 'confirmed') return 'Saved';
+  return responseLabels[decision.value];
+}
+
+export function decisionLabel(decision: Decision, mode: Mode): string {
+  const status = decisionStatusLabel(decision, mode);
+  return mode === 'guide' && decision.action ? status + ' · ' + policyActionLabels[decision.action] : status;
+}
+
 export type ReviewRow = {
   finding: Finding;
   index: number;
@@ -151,10 +162,6 @@ export type SavedResponse = ReviewRow & { decision: Decision };
 
 export function samePassage(left: Evidence, right: Evidence): boolean {
   return left.documentId === right.documentId && left.page === right.page && left.quote === right.quote;
-}
-
-export function assessmentLabel(finding: Finding): string {
-  return finding.analysisEngine === 'anthropic' ? 'Model assessment' : 'Keyword search';
 }
 
 export function guideSourceLabel(finding: Finding): string {

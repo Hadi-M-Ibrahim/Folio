@@ -20,6 +20,17 @@ def response_request(**changes):
     }
 
 
+def guide_request(**changes):
+    policy, exception = response_request()["citations"]
+    return {
+        "mode": "guide", "action": "draft", "disposition": "update", "status": "mixed",
+        "obligation": "Notify all applicants in writing.",
+        "guidePassage": "Applicants must receive a written notice, including for urgent requests.",
+        "assessment": "The urgent exception conflicts with the guide.", "actionText": "", "citations": [],
+        "supporting": [policy], "counter": [exception], "candidates": [exception], **changes,
+    }
+
+
 class ResponseDraftTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True))
@@ -49,6 +60,52 @@ class ResponseDraftTests(unittest.TestCase):
         body = json.loads(self.send.call_args.args[0].data)
         self.assertIn("Explicitly state what the available evidence cannot establish", body["system"])
         self.assertEqual(json.loads(body["messages"][0]["content"])["citations"], [])
+
+    def test_guide_actions_send_the_disposition_and_both_sides_of_the_finding_to_the_model(self):
+        proposal = {"actionText": "Amend the notice policy to require written notice even for urgent requests."}
+        for action in draft.INSTRUCTIONS:
+            for disposition in draft.DISPOSITIONS:
+                with self.subTest(action=action, disposition=disposition):
+                    self.send.reset_mock()
+                    self.send.return_value = tool_response("record_policy_action_draft", proposal)
+                    payload = guide_request(action=action, disposition=disposition,
+                                            actionText="" if action == "draft" else "Keep written notices for urgent requests.")
+                    self.assertEqual(draft.draft_response(payload), proposal)
+                    self.send.assert_called_once()
+                    body = json.loads(self.send.call_args.args[0].data)
+                    self.assertEqual(body["tools"], [draft.GUIDE_TOOL])
+                    self.assertIn(draft.DISPOSITIONS[disposition], body["system"])
+                    if action != "draft":
+                        self.assertIn(draft.INSTRUCTIONS[action], body["system"])
+                    self.assertEqual(json.loads(body["messages"][0]["content"]), payload)
+
+    def test_guide_action_without_policy_evidence_still_uses_the_guide_and_names_the_gap(self):
+        proposal = {"actionText": "Propose written notice for urgent requests. Current policy coverage needs verification."}
+        self.send.return_value = tool_response("record_policy_action_draft", proposal)
+        payload = guide_request(status="insufficient", disposition="write", supporting=[], counter=[], candidates=[])
+        self.assertEqual(draft.draft_response(payload), proposal)
+        body = json.loads(self.send.call_args.args[0].data)
+        self.assertIn("No policy excerpts are available", body["system"])
+        self.assertEqual(json.loads(body["messages"][0]["content"])["guidePassage"], payload["guidePassage"])
+
+    def test_guide_context_and_results_are_bounded_to_one_policy_action(self):
+        passage = guide_request()["counter"][0]
+        for changes in (
+            {"disposition": None}, {"disposition": "approve"}, {"guidePassage": "g" * 12_001}, {"obligation": " "},
+            {"documents": []}, {"action": "expand", "actionText": " "}, {"actionText": "x" * (draft.MAX_ANSWER_CHARS + 1)},
+            {"supporting": [dict(passage, page=0)]}, {"counter": [passage] * (draft.MAX_CITATIONS + 1)},
+            {"candidates": [{"document": "entire policy"}]}, {"citations": "incorrect"},
+        ):
+            with self.subTest(fields=list(changes)), self.assertRaises(InvalidRequest):
+                draft.draft_response(guide_request(**changes))
+        self.send.assert_not_called()
+        original = guide_request(action="simplify", actionText="Retain my original draft.")
+        for result in ({"answer": "wrong tool field"}, {"actionText": ""}, {"actionText": "Proposed text.", "confirmed": True},
+                       {"actionText": "x" * (draft.MAX_ANSWER_CHARS + 1)}):
+            with self.subTest(fields=list(result)), self.assertRaises(model.ProviderUnavailable):
+                self.send.return_value = tool_response("record_policy_action_draft", result)
+                draft.draft_response(original)
+        self.assertEqual(original["actionText"], "Retain my original draft.")
 
     def test_malformed_or_oversize_context_never_reaches_transport(self):
         cite = response_request()["citations"][0]

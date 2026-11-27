@@ -154,6 +154,14 @@ def provider_reply(outgoing, *, timeout):
         else:
             answer = "The coordinator records the date."
         result = {"answer": answer}
+    elif name == "record_policy_action_draft":
+        wording = {
+            "draft": "Document who signs the inspection log at closing.",
+            "shorten": "Document the log signer.",
+            "simplify": "Say who signs the log.",
+            "expand": data["actionText"] + " Include the sign-off step in the closing instructions.",
+        }
+        result = {"actionText": wording[data["action"]]}
     elif name == "record_search_plan":
         if any(unit["text"] == "1. Who keeps inspection log 1?" for unit in data["sources"]):
             # No usable plan on the very first part of the 65-question PDF.

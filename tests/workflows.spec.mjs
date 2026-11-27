@@ -153,10 +153,13 @@ async function providerCalls(response) {
   return JSON.parse(await response.headerValue('x-test-provider-calls'));
 }
 
-async function report(page, name) {
+async function outputPdfText(page, tabName) {
+  const header = page.locator('.workspace > header');
+  await expect(header.getByRole('button', { name: /download/i })).toHaveCount(0);
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: tabName, exact: true }).click();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name }).click();
-  return readFile(await (await download).path(), 'utf8');
+  await page.getByRole('region', { name: tabName, exact: true }).getByRole('button', { name: 'Download PDF' }).click();
+  return (await pdfPageTexts(await download)).join(' ');
 }
 
 async function pdfPageTexts(download) {
@@ -679,9 +682,9 @@ test('a browser that denies IndexedDB warns the analyst and keeps the current re
   await page.getByLabel('Response for submission').fill(answer);
   await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
   await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
-  const output = await report(page, 'Download responses');
+  const output = await outputPdfText(page, 'Responses');
   expect(output).toContain(answer);
-  expect(output).toContain('Response status — Confirmed');
+  expect(output).toContain('Question 1 · Confirmed');
   await expect(warning).toBeVisible();
 });
 
@@ -697,25 +700,85 @@ test('a completed guide keeps its saved action and original cited PDFs when reop
   await uploadPdf(page, 'Upload regulatory guide', 'Closing guide.pdf', guide);
   await clickReview(page, 'guide');
   await expect(page.getByRole('heading', { name: duty, exact: true })).toBeVisible();
+  const resolve = page.getByRole('button', { name: 'Resolve obligation 1', exact: true });
+  await resolve.click();
+  await page.getByRole('button', { name: 'Reopen obligation 1', exact: true }).click();
+  await expect(resolve).toBeVisible();
+  await page.getByRole('button', { name: 'Cite in action', exact: true }).first().click();
   await page.getByRole('radio', { name: 'Write new policy', exact: true }).check();
+  const actionText = 'Require staff to sign the closing log.';
+  await page.getByLabel('Policy action draft', { exact: true }).fill(actionText);
   await page.getByLabel('Action note').fill(note);
+  await page.getByRole('button', { name: 'Save action', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Edit action' })).toHaveAccessibleDescription('Policy action saved');
   const reviewUrl = page.url();
   const reopened = await context.newPage();
   await page.close();
   const requests = captureReviewRequests(reopened);
   await reopened.goto(reviewUrl);
+  await expect(reopened.getByRole('button', { name: 'Reopen obligation 1', exact: true })).toBeVisible();
+  await expect(reopened.getByLabel('Policy action draft')).toBeHidden();
+  await reopened.getByRole('button', { name: 'Edit action', exact: true }).click();
   await expect(reopened.getByRole('radio', { name: 'Write new policy', exact: true })).toBeChecked();
+  await expect(reopened.getByLabel('Policy action draft')).toHaveValue(actionText);
   await expect(reopened.getByLabel('Action note')).toHaveValue(note);
+  const citations = reopened.getByRole('list').filter({ has: reopened.getByRole('button', { name: 'Remove action citation 1' }) });
   for (const [title, number, quote] of [['Closing guide.pdf', 2, duty], ['Closing policy.pdf', 1, passage]]) {
-    await reopened.getByRole('button', { name: new RegExp(title + '.*p\\. ' + number) }).first().click();
+    const source = title === 'Closing policy.pdf' ? citations : reopened;
+    await source.getByRole('button', { name: new RegExp(title + '.*p\\. ' + number) }).click();
     const dialog = reopened.getByRole('dialog');
     await expectPdfCanvas(dialog, title, number);
     await expect(dialog.getByRole('complementary', { name: 'Cited passage' })).toContainText(quote);
     await expect(dialog.locator('.pdf-text-layer mark').first()).toBeVisible();
     await reopened.keyboard.press('Escape');
   }
-  expect(await report(reopened, 'Download action list')).toContain(note);
+  const pdf = await outputPdfText(reopened, 'Action list');
+  for (const value of ['Obligation 1 · Saved', note, actionText, 'Closing policy.pdf · p. 1', passage]) expect(pdf).toContain(value);
   expect(requests).toHaveLength(0);
+});
+
+test('guide actions saved by the original editor reopen with their disposition and note', async ({ page }) => {
+  const duty = 'Staff must sign the inspection register.';
+  const note = 'Add a signature line to the original register.';
+  await page.goto('/#/new/guide');
+  await addPolicy(page, 'Closing.txt', 'The coordinator keeps the inspection register.');
+  await continueToSource(page, 'guide');
+  const assessment = page.waitForResponse('**/api/review');
+  await pasteSource(page, 'guide', duty);
+  const response = await submitReview(page, 'guide', assessment);
+  await expect(page.getByRole('heading', { name: duty, exact: true })).toBeVisible();
+  const reviewKey = new URL(page.url()).hash.slice('#/review/'.length);
+  const findingId = (await response.json()).findings[0].id;
+  await page.evaluate(({ reviewKey, findingId, note }) => new Promise((resolve, reject) => {
+    const open = indexedDB.open('folio-local-reviews');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const transaction = db.transaction('findings', 'readwrite');
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+      transaction.objectStore('findings').put({
+        reviewKey, findingKey: reviewKey + '/' + findingId,
+        state: { decision: { action: 'update', note, at: '2025-08-01T00:00:00.000Z' } },
+      });
+    };
+  }), { reviewKey, findingId, note });
+
+  await page.reload();
+  const edit = page.getByRole('button', { name: 'Edit action', exact: true });
+  const resolve = page.getByRole('button', { name: 'Resolve obligation 1', exact: true });
+  await expect(edit).toHaveAccessibleDescription('Policy action saved');
+  await page.getByRole('button', { name: 'Reopen obligation 1', exact: true }).click();
+  await page.reload();
+  await expect(resolve).toBeVisible();
+  await edit.click();
+  await expect(page.getByRole('radio', { name: 'Update existing policy' })).toBeChecked();
+  await expect(page.getByLabel('Action note')).toHaveValue(note);
+  const replacement = 'Add the signature line before the next print run.';
+  await page.getByLabel('Action note').fill(replacement);
+  await page.reload();
+  await expect(page.getByLabel('Action note')).toHaveValue(replacement);
+  await expect(resolve).toBeVisible();
 });
 
 test('renaming, moving and deleting a saved review persist independently', async ({ page }) => {
@@ -1129,10 +1192,11 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(editor).toHaveValue('The facilities coordinator.');
   await tools.getByRole('button', { name: 'Simplify' }).click();
   await expect(editor).toHaveValue('The coordinator records the date.');
-  const draft = await report(page, 'Download responses');
-  expect(draft).toContain('Response status — Draft');
+  const draft = await outputPdfText(page, 'Responses');
+  expect(draft).toContain('Question 1 · Draft');
   expect(draft).toContain('The coordinator records the date.');
-  expect(draft).toContain('Facilities.txt, p. 1');
+  expect(draft).toContain('Facilities.txt · p. 1');
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review questions' }).click();
   await page.getByRole('button', { name: 'Remove response citation 1' }).click();
   await page.getByLabel('Response for submission').fill('The facilities coordinator.');
   const confirm = page.getByRole('button', { name: 'Confirm response', exact: true });
@@ -1149,10 +1213,10 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(editor).toBeHidden();
   await expect(tools).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Response citations' })).toBeHidden();
-  const output = await report(page, 'Download responses');
+  const output = await outputPdfText(page, 'Responses');
   expect(output).toContain('The facilities coordinator.');
   expect(output).toContain('Confirmed');
-  expect(output).toContain('Facilities.txt, p. 1');
+  expect(output).toContain('Facilities.txt · p. 1');
   expect(output).toContain(policy);
   await page.getByRole('link', { name: 'All reviews' }).click();
   await expect(options).toBeInViewport();
@@ -1168,7 +1232,8 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await page.getByRole('button', { name: 'Flag for follow-up', exact: true }).click();
   await expect(reopen).toHaveAccessibleDescription('Flagged for follow-up');
   await expect(editor).toBeHidden();
-  expect(await report(page, 'Download responses')).toContain('Response status — Flagged for follow-up');
+  expect(await outputPdfText(page, 'Responses')).toContain('Question 1 · Flagged for follow-up');
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review questions' }).click();
   await reopen.click();
   await expect(editor).toHaveValue('The facilities coordinator.');
   await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
@@ -1573,6 +1638,64 @@ for (const hasAppendix of [true, false]) {
   });
 }
 
+test('a guide action can be generated, revised, saved without citations, and edited', async ({ page }) => {
+  const duty = 'Staff must sign the inspection log at closing.';
+  const passage = 'The coordinator signs the inspection log at closing.';
+  await page.goto('/#/new/guide');
+  await addPolicy(page, 'Closing.txt', passage);
+  await continueToSource(page, 'guide');
+  await pasteSource(page, 'guide', duty);
+  await clickReview(page, 'guide');
+
+  const draft = page.getByLabel('Policy action draft');
+  const tools = page.getByRole('group', { name: 'Policy action writing tools' });
+  const save = page.getByRole('button', { name: 'Save action', exact: true });
+  await expect(save).toBeDisabled();
+  const endpoint = '**/api/review?operation=draft';
+  const generation = page.waitForResponse(endpoint);
+  await tools.getByRole('button', { name: 'Generate policy action' }).click();
+  const generated = await generation;
+  const evidence = { title: 'Closing.txt', page: 1, quote: passage };
+  expect(generated.request().postDataJSON()).toMatchObject({
+    mode: 'guide', action: 'draft', obligation: duty, guidePassage: duty, disposition: 'no_change', actionText: '',
+    status: 'supported', assessment: passage, supporting: [evidence], candidates: [evidence], counter: [], citations: [],
+  });
+  expect(await providerCalls(generated)).toEqual([{ tool: 'record_policy_action_draft', documents: [] }]);
+  await expect(draft).toHaveValue('Document who signs the inspection log at closing.');
+  await expect(page.getByRole('radio', { name: 'No change', exact: true })).toBeChecked();
+  await expect(page.getByRole('heading', { name: 'Action citations' })).toHaveCount(0);
+
+  await page.getByRole('radio', { name: 'Update existing policy', exact: true }).check();
+  await page.getByRole('button', { name: 'Cite in action', exact: true }).first().click();
+  await tools.getByRole('button', { name: 'Shorten' }).click();
+  await expect(draft).toHaveValue('Document the log signer.');
+  const revision = page.waitForResponse(endpoint);
+  await tools.getByRole('button', { name: 'Add detail' }).click();
+  expect((await revision).request().postDataJSON()).toMatchObject({
+    action: 'expand', disposition: 'update', actionText: 'Document the log signer.', citations: [evidence],
+  });
+  await expect(draft).toHaveValue('Document the log signer. Include the sign-off step in the closing instructions.');
+  await tools.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(draft).toHaveValue('Document the log signer.');
+  await tools.getByRole('button', { name: 'Simplify' }).click();
+  await expect(draft).toHaveValue('Say who signs the log.');
+  await page.getByRole('button', { name: 'Remove action citation 1' }).click();
+  await expect(page.getByRole('button', { name: 'Cite in action', exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Action citations' })).toHaveCount(0);
+  const edited = 'Name the closing supervisor in the signature procedure.';
+  await draft.fill(edited);
+  await save.click();
+  const edit = page.getByRole('button', { name: 'Edit action', exact: true });
+  await expect(edit).toHaveAccessibleDescription('Policy action saved');
+  await expect(page.getByRole('button', { name: 'Reopen obligation 1' })).toBeVisible();
+  await expect(draft).toBeHidden();
+  await edit.click();
+  await expect(draft).toHaveValue(edited);
+  await draft.fill('Assign the signature step to the on-duty supervisor.');
+  await expect(page.getByRole('button', { name: 'Resolve obligation 1' })).toBeVisible();
+  await expect(save).toBeEnabled();
+});
+
 test('a guide compared with an uploaded policy produces an action list with a traceable source page', async ({ page }) => {
   const obligation = 'Teams must log the inspection date before handover.';
   await page.goto('/');
@@ -1598,15 +1721,133 @@ test('a guide compared with an uploaded policy produces an action list with a tr
   await page.keyboard.press('Escape');
   await page.getByRole('radio', { name: 'Write new policy', exact: true }).check();
   await page.getByLabel('Action note').fill('Add an inspection record to the handover procedure.');
-  const output = await report(page, 'Download action list');
+  const output = await outputPdfText(page, 'Action list');
   expect(output).toContain('Write new policy');
   expect(output).toContain('Guide pages 2');
   expect(output).toContain('Handover.txt · p. 2');
   expect(output).toContain(obligation);
   expect(output).toContain('Add an inspection record to the handover procedure.');
-  await page.getByRole('button', { name: 'Action list', exact: true }).click();
   await expect(page.getByRole('button', { name: /Write new policy/ })).toContainText(obligation);
-  await expect(page.getByRole('region', { name: 'Action list' }).getByRole('button', { name: 'Download PDF' })).toHaveCount(0);
+});
+
+test('an unrelated obligation edit in another tab preserves an in-flight action rewrite', async ({ page, context }) => {
+  await page.goto('/#/new/guide');
+  await addPolicy(page, 'Closing.txt', 'The coordinator signs the inspection log at closing.');
+  await continueToSource(page, 'guide');
+  await pasteSource(page, 'guide', 'Staff must sign the inspection log.\nStaff must archive the inspection log.');
+  await clickReview(page, 'guide');
+  const draft = page.getByLabel('Policy action draft');
+  await draft.fill('Add a sign-off to the log.');
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(other.getByLabel('Policy action draft')).toHaveValue('Add a sign-off to the log.');
+  await other.getByRole('button', { name: 'Next obligation' }).click();
+
+  const held = Promise.withResolvers();
+  await page.route('**/api/review?operation=draft', route => held.resolve(route), { times: 1 });
+  await page.getByRole('button', { name: 'Shorten', exact: true }).click();
+  const route = await held.promise;
+  try {
+    await other.getByRole('button', { name: 'Flag for follow-up' }).click();
+    await expect(page.getByText('1 of 2 resolved', { exact: false })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Shortening…' })).toBeDisabled();
+  } finally {
+    await route.fulfill({ json: { actionText: 'Add a sign-off.' } });
+  }
+  await expect(draft).toHaveValue('Add a sign-off.');
+});
+
+test('the guide queue tracks resolution independently and exports the action list with original page references', async ({ page, context }) => {
+  const duties = ['Staff must review access permits.', 'Staff must verify entries in the inspection log.',
+    'Managers must record maintenance exceptions.', 'Managers must keep a copy of each declaration.'];
+  const guide = await printPdf(context, [duties[0], 'Overview.', duties[1], 'Index.', duties[2], duties[3]]);
+  const suggested = 'The coordinator verifies entries in the inspection log.';
+  const selected = 'Renée records each inspection log exception in the café register.';
+  const policy = [suggested, 'Opening times are posted on the door.', selected];
+  await page.goto('/#/new/guide');
+  await addPolicy(page, 'Register.txt', policy.join('\f'));
+  await continueToSource(page, 'guide');
+  const initial = waitForBackgroundReview(page);
+  await uploadPdf(page, 'Upload regulatory guide', 'Inspection.pdf', guide);
+  await initial;
+  await chooseRange(page, 'Choose guide pages', /Guide pages/, '1, 3, 5–6');
+  await clickReview(page, 'guide');
+
+  const queue = page.getByRole('complementary', { name: 'Review queue' });
+  const showList = queue.getByRole('button', { name: /Show list/ });
+  const open = queue.getByRole('region', { name: 'Open obligations' });
+  const resolved = queue.getByRole('region', { name: 'Resolved obligations' });
+  const tabs = page.getByRole('navigation', { name: 'This review' });
+  const list = page.getByRole('region', { name: 'Action list', exact: true });
+  const pdf = list.getByRole('button', { name: 'Download PDF', exact: true });
+  await expect(queue).toBeVisible();
+  if (await showList.isVisible()) await showList.click();
+  await open.getByRole('button', { name: 'Resolve obligation 1' }).click();
+  await expect(open.locator('.row-name')).toHaveText(duties.slice(1));
+  await tabs.getByRole('button', { name: 'Action list' }).click();
+  await expect(pdf).toBeDisabled();
+  await tabs.getByRole('button', { name: 'Review obligations' }).click();
+
+  const next = page.getByRole('button', { name: 'Next obligation' });
+  await next.click();
+  await expect(page.getByRole('heading', { name: duties[1], exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Search trail' }).click();
+  const ranked = page.getByRole('region', { name: 'Relevant passages' });
+  const passage = ranked.getByRole('article').filter({ hasText: selected });
+  const cite = passage.getByRole('button', { name: 'Cite in action' });
+  if (!await cite.isVisible()) await passage.locator('summary').click();
+  await cite.click();
+  await page.getByRole('radio', { name: 'Update existing policy' }).check();
+  const action = 'Add a field for exceptions to the daily register.';
+  const note = 'Review the wording with the café coordinator.';
+  await page.getByLabel('Policy action draft').fill(action);
+  await page.getByLabel('Action note').fill(note);
+  await page.getByRole('button', { name: 'Save action', exact: true }).click();
+  await next.click();
+  await page.getByRole('button', { name: 'Flag for follow-up' }).click();
+  await next.click();
+  const unfinished = 'Check whether the archive needs another copy.';
+  await page.getByLabel('Policy action draft').fill(unfinished);
+  await page.reload();
+  await expect(page.getByLabel('Policy action draft')).toHaveValue(unfinished);
+  if (await showList.isVisible()) await showList.click();
+  await expect(open.locator('.row-name')).toHaveText([duties[3]]);
+  await queue.getByRole('button', { name: 'Resolved 3', exact: true }).click();
+  await expect(resolved.locator('.row-name')).toHaveText(duties.slice(0, 3));
+  await resolved.getByRole('button', { name: 'Reopen obligation 2' }).click();
+  await expect(open.locator('.row-name')).toHaveText([duties[1], duties[3]]);
+  await expect(open.getByRole('button', { name: /verify entries/ })).toContainText('Update existing policy');
+
+  await tabs.getByRole('button', { name: 'Action list' }).click();
+  const entries = list.locator('.decision-entry');
+  await expect(entries).toHaveCount(3);
+  await expect(entries.nth(0)).toContainText(action);
+  await expect(entries.nth(1)).toContainText('Flagged for follow-up');
+  await expect(entries.nth(2)).toContainText(unfinished);
+  await expect(page.getByRole('button', { name: /download/i })).toHaveCount(1);
+  await page.route('**/downloads/responses-v1.js', route => route.abort(), { times: 1 });
+  await pdf.click();
+  await expect(list.getByRole('alert')).toContainText('The PDF could not be downloaded');
+  const pending = page.waitForEvent('download');
+  await pdf.click();
+  const download = await pending;
+  expect(download.suggestedFilename()).toBe('folio-policy-action-list.pdf');
+  const text = (await pdfPageTexts(download)).join(' ');
+  await expect(list.getByRole('alert')).toHaveCount(0);
+  expect(text).toContain('Policy action list');
+  expect(text).not.toContain(duties[0]);
+  expect(text).not.toContain(suggested);
+  expect(text).not.toContain(policy[1]);
+  const headings = [...text.matchAll(/\bObligation (\d+)\b/g)];
+  expect(headings.map(match => Number(match[1]))).toEqual([2, 3, 4]);
+  const [saved, flagged, draft] = headings.map((heading, i) => text.slice(heading.index, headings[i + 1]?.index));
+  for (const value of [duties[1], 'Saved', 'Update existing policy', action, note, selected]) expect(saved).toContain(value);
+  expect(saved).toMatch(/Inspection\.pdf\s*·\s*p\. 3\b/);
+  expect(saved).toMatch(/Register\.txt\s*·\s*p\. 3\b/);
+  for (const value of [duties[2], 'Flagged for follow-up', 'Action pending']) expect(flagged).toContain(value);
+  expect(flagged).toMatch(/Inspection\.pdf\s*·\s*p\. 5\b/);
+  for (const value of [duties[3], 'Draft', unfinished]) expect(draft).toContain(value);
+  expect(draft).toMatch(/Inspection\.pdf\s*·\s*p\. 6\b/);
 });
 
 test('a pasted policy supplements the required upload when reviewing guide obligations', async ({ page }) => {
@@ -1657,9 +1898,8 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
   const list = page.getByRole('region', { name: 'Action list', exact: true });
   await expect(list.getByRole('button', { name: /No change/ })).toContainText(first);
   await expect(list.getByRole('button', { name: /Write new policy/ })).toContainText(second);
-  const output = await report(page, 'Download action list');
-  expect(output).toContain('## No change');
-  expect(output).toContain('Facilities policy, p. 1');
+  const output = await outputPdfText(page, 'Action list');
+  for (const value of [first, second, 'No change', 'Write new policy']) expect(output).toContain(value);
 });
 
 test('editing a selected question batch clears its previous source attribution', async ({ page }) => {
@@ -1676,7 +1916,7 @@ test('editing a selected question batch clears its previous source attribution',
   await expect(page.getByRole('button', { name: 'Apply range' })).toHaveCount(0);
 });
 
-test('Markdown exports keep document markup and multiline notes literal', async ({ page }) => {
+test('the action-list PDF keeps document markup and multiline notes literal', async ({ page }) => {
   const obligation = 'Teams must label each record with <unit> and [owner].';
   await page.goto('/#/new/guide');
   await addPolicy(page, 'Labelling.md', 'Records are labelled by unit and owner.');
@@ -1687,12 +1927,12 @@ test('Markdown exports keep document markup and multiline notes literal', async 
   });
   await submitReview(page, 'guide', pending);
   await page.getByLabel('Action note').fill('Retain ![diagram](diagram.png).\n## Example heading');
-  const output = await report(page, 'Download action list');
-  expect(output).toContain('Guide &#91;draft&#93;');
-  expect(output).toContain('&#60;unit&#62; and &#91;owner&#93;');
-  expect(output).toContain('&#33;&#91;diagram&#93;(diagram.png)');
-  expect(output).toContain('&#35;&#35; Example heading');
-  expect(output).toContain('## Action pending');
+  const output = await outputPdfText(page, 'Action list');
+  expect(output).toContain('Guide [draft]');
+  expect(output).toContain('<unit> and [owner]');
+  expect(output).toContain('![diagram](diagram.png)');
+  expect(output).toContain('## Example heading');
+  expect(output).toContain('Action pending');
 });
 
 test('intake checks page limits and can read a PDF after rejecting a file', async ({ page, context }) => {
@@ -1799,7 +2039,7 @@ test('Find evidence stays in reach on a short screen with a long PDF filename', 
   await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), name, 1);
   await expect(submit).toBeInViewport({ ratio: 1 });
   await submit.click();
-  await expect(page.getByRole('button', { name: 'Download responses' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '1. Who records the inspection?', exact: true })).toBeVisible();
 });
 
 test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
@@ -1965,13 +2205,12 @@ for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]
 }
 
 async function finishDocumentReview(page, mode, requests = captureReviewRequests(page)) {
-  const guide = mode === 'guide';
   await clickReview(page, mode);
-  const download = page.getByRole('button', { name: guide ? 'Download action list' : 'Download responses' });
+  const navigation = page.getByRole('navigation', { name: 'This review' });
   const alert = page.getByRole('alert');
-  await expect(download.or(alert).first()).toBeVisible({ timeout: 60_000 });
+  await expect(navigation.or(alert).first()).toBeVisible({ timeout: 60_000 });
   await expect(alert).toHaveCount(0);
-  await expect(download).toBeVisible();
+  await expect(navigation).toBeVisible();
   const parts = [];
   for (const request of requests) {
     const response = await request.response();
@@ -1992,7 +2231,7 @@ async function selectLastFinding(page, questions) {
   await expect(page.getByRole('heading', { name: questions.at(-1), exact: true })).toBeVisible();
 }
 
-test('one submission recovers late incomplete batches and exports all 65 questions against a full policy PDF', async ({ page, context }) => {
+test('one submission reviews all 65 questions against a full policy PDF and exports the final confirmed response', async ({ page, context }) => {
   test.setTimeout(120_000);
   const questions = Array.from({ length: 65 }, (_, i) => `${i + 1}. Who keeps inspection log ${i + 1}?`);
   questions[32] = '33. Who keeps the inspection log covering ' + 'archived inspection entries and '.repeat(73) + 'the final register?';
@@ -2058,15 +2297,12 @@ test('one submission recovers late incomplete batches and exports all 65 questio
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Generate response' }).click();
   await page.getByRole('button', { name: 'Confirm response' }).click();
-  const output = await report(page, 'Download responses');
-  expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) =>
-    `## Question ${i + 1}. ${question.replace(/^([0-9]+)\./, '$1&#46;')}`));
-  expect(output.match(/^Response status — Confirmed$/gm)).toHaveLength(1);
-  expect(output.match(/^Response status — Pending$/gm)).toHaveLength(64);
-  const finalResponse = output.slice(output.indexOf('## Question 65.'), output.indexOf('## Evidence and search record'));
-  expect(finalResponse).toContain('Response status — Confirmed');
-  expect(finalResponse).toContain('Records.pdf, p. 145');
-  expect(finalResponse).toContain(policyQuote);
+  const output = await outputPdfText(page, 'Responses');
+  expect(output.match(/\bQuestion \d+\b/g)).toEqual(['Question 65']);
+  expect(output).toContain('Question 65 · Confirmed');
+  expect(output).toContain(questions.at(-1));
+  expect(output).toContain('Records.pdf · p. 145');
+  expect(output).toContain(policyQuote);
 });
 
 test('a full native guide preserves repeated Unicode-positioned duties across empty and populated parts', async ({ page, context }) => {
@@ -2126,6 +2362,8 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   }
   expect(cursor).toBe(expectedGuide.length);
 
+  await expect(page.getByRole('heading', { name: repeated, exact: true })).toBeVisible();
+  await page.getByLabel('Action note').fill('Check the opening register.');
   await selectLastFinding(page, questions);
   await page.getByRole('button', { name: /Archive\.pdf.*p\. 30/ }).click();
   const citation = page.getByRole('dialog');
@@ -2133,14 +2371,15 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   await expect(citation.getByRole('complementary', { name: 'Cited passage' })).toContainText(repeated);
   await expect(citation.locator('.pdf-text-layer mark').first()).toBeVisible();
   await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Cite in action' }).first().click();
+  await page.getByRole('radio', { name: 'No change', exact: true }).check();
   await page.getByLabel('Action note').fill('Verify the final register.');
-  const output = await report(page, 'Download action list');
-  const [actions, evidence] = output.split('## Evidence and search record');
-  expect(actions.match(/^### Obligation \d+$/gm)).toEqual(questions.map((_, i) => `### Obligation ${i + 1}`));
-  expect(actions.match(/^> .+$/gm)).toEqual(questions.map(question => '> ' + question));
-  expect(actions.slice(actions.indexOf('### Obligation 38'))).toContain('Archive.pdf · p. 30');
-  expect(actions).toContain('Verify the final register.');
-  expect(evidence).toContain('Archive policy.txt, p. 1');
+  await page.getByRole('button', { name: 'Save action', exact: true }).click();
+  const output = await outputPdfText(page, 'Action list');
+  expect(output.match(/\bObligation \d+\b/g)).toEqual(['Obligation 1', 'Obligation 38']);
+  const [first, last] = output.split('Obligation 38 · Saved');
+  for (const value of ['Obligation 1 · Draft', repeated, 'Archive.pdf · p. 1', 'Check the opening register.']) expect(first).toContain(value);
+  for (const value of [repeated, 'Archive.pdf · p. 30', 'No change', 'Verify the final register.', 'Archive policy.txt · p. 1']) expect(last).toContain(value);
 });
 
 test('a guide planning timeout splits at complete duties and retry resumes at the failed page', async ({ page, context }) => {
@@ -2166,11 +2405,12 @@ test('a guide planning timeout splits at complete duties and retry resumes at th
   const parts = duties.map((text, i) => ({ text, pages: [i + 1] }));
   expect(sent).toEqual([{ text: duties.join(' '), pages: [1, 2] }, ...parts]);
   await submit.click();
-  await expect(page.getByRole('button', { name: 'Download action list' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: duties[0], exact: true })).toBeVisible();
   expect(sent.slice(3)).toEqual([parts[1]]);
-  const output = await report(page, 'Download action list');
-  expect(output).toContain('Register.pdf · p. 1');
-  expect(output).toContain('Register.pdf · p. 2');
+  await expect(page.getByRole('button', { name: 'Register.pdf · p. 1', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Next obligation' }).click();
+  await expect(page.getByRole('heading', { name: duties[1], exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Register.pdf · p. 2', exact: true })).toBeVisible();
 });
 
 test('a complete scanned form joins a question across transcription requests before assessment', async ({ page, context }) => {
@@ -2203,8 +2443,8 @@ test('a complete scanned form joins a question across transcription requests bef
   expect(reviews.flatMap(({ input }) => input.questions)).toEqual(questions);
   expect(reviews.flatMap(({ result }) => result.findings.map(finding => finding.question))).toEqual(questions);
   await selectLastFinding(page, questions);
-  const output = await report(page, 'Download responses');
-  expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) => `## Question ${i + 1}. ${question}`));
+  await page.getByRole('button', { name: 'Previous question' }).click();
+  await expect(page.getByRole('heading', { name: questions[2], exact: true })).toBeVisible();
 });
 
 test('retrying a whole questionnaire resumes after the last successful part', async ({ page }, testInfo) => {
@@ -2230,7 +2470,7 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   expect(firstAttempt[0].status()).toBe(429);
   expect(firstAttempt[1].request().postDataJSON()).toEqual(firstAttempt[0].request().postDataJSON());
   expect(firstAttempt.at(-1).status()).toBe(503);
-  await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'This review' })).toHaveCount(0);
   const completedQuestions = firstAttempt.slice(1, -1).flatMap(response => {
     expect(response.status()).toBe(200);
     return response.request().postDataJSON().questions;
@@ -2239,8 +2479,6 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   expect(retry[0].input).toEqual(firstAttempt.at(-1).request().postDataJSON());
   expect([...completedQuestions, ...retry.flatMap(({ input }) => input.questions)]).toEqual(questions);
   await selectLastFinding(page, questions);
-  const output = await report(page, 'Download responses');
-  expect(output.match(/^## Question .+$/gm)).toHaveLength(questions.length);
 });
 
 test('cancelling a paused multipart review keeps completed work for the next submission', async ({ page }) => {
@@ -2268,7 +2506,7 @@ test('cancelling a paused multipart review keeps completed work for the next sub
   await expect(progress).toHaveAttribute('aria-valuenow', '10');
   await page.getByRole('button', { name: 'Cancel review' }).click();
   await expect(page.getByRole('button', { name: 'Find evidence' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'This review' })).toHaveCount(0);
   await page.getByRole('navigation', { name: 'Review steps' }).getByRole('button', { name: /Existing policies/ }).click();
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Registry.txt');
   await continueToSource(page, 'questionnaire');

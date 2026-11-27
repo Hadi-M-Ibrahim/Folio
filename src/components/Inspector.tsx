@@ -1,6 +1,6 @@
 import { BookOpen, SquareArrowOutUpRight } from 'lucide-react';
 import { samePassage, statusLabels, type Decision, type Evidence, type Mode, type Policy, type ReviewRow } from '../review/model';
-import { PolicyActionEditor, ResponseEditor } from './DecisionEditor';
+import { DecisionEditor } from './DecisionEditor';
 import { PolicyEvidence } from './PolicyEvidence';
 import './Inspector.css';
 
@@ -29,9 +29,7 @@ export function Inspector({
 
   function updateDecision(changes: Partial<Omit<Decision, 'at'>>) {
     const next = { ...decision, ...changes };
-    if (next.value === 'confirmed' && ('answer' in changes || 'citations' in changes)) {
-      next.value = undefined;
-    }
+    if (next.value === 'confirmed' && !('value' in changes)) next.value = undefined;
     onDecisionChange(
       next.answer || next.citations?.length || next.note || next.action || next.value
         ? { ...next, at: new Date().toISOString() }
@@ -68,14 +66,14 @@ export function Inspector({
           documents={documents}
           isGuide={isGuide}
           citations={citations}
-          onCite={isGuide ? undefined : toggleCitation}
+          onCite={toggleCitation}
+          citeLabel={isGuide ? 'Cite in action' : 'Cite in response'}
           onOpen={onOpen}
         />
       )}
       <div className="decision-footer">
-        {isGuide
-          ? <PolicyActionEditor decision={decision} onChange={updateDecision} />
-          : <ResponseEditor finding={finding} decision={decision} onChange={updateDecision} onOpen={onOpen} onRemoveCitation={toggleCitation} />}
+        <DecisionEditor mode={mode} finding={finding} decision={decision} onChange={updateDecision}
+          onOpen={onOpen} onRemoveCitation={toggleCitation} />
       </div>
     </section>
   );

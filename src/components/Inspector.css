@@ -45,6 +45,9 @@
   line-height: 1.5;
 }
 
+.action-note { color: var(--muted); }
+.action-note textarea { min-height: 58px; color: var(--ink); }
+
 .action-choices {
   margin: 0;
   padding: 0;
