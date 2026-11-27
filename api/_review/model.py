@@ -6,7 +6,7 @@ import os
 import random
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from contextvars import copy_context
 from email.utils import parsedate_to_datetime
@@ -467,9 +467,8 @@ def assess_batch(findings, pages, key, deadline, *, allow_followup=True, attachm
     raise IncompleteAssessment
 
 
-def assessment_batches(rows, run, required):
-    groups = batched(rows, BATCH_SIZE)
-    if not required or len(rows) <= BATCH_SIZE:
+def run_batches(groups, run, parallel, *, ordered=True):
+    if not parallel:
         for group in groups:
             yield run(group)
         return
@@ -481,23 +480,40 @@ def assessment_batches(rows, run, required):
             requests = [workers.submit(copy_context().run, run, group) for group in pair]
             # Do not subdivide a request because of a sibling's incomplete output if
             # another sibling already reported a cancellation, outage or account limit.
-            for job in requests:
-                failure = job.exception()
-                if failure and (isinstance(failure, ProviderServiceError) or not isinstance(failure, ProviderUnavailable)):
-                    raise failure
-            for job in requests:
+            for job in requests if ordered else as_completed(requests):
+                if job.exception() is not None:
+                    for sibling in requests:
+                        failure = sibling.exception()
+                        if failure and (isinstance(failure, ProviderServiceError) or not isinstance(failure, ProviderUnavailable)):
+                            raise failure
                 yield job.result()
 
 
-def assess_findings(findings, pages, key, deadline, *, allow_followup=True, attachments=(), require_complete=False):
+def report_progress(progress, stage, completed, total):
+    if progress and total:
+        progress(stage, completed, total)
+
+
+def assessment_batch_size(count, balance):
+    # Balance the two calls on a short guide. Keep one call for very small reviews.
+    return min(BATCH_SIZE, (count + 1) // 2) if balance and count >= 4 else BATCH_SIZE
+
+
+def assess_findings(findings, pages, key, deadline, *, allow_followup=True, attachments=(), require_complete=False, progress=None, guide=False):
     # Each completed batch replaces those local findings, preserving original criterion order.
     by_id = {row["id"]: row for row in findings}
-    def assess(rows, *, permit_lookup, required=False):
+    def assess(rows, *, permit_lookup, required=False, followup=False):
         run = partial(assess_batch, pages=pages, key=key, deadline=deadline, allow_followup=permit_lookup,
                       attachments=attachments, require_complete=required)
+        completed = len(findings) - len(rows) if followup else 0
+        stage = "references" if followup else "assessing"
+        report_progress(progress, stage, completed, len(findings))
+        size = assessment_batch_size(len(rows), guide and required)
         try:
-            for batch in assessment_batches(rows, run, required):
+            for batch in run_batches(batched(rows, size), run, required and len(rows) > size, ordered=False):
                 by_id.update((row["id"], row) for row in batch)
+                completed += len(batch) if followup else sum(not row.get("followup", {}).get("passages") for row in batch)
+                report_progress(progress, stage, completed, len(findings))
         except ProviderUnavailable as exc:
             if isinstance(exc, ProviderServiceError) and (required or not any(
                 row["analysisEngine"] == "anthropic" for row in by_id.values()
@@ -511,13 +527,18 @@ def assess_findings(findings, pages, key, deadline, *, allow_followup=True, atta
     assess(findings, permit_lookup=allow_followup, required=require_complete)
     # Give all criteria their first assessment before spending another model call.
     pending = [row for row in by_id.values() if row.get("followup", {}).get("passages")]
-    assess(pending, permit_lookup=False)
+    if pending:
+        assess(pending, permit_lookup=False, followup=True)
+    return assessment_result(by_id, pending)
+
+
+def assessment_result(by_id, pending):
     reviewed = list(by_id.values())
     assessed = sum(row["analysisEngine"] == "anthropic" for row in reviewed)
-    if assessed == len(findings):
+    if assessed == len(reviewed):
         notice = ""
     elif assessed:
-        notice = f"Anthropic assessed {assessed} of {len(findings)} criteria. Review the remaining criteria using their search results."
+        notice = f"Anthropic assessed {assessed} of {len(reviewed)} criteria. Review the remaining criteria using their search results."
     else:
         notice = "Anthropic could not complete its assessment. Review the search results for each criterion."
     if any(by_id[row["id"]] is row for row in pending):
@@ -533,7 +554,7 @@ def local_review(criteria, pages, *, document_part=False):
     return retrieve(pages, basic_plan(criteria)), "Review the ranked policy passages for each criterion.", "local", {}
 
 
-def model_review(payload, criteria, pages, local_operator=False):
+def model_review(payload, criteria, pages, local_operator=False, *, progress=None):
     check_finding_count(len(criteria))
     sharing_consent = payload.get("modelSharingConsent", payload.get("publicInputConsent", False))
     if not (payload.get("allowModel") and sharing_consent):
@@ -542,7 +563,7 @@ def model_review(payload, criteria, pages, local_operator=False):
             raise InvalidRequest("Reading scanned PDF pages requires consent to send the selected PDFs to Anthropic.")
         return local_review(criteria, pages, document_part=payload.get("documentPart", False))
     with provider_slot(local_operator) as key:
-        return review_with_provider(payload, criteria, pages, key)
+        return review_with_provider(payload, criteria, pages, key, progress=progress)
 
 
 @contextmanager
@@ -602,11 +623,12 @@ def review_plan(mode, source, criteria, key, deadline, source_pdf, document_part
         return plan, "local", plan_notice
 
 
-def review_with_provider(payload, criteria, pages, key):
+def review_with_provider(payload, criteria, pages, key, *, progress=None):
     from .pdf_context import verify_pdf_page_counts
     from .pdf_reader import read_pdf_text, read_source
 
-    deadline = time.monotonic() + REVIEW_SECONDS
+    started = time.monotonic()
+    deadline = started + REVIEW_SECONDS
     mode = payload["mode"]
     attachments = payload.get("pdfAttachments", [])
     verify_pdf_page_counts(attachments)
@@ -617,17 +639,26 @@ def review_with_provider(payload, criteria, pages, key):
     if payload.get("transcribeSourceOnly"):
         read_text = read_source(mode, source_pdf[0], key, deadline, document_part=True, require_complete=True)
         return [], transcript_notice, "anthropic", read_text
+    if progress and (payload.get("readSourcePdf") or any(not text.strip() for _, text in pages.values())):
+        progress("reading", 0, 0)
     read_text = read_pdf_text(mode, attachments, payload.get("readSourcePdf"), pages, key, deadline,
                              document_part=document_part, require_complete=require_complete)
     source_input = read_text if payload.get("readSourcePdf") else payload
     if payload.get("readSourcePdf"):
         criteria = source_criteria(mode, {**read_text, "documentPart": document_part})
     source = source_input["questions" if mode == "questionnaire" else "guide"]
+    if progress:
+        progress("planning", 0, 0)
     plan, planner, plan_notice = review_plan(mode, source, criteria, key, deadline, source_pdf, document_part, require_complete)
     findings = retrieve(pages, plan) if plan else []
     notice = ""
     if findings:
-        findings, notice = assess_findings(findings, pages, key, deadline, attachments=attachments, require_complete=require_complete)
+        if mode == "guide":
+            # Planning can consume most of the original budget. Give verified obligations
+            # their own assessment window, within Vercel's 180-second function limit.
+            deadline = min(started + 2 * REVIEW_SECONDS, time.monotonic() + REVIEW_SECONDS)
+        findings, notice = assess_findings(findings, pages, key, deadline, attachments=attachments,
+                                          require_complete=require_complete, progress=progress, guide=mode == "guide")
         if not any(row["analysisEngine"] == "anthropic" for row in findings):
             raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.")
     if plan_notice:

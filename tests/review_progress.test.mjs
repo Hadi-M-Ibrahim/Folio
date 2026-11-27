@@ -175,3 +175,49 @@ test('multipart quota waits use the current submission state and preserve comple
   assert.match(states[1].message, /Review paused at the submission limit/);
   assert.equal(states[2].message, states[0].message);
 });
+
+test('guide progress arrives before the result, including across network chunks', async t => {
+  const options = questionnaire(1);
+  options.input = { mode: 'guide', guide: 'Staff must sign.', documents: options.input.documents };
+  const encoder = new TextEncoder();
+  let stream;
+  const started = Promise.withResolvers();
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    assert.equal(init.headers.Accept, 'application/x-ndjson');
+    return new Response(new ReadableStream({ start(controller) { stream = controller; } }),
+      { headers: { 'Content-Type': 'application/x-ndjson' } });
+  });
+  const states = [];
+  const result = executeWholeReview({ ...options, onProgress(state) {
+    states.push(state);
+    if (state.phase === 'obligations') started.resolve();
+  } });
+  await new Promise(resolve => setImmediate(resolve));
+  stream.enqueue(encoder.encode('{"stage":"plan'));
+  stream.enqueue(encoder.encode('ning","completed":0,"total":0}\n{"stage":"assessing","completed":2,"total":4}\n'));
+  await started.promise;
+  assert.equal(states.at(-2).message, 'Identifying guide obligations…');
+  assert.deepEqual(states.at(-1), { phase: 'obligations', message: 'Checking policy evidence…', completed: 2, total: 4 });
+  stream.close();
+  await assert.rejects(result, /connection ended/);
+  assert.equal(states.at(-1).completed, 2);
+});
+
+test('a terminal guide error still subdivides and validates the smaller sections', async t => {
+  const options = questionnaire(1);
+  options.input = { mode: 'guide', guide: 'Staff must sign. Clerks must file.', documents: options.input.documents };
+  options.onProgress = () => {};
+  const pieces = [];
+  t.mock.method(globalThis, 'fetch', async (_url, { body }) => {
+    const { guide } = JSON.parse(body);
+    pieces.push(guide);
+    const event = pieces.length === 1
+      ? { status: 422, body: { code: 'review_part_too_large' } }
+      : { status: 200, body: { mode: 'guide', engine: 'anthropic', findings: [{ question: guide.trim() }] } };
+    return new Response(JSON.stringify(event) + '\n', { headers: { 'Content-Type': 'application/x-ndjson' } });
+  });
+  const result = await executeWholeReview(options);
+  assert.equal(pieces.length, 3);
+  assert.equal(pieces.slice(1).join(''), options.input.guide);
+  assert.deepEqual(result.findings.map(f => f.question), ['Staff must sign.', 'Clerks must file.']);
+});

@@ -38,6 +38,13 @@ class BrowserReviewHandler(review.handler):
         finally:
             transport.reset(token)
 
+    def reply(self, status, data, **kwargs):
+        if self.streaming and status == 200:
+            # Headers have already reached the browser. Put the completed test trace in the result.
+            trace = transport.get()
+            data = {**data, "testTrace": {"calls": trace.calls, "assessed": trace.assessed}}
+        return super().reply(status, data, **kwargs)
+
     def end_headers(self):
         # The browser test can compare the actual provider bytes with its uploaded and selected PDFs.
         trace = transport.get()

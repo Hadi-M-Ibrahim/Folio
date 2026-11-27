@@ -47,6 +47,28 @@ class HttpContractTests(unittest.TestCase):
         self.assertEqual(self.request(None, method="GET")[0], 405)
         self.assertEqual(self.request(path="/nonexistent")[0], 404)
 
+    def test_live_guide_reports_the_stage_before_work_finishes_and_preserves_terminal_errors(self):
+        current = threading.Event()
+        payload = sample("guide", guide="Staff must keep records.")
+        def review(payload, *, local_operator, progress):
+            progress("planning", 0, 0)
+            if not current.wait(3):
+                raise AssertionError("Progress did not reach the client before the result")
+            raise api.ReviewPartTooLarge("Split this guide.")
+
+        with (patch.object(api, "review", side_effect=review),
+              closing(http.client.HTTPConnection(*self.server.server_address, timeout=3)) as connection):
+            connection.request("POST", "/api/review", json.dumps(payload),
+                               {"Content-Type": "application/json", "Accept": "application/x-ndjson"})
+            response = connection.getresponse()
+            try:
+                self.assertEqual(response.getheader("Content-Type"), "application/x-ndjson")
+                self.assertEqual(json.loads(response.readline()), {"stage": "planning", "completed": 0, "total": 0})
+            finally:
+                current.set()
+            terminal = json.loads(response.read())
+            self.assertEqual((terminal["status"], terminal["body"]["code"]), (422, "review_part_too_large"))
+
     def test_http_size_limit_and_no_store_apply_before_body_read(self):
         status, headers, _ = self.request(None, headers={"Content-Length": str(api.MAX_BODY + 1)})
         self.assertEqual(status, 413)
