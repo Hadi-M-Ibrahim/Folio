@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Check, LoaderCircle } from 'lucide-react';
-import { checkInput, isLoopback } from '../review/client';
+import { checkInput, guidePolicyRequired, isLoopback } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
 import {
   MAX_POLICY_DOCUMENTS, readScope,
@@ -10,7 +10,7 @@ import { emptyPolicyDraft, PolicyFields } from './PolicyFields';
 import { questionsFromText } from './intakeQuestions';
 import { SourceFields, sourceFromDocument, type IntakeSource } from './SourceFields';
 import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
-import { prepareReview, reviewInput } from './intakeReview';
+import { needsPolicyFile, prepareReview, reviewInput, type IntakePolicy } from './intakeReview';
 import { ReviewProgress } from './ReviewProgress';
 import { useIntakeReview } from './useIntakeReview';
 import './intake.css';
@@ -26,8 +26,8 @@ const intakeCopy = {
   guide: {
     sourceLabel: 'Regulatory guide',
     sourceTitle: 'Review a new policy guide',
-    sourceIntro: 'Upload a guide PDF to start reviewing it with Anthropic, or paste the section you want to review.',
-    policyIntro: 'Add policies to compare with the guide, or review its obligations on their own.',
+    sourceIntro: 'Upload or paste the guide. On the next step, add an existing policy file to compare.',
+    policyIntro: 'Upload at least one existing policy file. The first upload starts the comparison with Anthropic.',
     submit: 'Review obligations',
   },
   questionnaire: {
@@ -50,7 +50,7 @@ async function readPreparedReview(file: File) {
   if (input.readSourcePdf || input.pdfAttachments || (Array.isArray(input.documents) && input.documents.some((doc) => doc?.pdfFile))) {
     throw Error('Upload original PDFs directly. Prepared reviews must contain text.');
   }
-  checkInput(input);
+  checkInput(input, { allowGuideDraft: true });
 
   let source: IntakeSource;
   if (input.mode === 'guide') {
@@ -101,8 +101,8 @@ function sharingDisclosure(mode: Mode, source: IntakeSource, documents: Policy[]
   return 'This review shares your ' + subject + ' and relevant policy text with Anthropic.';
 }
 
-function IntakeSteps({ step, isGuide, sourceLabel, sourceDescription, busy, policiesUnlocked, onSelect }: {
-  step: number; isGuide: boolean; sourceLabel: string; sourceDescription: string;
+function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnlocked, onSelect }: {
+  step: number; sourceLabel: string; sourceDescription: string;
   busy: boolean; policiesUnlocked: boolean; onSelect: (step: number) => void;
 }) {
   return (
@@ -118,7 +118,7 @@ function IntakeSteps({ step, isGuide, sourceLabel, sourceDescription, busy, poli
               <span className="intake-step-text">
                 {label}
                 {index === 0 && step === 2 && <small>{sourceDescription}</small>}
-                {index === 1 && <small>{isGuide ? 'Optional' : 'Required'}</small>}
+                {index === 1 && <small>Required</small>}
               </span>
             </button>
           </li>
@@ -128,8 +128,8 @@ function IntakeSteps({ step, isGuide, sourceLabel, sourceDescription, busy, poli
   );
 }
 
-function IntakeActions({ step, busy, disclosure, submitLabel, view, onCancel }: {
-  step: number; busy: string; disclosure: string; submitLabel: string;
+function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view, onCancel }: {
+  step: number; busy: string; needsUpload: boolean; disclosure: string; submitLabel: string;
   view: ReturnType<typeof useIntakeReview>['view']; onCancel: () => void;
 }) {
   return (
@@ -140,14 +140,14 @@ function IntakeActions({ step, busy, disclosure, submitLabel, view, onCancel }: 
         </p>}
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
         {view.kind === 'ready' && <output className="intake-ready"><Check size={15} aria-hidden="true" />Review ready</output>}
-        {view.kind === 'changed' && step === 2 && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
+        {view.kind === 'changed' && step === 2 && !needsUpload && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
       </div>
       {view.kind === 'running' && view.foreground
         ? <button key="cancel" type="button" className="intake-secondary" onClick={event => {
           event.preventDefault();
           onCancel();
         }}>Cancel review</button>
-        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy)} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
+        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || needsUpload} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
           <span>{busy || (step === 1 ? 'Continue to policies' : submitLabel)}</span>
           {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
         </button>}
@@ -155,11 +155,12 @@ function IntakeActions({ step, busy, disclosure, submitLabel, view, onCancel }: 
   );
 }
 
-function introText(mode: Mode, step: number, started: boolean) {
+function introText(mode: Mode, step: number, started: boolean, needsUpload: boolean) {
   const copy = intakeCopy[mode];
   if (step === 1) return copy.sourceIntro;
-  if (mode === 'questionnaire') return started ? 'Choose the policies to search for evidence.' : copy.policyIntro;
-  return started ? copy.policyIntro : 'Attach policies to start a comparison with Anthropic, or review the guide on its own.';
+  if (!started) return copy.policyIntro;
+  if (mode === 'questionnaire') return 'Choose the policies to search for evidence.';
+  return needsUpload ? guidePolicyRequired : 'Add any other policies that apply to this guide.';
 }
 
 function useFileRead(policyStep: boolean) {
@@ -181,7 +182,7 @@ function useFileRead(policyStep: boolean) {
 export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) {
   const [mode, setMode] = useState(initialMode);
   const [source, setSource] = useState<IntakeSource>({ text: '', name: '' });
-  const [originalDocuments, setOriginalDocuments] = useState<Policy[]>([]);
+  const [originalDocuments, setOriginalDocuments] = useState<IntakePolicy[]>([]);
   const [policyRanges, setPolicyRanges] = useState<PolicyRanges>({});
   const documents = useMemo(() => selectedPolicies(originalDocuments, policyRanges), [originalDocuments, policyRanges]);
   const [scope, setScope] = useState<Scope>();
@@ -193,6 +194,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const alert = useRef<HTMLParagraphElement>(null);
   const review = useIntakeReview(policyStep, onDone, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }));
   const isGuide = mode === 'guide';
+  const needsUpload = needsPolicyFile(mode, originalDocuments);
   const copy = intakeCopy[mode];
   const questions = useMemo(() => source.questions ?? (isGuide || source.readSourcePdf ? [] : questionsFromText(source.text)),
     [source.questions, source.readSourcePdf, source.text, isGuide]);
@@ -218,7 +220,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
 
   const snapshot = { mode, source, questions, documents, originals: originalDocuments, draft, scope };
 
-  function acceptAddedPolicies(added: Policy[], fromDraft = false) {
+  function acceptAddedPolicies(added: IntakePolicy[], fromDraft = false) {
     const next = [...originalDocuments, ...added];
     if (next.length > MAX_POLICY_DOCUMENTS) throw Error('Choose up to 18 policy documents.');
     const selected = selectedPolicies(next, policyRanges);
@@ -256,7 +258,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         if (!isCurrent()) return false;
         const next = sourceFromDocument(doc, isGuide);
         setSource(next);
-        if (doc.pdfFile && (isGuide || documents.length > 0)) {
+        if (doc.pdfFile && documents.length > 0) {
           review.start(() => prepareReview({ ...snapshot, source: next, questions: next.questions ?? [] }), true);
         }
       } else {
@@ -349,7 +351,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         <ArrowLeft size={15} aria-hidden="true" /> Back
       </button>
       <div className="intake-layout">
-        <IntakeSteps step={step} isGuide={isGuide} sourceLabel={copy.sourceLabel}
+        <IntakeSteps step={step} sourceLabel={copy.sourceLabel}
           busy={Boolean(busy)} policiesUnlocked={!validationError} onSelect={selectStep}
           sourceDescription={source.name || (isGuide ? 'Guide text' : questions.length + (questions.length === 1 ? ' question' : ' questions'))} />
         <div className="intake-sheet">
@@ -357,7 +359,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
             {step === 1 ? copy.sourceTitle : 'Add existing policies'}
           </h1>
           <p className="intake-intro" id="intake-intro">
-            {introText(mode, step, review.started)}
+            {introText(mode, step, review.started, needsUpload)}
           </p>
           <form onSubmit={submit}>
             <fieldset disabled={Boolean(busy)} className="intake-fields">
@@ -373,6 +375,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
                 />
               ) : (
                 <PolicyFields
+                  allowPaste={!needsUpload}
                   documents={documents}
                   originalDocuments={originalDocuments}
                   draft={draft}
@@ -382,7 +385,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
                   }}
                   onEditRange={review.edit}
                   onFiles={files => importFiles(files, 'policies')}
-                  onAdd={policy => { review.edit(); acceptAddedPolicies([policy], true); }}
+                  onAdd={policy => { review.edit(); acceptAddedPolicies([{ ...policy, pasted: true }], true); }}
                   onRange={selectPolicyPages}
                   onRemove={removePolicy}
                   onError={setError}
@@ -394,7 +397,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
               )}
             </fieldset>
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
-            <IntakeActions step={step} busy={busy} disclosure={sharingDisclosure(mode, source, documents)}
+            <IntakeActions step={step} busy={busy} needsUpload={step === 2 && needsUpload} disclosure={sharingDisclosure(mode, source, documents)}
               submitLabel={copy.submit} view={review.view} onCancel={review.cancel} />
             {busy && <output className="intake-sr-only">{busy}</output>}
           </form>

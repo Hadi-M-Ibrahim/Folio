@@ -5,10 +5,11 @@ from unittest.mock import patch
 from api import review as api
 from api._review import model
 from api._review.search import InvalidRequest
+from tests.test_review import insufficient_assessments, sample
 
 
 def guide_input(guide, **flags):
-    return {"mode": "guide", "guide": guide, "documents": [], **flags}
+    return sample("guide", guide=guide, **flags)
 
 
 class GuideExtractionTests(unittest.TestCase):
@@ -46,7 +47,9 @@ class GuideExtractionTests(unittest.TestCase):
         local = api.review(guide_input(guide))
         self.assertEqual([row["criterionSource"] for row in local["findings"]], [duty])
 
-        def inspect_guide(system, tool, data, key, deadline, max_tokens):
+        def inspect_guide(system, tool, data, key, deadline, max_tokens=3800):
+            if tool["name"] == "record_review":
+                return insufficient_assessments("q1")
             self.assertEqual("".join(unit["text"] for unit in data["sources"]), guide)
             required, = [unit for unit in data["sources"] if unit["required"]]
             self.assertEqual(required["text"], duty)
@@ -56,7 +59,7 @@ class GuideExtractionTests(unittest.TestCase):
         with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True), \
              patch.object(model, "invoke_tool", side_effect=inspect_guide) as invoke:
             result = api.review(guide_input(guide, allowModel=True, publicInputConsent=True))
-        invoke.assert_called_once()
+        self.assertEqual([call.args[1]["name"] for call in invoke.call_args_list], ["record_search_plan", "record_review"])
         self.assertEqual(result["planningEngine"], "anthropic")
         self.assertEqual(result["findings"][0]["criterionSource"], duty)
 
@@ -67,7 +70,9 @@ class GuideExtractionTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidRequest, "no explicit review criterion"):
             api.review(guide_input(guide))
 
-        def discover(system, tool, data, key, deadline, max_tokens):
+        def discover(system, tool, data, key, deadline, max_tokens=3800):
+            if tool["name"] == "record_review":
+                return insufficient_assessments("q1")
             unit, = data["sources"]
             self.assertFalse(unit["required"])
             self.assertEqual(unit["text"], guide)

@@ -243,7 +243,7 @@ def validate(payload):
     transcript_only = payload.get("transcribeSourceOnly", False)
     if transcript_only and not (payload.get("readSourcePdf") and payload.get("documentPart")):
         raise InvalidRequest("Source transcription requires a PDF source document part.")
-    docs = list(validated_documents(payload.get("documents"), mode, transcript_only=transcript_only))
+    docs = list(validated_documents(payload.get("documents"), transcript_only=transcript_only))
     attachments = payload.get("pdfAttachments", [])
     validate_attachments(attachments, payload["documents"])
     policy_pdfs = {a["documentId"] for a in attachments if a["role"] == "policy"}
@@ -255,11 +255,11 @@ def validate(payload):
     return mode, source_criteria(mode, payload), pages
 
 
-def validated_documents(docs, mode, *, transcript_only=False):
+def validated_documents(docs, *, transcript_only=False):
     if not isinstance(docs, list) or len(docs) > MAX_DOCUMENTS:
         raise InvalidRequest(f"Provide a list of up to {MAX_DOCUMENTS} policy documents.")
-    if not docs and mode == "questionnaire" and not transcript_only:
-        raise InvalidRequest("Provide at least one policy document with the questionnaire.")
+    if not docs and not transcript_only:
+        raise InvalidRequest("Provide at least one existing policy document.")
     identifiers = set()
     for doc in docs:
         if not isinstance(doc, dict):
@@ -569,14 +569,6 @@ class Index:
 
 def retrieve(pages, plan):
     check_finding_count(len(plan))
-    if not pages:
-        return [{
-            **criterion_fields(row, number),
-            "status": "needs_review", "answer": "No existing policies were supplied for comparison.",
-            "supporting": [], "counter": [], "candidates": [], "totalCandidatePassages": 0,
-            "plannedTerms": row["searchTerms"], "searchTerms": [], "searchProof": [], "totalSearchTerms": 0,
-            "analysisEngine": "local",
-        } for number, row in enumerate(plan, 1)]
     index = Index(pages, plan)
     findings = []
     size = 0

@@ -19,6 +19,7 @@ export function pastedPolicy(draft: PolicyDraft, number: number): Policy {
 }
 
 type PolicyFieldsProps = {
+  allowPaste: boolean;
   documents: Policy[];
   originalDocuments: Policy[];
   draft: PolicyDraft;
@@ -81,7 +82,8 @@ function PolicyItem({ doc, original, onRemove, onRange, onEditRange }: {
   );
 }
 
-export function PolicyFields({ documents, originalDocuments, draft, onDraft, onFiles, onAdd, onRemove, onRange, onEditRange, onError }: PolicyFieldsProps) {
+export function PolicyFields({ allowPaste, documents, originalDocuments, draft, onDraft, onFiles, onAdd, onRemove, onRange, onEditRange, onError }: PolicyFieldsProps) {
+  const upload = useRef<HTMLInputElement>(null);
   const pasteButton = useRef<HTMLButtonElement>(null);
 
   function add() {
@@ -97,12 +99,12 @@ export function PolicyFields({ documents, originalDocuments, draft, onDraft, onF
   function remove(id: string) {
     onRemove(id);
     onError('');
-    pasteButton.current?.focus();
+    upload.current?.focus();
   }
 
   return (
     <>
-      <IntakeFile label="Upload policy files" detail="Drop one or more PDF, TXT or Markdown files here."
+      <IntakeFile ref={upload} label="Upload policy files" detail="Drop one or more PDF, TXT or Markdown files here."
         describedBy="intake-intro" attachedFiles={documents.map(doc => doc.pdfFile)} multiple onFiles={onFiles} />
       {documents.length > 0 && (
         <ul className="intake-documents" aria-label="Added policies">
@@ -110,7 +112,7 @@ export function PolicyFields({ documents, originalDocuments, draft, onDraft, onF
             onRemove={remove} onRange={onRange} onEditRange={onEditRange} />)}
         </ul>
       )}
-      <div>
+      {allowPaste && <div>
         <button
           ref={pasteButton}
           type="button"
@@ -130,7 +132,7 @@ export function PolicyFields({ documents, originalDocuments, draft, onDraft, onF
           <textarea id="intake-policy-text" rows={4} value={draft.text} onChange={(event) => { onDraft({ ...draft, text: event.target.value }); onError(''); }} />
           <button type="button" className="intake-secondary" onClick={add}>Add policy</button>
         </div>
-      </div>
+      </div>}
     </>
   );
 }
