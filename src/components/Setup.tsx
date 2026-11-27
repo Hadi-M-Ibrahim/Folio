@@ -4,13 +4,14 @@ import { checkInput, guidePolicyRequired, isLoopback } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
 import {
   MAX_POLICY_DOCUMENTS, readScope,
-  type Mode, type Policy, type Review, type ReviewInput, type Scope,
+  type Mode, type Policy, type ReviewInput, type Scope,
 } from '../review/model';
 import { emptyPolicyDraft, PolicyFields } from './PolicyFields';
 import { questionsFromText } from './intakeQuestions';
 import { SourceFields, sourceFromDocument, type IntakeSource } from './SourceFields';
 import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
 import { needsPolicyFile, prepareReview, reviewInput, type IntakePolicy } from './intakeReview';
+import type { ReviewJob } from '../review/reviewJob';
 import { ReviewProgress } from './ReviewProgress';
 import { useIntakeReview } from './useIntakeReview';
 import './intake.css';
@@ -19,7 +20,7 @@ type SetupProps = {
   initialMode: Mode;
   policyStep: boolean;
   onClose: () => void;
-  onDone: (review: Review) => void;
+  onSubmit: (job: ReviewJob) => void;
 };
 
 const intakeCopy = {
@@ -127,6 +128,7 @@ function IntakeActions({ step, busy, needsUpload, submitLabel, view, onCancel }:
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
         {view.kind === 'changed' && step === 2 && !needsUpload && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
       </div>
+      {view.kind === 'running' && <a className="intake-all-reviews" href="#review-options">All reviews</a>}
       {view.kind === 'running'
         ? <button key="cancel" type="button" className="intake-secondary" onClick={event => {
           event.preventDefault();
@@ -164,7 +166,7 @@ function useFileRead(policyStep: boolean) {
   return { busy: reading?.page === page ? reading.message : '', begin, finish: () => setReading(undefined) };
 }
 
-export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) {
+export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps) {
   const [mode, setMode] = useState(initialMode);
   const [source, setSource] = useState<IntakeSource>({ text: '', name: '' });
   const [originalDocuments, setOriginalDocuments] = useState<IntakePolicy[]>([]);
@@ -177,7 +179,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const { busy } = fileRead;
   const heading = useRef<HTMLHeadingElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
-  const review = useIntakeReview(policyStep, onDone, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }));
+  const review = useIntakeReview(policyStep, onSubmit, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }));
   const isGuide = mode === 'guide';
   const needsUpload = needsPolicyFile(mode, originalDocuments);
   const copy = intakeCopy[mode];
@@ -186,7 +188,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
   const sourcePath = '#/new/' + initialMode;
   const validationError = sourceError(mode, source, questions);
   const step = policyStep && !validationError ? 2 : 1;
-  const error = lastError.step === step ? lastError.message : '';
+  const error = step === 2 && review.failure ? documentErrorMessage(review.failure.error) : lastError.step === step ? lastError.message : '';
 
   function setError(message: string) {
     setLastError({ step, message });

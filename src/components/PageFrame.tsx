@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
-import { modeLabels, type Review } from '../review/model';
+import { useReviewState, type ReviewJob } from '../review/reviewJob';
+import { modeLabels } from '../review/model';
 
 export const workflows = [
   {
@@ -17,7 +18,19 @@ export const workflows = [
   },
 ] as const;
 
-function Home({ reviews }: { reviews: Review[] }) {
+function SessionReview({ job }: { job: ReviewJob }) {
+  const { kind } = useReviewState(job);
+  const status = kind === 'running' ? 'In progress' : kind === 'failed' ? 'Needs attention' : 'Ready';
+  return (
+    <a className="session-review" href={'#/review/' + job.key}>
+      <span>{job.title}</span>
+      <small>{modeLabels[job.mode]} · <span aria-live="polite">{status}</span></small>
+      <ArrowRight aria-hidden="true" size={17} />
+    </a>
+  );
+}
+
+function Home({ reviews }: { reviews: ReviewJob[] }) {
   return (
     <>
       <div className="entry-status page-heading">
@@ -51,12 +64,7 @@ function Home({ reviews }: { reviews: Review[] }) {
           {reviews.length > 0 && (
             <section className="session-reviews" aria-labelledby="session-title">
               <h2 id="session-title">Reviews in this tab</h2>
-              {reviews.map((review) => (
-                <a className="session-review" key={review.key} href={'#/review/' + review.key}>
-                  <span>{review.title}</span><small>{modeLabels[review.input.mode]}</small>
-                  <ArrowRight aria-hidden="true" size={17} />
-                </a>
-              ))}
+              {reviews.map(job => <SessionReview key={job.key} job={job} />)}
             </section>
           )}
         </section>
@@ -65,7 +73,7 @@ function Home({ reviews }: { reviews: Review[] }) {
   );
 }
 
-export function PageFrame({ children, reviews = [] }: { children?: ReactNode; reviews?: Review[] }) {
+export function PageFrame({ children, reviews = [] }: { children?: ReactNode; reviews?: ReviewJob[] }) {
   return (
     <>
       <a href="#main" className="skip-link" onClick={(e) => {

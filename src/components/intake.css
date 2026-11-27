@@ -339,3 +339,7 @@
   .intake-primary { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .intake-spinner { animation: none; } }
+
+.intake-all-reviews { font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+.pending-review { max-width: 820px; margin: 0 auto; }
+.pending-review .intake-actions { justify-content: flex-start; }
