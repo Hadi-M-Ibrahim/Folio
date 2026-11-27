@@ -33,25 +33,26 @@ export default function App() {
   const review = library.job(reviewKey);
   const listed = library.items.find(item => item.key === reviewKey);
   const reviewState = useReviewState(review);
-  const opening = Boolean(reviewKey && !review && (!library.ready || listed));
-  const home = !setupMode && !review && !opening;
+  const missing = Boolean(reviewKey && !review && library.ready && !listed && !library.warning);
+  const opening = Boolean(reviewKey && !review && !missing);
+  const home = !setupMode && !reviewKey;
 
   useLayoutEffect(() => {
     if (path === currentPath()) document.documentElement.classList.remove('opening-review');
   }, [path]);
 
   useEffect(() => {
-    if (home || screens || loadFailed) return;
+    if (home || missing || screens || loadFailed) return;
     let active = true;
     import('./components/reviewScreens').then(
       (module) => { if (active) setScreens(module); },
       () => { if (active) setLoadFailed(true); },
     );
     return () => { active = false; };
-  }, [home, screens, loadFailed]);
+  }, [home, missing, screens, loadFailed]);
 
   useEffect(() => {
-    const title = listed?.title ?? (setupMode ? modeLabels[setupMode] : 'Policy review');
+    const title = listed?.title ?? (missing ? 'Review not found' : setupMode ? modeLabels[setupMode] : 'Policy review');
     document.title = title + ' · Folio';
     // The browser may already have followed an anchor or restored scroll before hydration.
     const previous = lastView.current;
@@ -66,11 +67,17 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' });
     const heading = document.querySelector<HTMLElement>('main h1');
     heading?.focus({ preventScroll: true });
-  }, [home, path, listed?.title, reviewState.kind, setupMode, screens]);
+  }, [home, missing, path, listed?.title, reviewState.kind, setupMode, screens]);
 
   return (
     <PageFrame reviews={library.items} reviewActions={library} storageWarning={library.warning}>
-      {home ? undefined : !screens || opening ? (
+      {home ? undefined : missing ? (
+        <div className="page-heading">
+          <h1 tabIndex={-1}>Review not found</h1>
+          <p>This review isn’t saved in this browser.</p>
+          <p><a className="text-link" href="#review-options">View all reviews</a></p>
+        </div>
+      ) : !screens || opening ? (
         <OpeningReview failed={loadFailed || Boolean(opening && library.warning)} />
       ) : setupMode ? (
         <screens.Setup key={setupMode} initialMode={setupMode} sourceStep={path.endsWith('/source')} onClose={() => { window.location.hash = 'review-options'; }} onSubmit={library.submit} />
