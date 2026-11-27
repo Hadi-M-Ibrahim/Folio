@@ -142,6 +142,8 @@ export type ReviewRow = {
   decision: Decision | undefined;
 };
 
+export type SavedResponse = ReviewRow & { decision: Decision };
+
 export function samePassage(left: Evidence, right: Evidence): boolean {
   return left.documentId === right.documentId && left.page === right.page && left.quote === right.quote;
 }
