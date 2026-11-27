@@ -5,6 +5,8 @@ import { makePdfAttachment } from './pdf';
 import type { ReviewPhase, ReviewProgressState } from './reviewProgress';
 import { combineScanQuestions, divide, locateQuestions, pageSpans, pagesIn, questionSpans, sourceSpans, type Span, type Transcript } from './wholeReviewSource';
 
+export type ReviewCheckpoint = { completed: [string, Result][]; subdivided: string[] };
+
 type Options = {
   input: ReviewInput;
   sourceDocument?: Policy;
@@ -15,6 +17,8 @@ type Options = {
   signal: AbortSignal;
   onProgress?: (progress: ReviewProgressState) => void;
   mayWaitForQuota?: () => boolean;
+  checkpoint?: ReviewCheckpoint;
+  onCheckpoint?: (checkpoint: ReviewCheckpoint) => void;
 };
 
 const questionsPerPart = 10;
@@ -37,9 +41,17 @@ function checkpoint(options: Options): Cache {
     cache.options.sourceOriginal === options.sourceOriginal && cache.options.renderItemSubset === options.renderItemSubset &&
     cache.options.policyAttachments === options.policyAttachments &&
     JSON.stringify(cache.options.questionPages) === JSON.stringify(options.questionPages)) return cache;
-  const fresh = { options, completed: new Map<string, Result>(), subdivided: new Set<string>(), policyText: new Map() };
+  const fresh: Cache = {
+    options, completed: new Map(options.checkpoint?.completed), subdivided: new Set(options.checkpoint?.subdivided),
+    policyText: new Map(),
+  };
+  for (const result of fresh.completed.values()) savePolicyText(fresh, result.policyPageText);
   retries.set(options.input, fresh);
   return fresh;
+}
+
+function saveCheckpoint(options: Options, cache: Cache) {
+  options.onCheckpoint?.({ completed: [...cache.completed], subdivided: [...cache.subdivided] });
 }
 
 function savePolicyText(cache: Cache, records: Result['policyPageText']) {
@@ -105,6 +117,8 @@ async function send(options: Options, cache: Cache, section: Section, forceRende
   validatePart(input, numbers, result);
   cache.completed.set(section.key, result);
   savePolicyText(cache, result.policyPageText);
+  // A single request saves its final result directly. Multipart work can be interrupted between batches.
+  if (partial) saveCheckpoint(options, cache);
   report(work.end);
   return result;
 }
@@ -163,6 +177,7 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
         }
       }
       cache.subdivided.add(key);
+      saveCheckpoint(options, cache);
     }
     for (const part of parts ?? divide(span, series.guide)) await processSpan(part, true);
   }
@@ -175,7 +190,7 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
     const done = completed.at(-1)?.span.end;
     if (series.phase === 'questions' && done && cause instanceof Error) {
       throw new Error(cause.message + ' ' + done + ' of ' + series.length +
-        ' questions completed. Retry to resume in this tab.', { cause });
+        ' questions completed. Retry to continue with the remaining questions.', { cause });
     }
     throw cause;
   }
@@ -312,6 +327,7 @@ async function reviewScan(options: Options, cache: Cache, source: Policy): Promi
       if (!(error instanceof ReviewSizeError)) throw error;
     }
     cache.subdivided.add('scan');
+    saveCheckpoint(options, cache);
   }
   const groups = await readSource(options, cache, source);
   const pages = groups.flatMap(group => group.pages);

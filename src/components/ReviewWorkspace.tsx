@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, ArrowRight, BookOpen, ChevronRight, Download, FileText,
 } from 'lucide-react';
@@ -18,10 +18,22 @@ type Props = {
   onUpdateFinding: (key: string, changes: FindingState) => void;
 };
 
+function useWorkspacePosition(review: Review) {
+  const positionInHistory = window.history.state?.folioWorkspace;
+  const saved = positionInHistory?.key === review.key ? positionInHistory : undefined;
+  const [nav, setNav] = useState<'findings' | 'documents' | 'decisions'>(() =>
+    saved?.nav === 'documents' || saved?.nav === 'decisions' ? saved.nav : 'findings');
+  const [selected, setSelected] = useState<number>(() =>
+    Number.isInteger(saved?.selected) && saved.selected >= 0 && saved.selected < review.result.findings.length ? saved.selected : 0);
+  useLayoutEffect(() => {
+    window.history.replaceState({ ...window.history.state, folioWorkspace: { key: review.key, nav, selected } }, '');
+  }, [review.key, nav, selected]);
+  return { nav, setNav, selected, setSelected };
+}
+
 export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Props) {
-  const [nav, setNav] = useState<'findings' | 'documents' | 'decisions'>('findings');
+  const { nav, setNav, selected, setSelected } = useWorkspacePosition(review);
   const [source, setSource] = useState<SourceLocation | null>(null);
-  const [selected, setSelected] = useState(0);
   const [queue, setQueue] = useState<QueueOptions>({ search: '', status: 'all', showStatuses: false, expanded: false });
   const detailRef = useRef<HTMLDivElement>(null);
   const { mode, documents } = review.input;

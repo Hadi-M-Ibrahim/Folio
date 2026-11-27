@@ -239,6 +239,24 @@ async function holdNextReview(page, respond = route => route.continue()) {
   return gate.resolve;
 }
 
+async function chooseReviewAction(page, title, action) {
+  await page.getByRole('button', { name: 'Actions for ' + title, exact: true }).click();
+  await page.getByRole('menuitem', { name: action, exact: true }).click();
+}
+
+async function createNamedQuestionnaire(page, title) {
+  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await addPolicy(page, 'Records.txt', 'The registrar signs the inspection log.');
+  await continueToSource(page, 'questionnaire');
+  const question = 'Who signs the inspection log for ' + title + '?';
+  await page.getByLabel('Upload questionnaire').setInputFiles({
+    name: title + '.txt', mimeType: 'text/plain', buffer: Buffer.from(question),
+  });
+  await clickReview(page, 'questionnaire');
+  await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'All reviews' }).click();
+}
+
 async function openWithEntryScriptHeld(page, path) {
   const entry = '**/assets/index-*.js';
   const requested = page.waitForRequest(entry);
@@ -406,7 +424,7 @@ for (const mode of ['questionnaire', 'guide']) {
     const request = await started;
     const home = page.getByRole('link', { name: 'Folio home' });
     const progress = page.getByRole('progressbar', { name: 'Review progress' });
-    const row = page.getByRole('region', { name: 'Reviews in this tab' }).getByRole('link');
+    const row = page.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
     let href;
     try {
       await clickReview(page, mode);
@@ -448,7 +466,7 @@ test('cancelling a second review leaves the first available for retry from home'
   await started;
   await clickReview(page, 'questionnaire');
   await page.getByRole('link', { name: 'All reviews' }).click();
-  const list = page.getByRole('region', { name: 'Reviews in this tab' });
+  const list = page.getByRole('region', { name: 'Reviews', exact: true });
   const questionnaire = list.getByRole('link', { name: /State questionnaire/ });
   const href = await questionnaire.getAttribute('href');
 
@@ -487,7 +505,7 @@ test('cancelling a second review leaves the first available for retry from home'
   expect(requests.map(req => req.postDataJSON().mode)).toEqual(['questionnaire', 'guide', 'questionnaire']);
 });
 
-test('leaving an unsubmitted review keeps speculative work out of the tab list', async ({ page }) => {
+test('leaving an unsubmitted review keeps speculative work out of the saved library', async ({ page }) => {
   await page.goto('/#/new/questionnaire');
   await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
   await continueToSource(page, 'questionnaire');
@@ -495,7 +513,7 @@ test('leaving an unsubmitted review keeps speculative work out of the tab list',
   const started = page.waitForRequest('**/api/review');
   await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?');
   const request = await started;
-  const list = page.getByRole('region', { name: 'Reviews in this tab' });
+  const list = page.getByRole('region', { name: 'Reviews', exact: true });
   try {
     await expectQuietReview(page);
     await page.getByRole('link', { name: 'Folio home' }).click();
@@ -508,6 +526,290 @@ test('leaving an unsubmitted review keeps speculative work out of the tab list',
   await response?.finished();
   await expect(page).toHaveURL(/#\/$/);
   await expect(list).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
+  await page.getByRole('link', { name: 'Folio home' }).click();
+  await expect(list).toHaveCount(0);
+});
+
+test('reloading unfinished intake restores the source step, typed questions and original policy PDF', async ({ page, context }) => {
+  const requests = captureReviewRequests(page);
+  const pdf = await printPdf(context, ['Introductory remarks.', 'The registrar signs the inspection log.']);
+  const question = 'Who signs the inspection log?';
+  await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload policy files', 'Records.pdf', pdf);
+  await page.getByRole('button', { name: 'Preview Records.pdf' }).click();
+  await chooseRange(page, 'Choose policy pages', /Policy pages/, '2');
+  await continueToSource(page, 'questionnaire');
+  await page.getByRole('button', { name: 'Paste a question or list' }).click();
+  const field = page.getByLabel('Questions', { exact: true });
+  await field.fill(question);
+  await page.reload();
+  await expect(field).toHaveValue(question);
+  await expect(page).toHaveURL(/\/new\/questionnaire\/source$/);
+  expect(requests).toHaveLength(0);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Preview Records.pdf' }).click();
+  const viewer = page.getByRole('region', { name: 'PDF preview' });
+  await expectPdfCanvas(viewer, 'Records.pdf', 2);
+  await expect(viewer.getByRole('combobox', { name: 'PDF page' }).getByRole('option')).toHaveCount(1);
+  await page.getByRole('link', { name: 'Folio home' }).click();
+  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
+});
+
+test('a submitted review pauses across refresh and resumes once from its saved inputs', async ({ page }) => {
+  const questions = Array.from({ length: 11 }, (_, index) => 'Who retains inspection log ' + (index + 1) + ' at closing?');
+  const requests = captureReviewRequests(page);
+  await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Retention.txt', 'The registrar retains the inspection log at closing.');
+  await continueToSource(page, 'questionnaire');
+  const gate = Promise.withResolvers();
+  await page.route('**/api/review', async route => {
+    if (route.request().postDataJSON().questions[0] === questions.at(-1)) {
+      await gate.promise;
+      await route.abort();
+    } else {
+      await route.continue();
+    }
+  }, { times: 2 });
+  try {
+    await pasteSource(page, 'questionnaire', questions.join('\n'));
+    await clickReview(page, 'questionnaire');
+    await expect.poll(() => requests.map(request => request.postDataJSON().questions)).toEqual([
+      questions.slice(0, 10), questions.slice(10),
+    ]);
+    expect((await requests[0].response()).ok()).toBe(true);
+    await expect(page.getByRole('progressbar', { name: 'Review progress' })).toHaveAttribute('aria-valuenow', '10');
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Resume review' })).toBeVisible();
+  } finally {
+    gate.resolve();
+  }
+  const deepLink = page.url();
+  await expect(page).toHaveURL(/#\/review\/.+/);
+  await page.getByRole('link', { name: 'All reviews' }).click();
+  const row = page.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText('Paused');
+  await row.click();
+  await expect(page).toHaveURL(deepLink);
+  expect(requests).toHaveLength(2);
+  const resumed = page.waitForResponse('**/api/review');
+  await page.getByRole('button', { name: 'Resume review' }).click();
+  expect((await resumed).request().postDataJSON()).toEqual(requests[1].postDataJSON());
+  await expect(page.getByRole('heading', { name: questions[0], exact: true })).toBeVisible();
+  await selectLastFinding(page, questions);
+  await page.getByRole('button', { name: 'Responses', exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Responses', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review questions', exact: true }).click();
+  await expect(page.getByRole('heading', { name: questions.at(-1), exact: true })).toBeVisible();
+  await expect(page).toHaveURL(deepLink);
+  expect(requests).toHaveLength(3);
+});
+
+test('two tabs resuming the same paused review send one assessment and see the same result', async ({ page, context }) => {
+  const question = 'Who verifies the inspection log?';
+  const policy = 'The registrar verifies the inspection log.';
+  await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Inspection.txt', policy);
+  await continueToSource(page, 'questionnaire');
+  const releaseInitial = await holdNextReview(page, route => route.abort());
+  const started = page.waitForRequest('**/api/review');
+  try {
+    await pasteSource(page, 'questionnaire', question);
+    await started;
+    await clickReview(page, 'questionnaire');
+    await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Resume review' })).toBeVisible();
+  } finally {
+    releaseInitial();
+  }
+
+  const other = await context.newPage();
+  const reviewUrl = page.url();
+  await other.goto(reviewUrl);
+  const tabs = [page, other];
+  const resumeButtons = await Promise.all(tabs.map(async tab => {
+    const button = tab.getByRole('button', { name: 'Resume review' });
+    await expect(button).toBeVisible();
+    return button.elementHandle();
+  }));
+  const gate = Promise.withResolvers();
+  const attempts = [];
+  await context.route('**/api/review', async route => {
+    attempts.push(route.request());
+    await gate.promise;
+    await route.continue();
+  });
+  try {
+    // Dispatch both prepared clicks together, before either page waits for the other's claim.
+    await Promise.all(resumeButtons.map(button => button.evaluate(element => element.click())));
+    await expect.poll(() => attempts.length).toBe(1);
+    const owner = attempts[0].frame().page();
+    const observer = owner === page ? other : page;
+    await expect(owner.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
+    await expect(observer.getByText('This review is running in another tab.')).toBeVisible();
+  } finally {
+    gate.resolve();
+  }
+  for (const tab of tabs) {
+    await expect(tab).toHaveURL(reviewUrl);
+    await expect(tab.getByRole('heading', { name: question, exact: true })).toBeVisible();
+    await tab.getByRole('button', { name: /Inspection\.txt.*p\. 1/ }).first().click();
+    await expect(tab.locator('dialog mark')).toHaveText(policy);
+  }
+  expect(attempts).toHaveLength(1);
+});
+
+test('a browser that denies IndexedDB warns the analyst and keeps the current review usable', async ({ page }) => {
+  await page.addInitScript(() => {
+    IDBFactory.prototype.open = () => { throw new DOMException('Access denied', 'SecurityError'); };
+  });
+  await page.goto('/');
+  const warning = page.getByRole('alert').filter({ hasText: /Keep this page open/i });
+  await expect(warning).toBeVisible();
+  await createNamedQuestionnaire(page, 'Local inspection');
+  const library = page.getByRole('region', { name: 'Reviews', exact: true });
+  await library.getByRole('link', { name: /Local inspection/ }).click();
+  const answer = 'The registrar signs it at closing.';
+  await page.getByLabel('Response for submission').fill(answer);
+  await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
+  const output = await report(page, 'Download responses');
+  expect(output).toContain(answer);
+  expect(output).toContain('Response status — Confirmed');
+  await expect(warning).toBeVisible();
+});
+
+test('a completed guide keeps its saved action and original cited PDFs when reopened', async ({ page, context }) => {
+  const duty = 'Staff must sign the inspection log.';
+  const passage = 'Office staff sign the inspection log.';
+  const note = 'Add the signature check to the closing procedure.';
+  const guide = await printPdf(context, ['Overview.', duty]);
+  const policy = await printPdf(context, [passage]);
+  await page.goto('/#/new/guide');
+  await uploadPdf(page, 'Upload policy files', 'Closing policy.pdf', policy);
+  await continueToSource(page, 'guide');
+  await uploadPdf(page, 'Upload regulatory guide', 'Closing guide.pdf', guide);
+  await clickReview(page, 'guide');
+  await expect(page.getByRole('heading', { name: duty, exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: 'Write new policy', exact: true }).check();
+  await page.getByLabel('Action note').fill(note);
+  const reviewUrl = page.url();
+  const reopened = await context.newPage();
+  await page.close();
+  const requests = captureReviewRequests(reopened);
+  await reopened.goto(reviewUrl);
+  await expect(reopened.getByRole('radio', { name: 'Write new policy', exact: true })).toBeChecked();
+  await expect(reopened.getByLabel('Action note')).toHaveValue(note);
+  for (const [title, number, quote] of [['Closing guide.pdf', 2, duty], ['Closing policy.pdf', 1, passage]]) {
+    await reopened.getByRole('button', { name: new RegExp(title + '.*p\\. ' + number) }).first().click();
+    const dialog = reopened.getByRole('dialog');
+    await expectPdfCanvas(dialog, title, number);
+    await expect(dialog.getByRole('complementary', { name: 'Cited passage' })).toContainText(quote);
+    await expect(dialog.locator('.pdf-text-layer mark').first()).toBeVisible();
+    await reopened.keyboard.press('Escape');
+  }
+  expect(await report(reopened, 'Download action list')).toContain(note);
+  expect(requests).toHaveLength(0);
+});
+
+test('renaming, moving and deleting a saved review persist independently', async ({ page }) => {
+  await page.goto('/');
+  await createNamedQuestionnaire(page, 'Annual inspection');
+  await createNamedQuestionnaire(page, 'Quarterly inspection');
+  const library = page.getByRole('region', { name: 'Reviews', exact: true });
+  const links = library.getByRole('link');
+  await expect(links).toHaveText([/Quarterly inspection/, /Annual inspection/]);
+  const originalHref = await links.last().getAttribute('href');
+  await chooseReviewAction(page, 'Annual inspection', 'Rename');
+  await page.getByRole('textbox', { name: 'Review name' }).fill('Year-end audit');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await chooseReviewAction(page, 'Year-end audit', 'Move up');
+  await page.reload();
+  await expect(links).toHaveText([/Year-end audit/, /Quarterly inspection/]);
+  await expect(links.first()).toHaveAttribute('href', originalHref);
+  await chooseReviewAction(page, 'Year-end audit', 'Move down');
+  await chooseReviewAction(page, 'Year-end audit', 'Delete');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.reload();
+  await expect(links).toHaveText([/Quarterly inspection/, /Year-end audit/]);
+  await chooseReviewAction(page, 'Year-end audit', 'Delete');
+  await page.getByRole('button', { name: 'Delete review', exact: true }).click();
+  await expect(links).toHaveText([/Quarterly inspection/]);
+  await page.reload();
+  await expect(links).toHaveText([/Quarterly inspection/]);
+  await links.click();
+  await expect(page.getByRole('heading', { name: 'Who signs the inspection log for Quarterly inspection?' })).toBeVisible();
+});
+
+test('a pending rename survives closing the tab before its database write commits', async ({ page, context }) => {
+  await page.goto('/');
+  await createNamedQuestionnaire(page, 'Renewal checklist');
+  await chooseReviewAction(page, 'Renewal checklist', 'Rename');
+  await page.evaluate(() => {
+    const transact = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function(stores, mode, options) {
+      if (mode === 'readwrite') throw new DOMException('Storage unavailable', 'QuotaExceededError');
+      return transact.call(this, stores, mode, options);
+    };
+  });
+  await page.getByRole('textbox', { name: 'Review name' }).fill('Annual renewal');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Keep this page open');
+  await page.close();
+  const reopened = await context.newPage();
+  await reopened.goto('/#review-options');
+  const links = reopened.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
+  await expect(links).toHaveText([/Annual renewal/]);
+  await reopened.reload();
+  await expect(links).toHaveText([/Annual renewal/]);
+});
+
+test('deleting an active review in another tab prevents its late result from restoring it', async ({ page, context }) => {
+  await page.goto('/');
+  await createNamedQuestionnaire(page, 'Existing record');
+  await page.getByRole('link', { name: /Review a new policy guide/ }).click();
+  await addPolicy(page, 'Records.txt', 'The registrar signs the inspection log.');
+  await continueToSource(page, 'guide');
+  const intercepted = Promise.withResolvers();
+  await page.route('**/api/review', route => intercepted.resolve(route), { times: 1 });
+  const obligation = 'Staff must sign the inspection log.';
+  await page.getByLabel('Upload regulatory guide').setInputFiles({
+    name: 'Closing procedure.txt', mimeType: 'text/plain', buffer: Buffer.from(obligation),
+  });
+  const route = await intercepted.promise;
+  const token = route.request().headers()['x-folio-review-token'];
+  expect(token).toBeTruthy();
+  // The provider has finished, but the page is still waiting for delivery.
+  const assessment = await route.fetch();
+  expect(assessment.ok()).toBe(true);
+  expect((await assessment.json()).findings[0].question).toBe(obligation);
+  const manager = await context.newPage();
+  const links = manager.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
+  try {
+    await clickReview(page, 'guide');
+    await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
+    await manager.goto('/#review-options');
+    await chooseReviewAction(manager, 'Closing procedure', 'Delete');
+    const [revocation] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/api/review-session') &&
+        response.request().postDataJSON().token === token),
+      manager.getByRole('button', { name: 'Delete review', exact: true }).click(),
+    ]);
+    expect(revocation.ok()).toBe(true);
+    await expect(links).toHaveText([/Existing record/]);
+  } finally {
+    await route.fulfill({ response: assessment });
+  }
+  await page.getByRole('link', { name: 'Folio home' }).click();
+  await expect(page.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link')).toHaveText([/Existing record/]);
+  await manager.reload();
+  await expect(links).toHaveText([/Existing record/]);
 });
 
 test('a prepared review waits for submission and rejects a keyword-only result', async ({ page }) => {
@@ -775,7 +1077,7 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   const options = page.getByRole('heading', { name: 'Start a review', exact: true });
   await expect(options).toBeFocused();
   await expect(options).toBeInViewport();
-  await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Reviews', exact: true })).toHaveCount(0);
   await expect(page.getByRole('banner').getByRole('button', { name: 'Document privacy' })).toHaveCount(0);
   await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
   await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
@@ -854,8 +1156,10 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   expect(output).toContain(policy);
   await page.getByRole('link', { name: 'All reviews' }).click();
   await expect(options).toBeInViewport();
-  await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Reviews', exact: true })).toBeVisible();
   await page.locator('.session-review').click();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Reopen question 1', exact: true })).toBeVisible();
   await expect(editor).toBeHidden();
   await reopen.click();
   await expect(editor).toBeVisible();
@@ -919,6 +1223,7 @@ test('The question queue resolves and reopens questions independently of saved r
   await page.getByRole('button', { name: 'Next question' }).click();
   await page.getByRole('button', { name: 'Flag for follow-up', exact: true }).click();
   await page.getByRole('link', { name: 'All reviews' }).click();
+  await page.reload();
   await page.locator('.session-review').click();
   await showQueue();
   await expect(disclosure).toHaveText('Resolved 3');

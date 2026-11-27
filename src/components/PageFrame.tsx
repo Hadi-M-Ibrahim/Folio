@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
-import { useReviewState, type ReviewJob } from '../review/reviewJob';
-import { modeLabels } from '../review/model';
+import type { ReviewSummary } from '../review/localReviews';
+import { ReviewList, type ReviewActions } from './ReviewList';
+
+export type { ReviewActions } from './ReviewList';
 
 export const workflows = [
   {
@@ -18,19 +20,7 @@ export const workflows = [
   },
 ] as const;
 
-function SessionReview({ job }: { job: ReviewJob }) {
-  const { kind } = useReviewState(job);
-  const status = kind === 'running' ? 'In progress' : kind === 'failed' ? 'Needs attention' : 'Ready';
-  return (
-    <a className="session-review" href={'#/review/' + job.key}>
-      <span>{job.title}</span>
-      <small>{modeLabels[job.mode]} · <span aria-live="polite">{status}</span></small>
-      <ArrowRight aria-hidden="true" size={17} />
-    </a>
-  );
-}
-
-function Home({ reviews }: { reviews: ReviewJob[] }) {
+function Home({ reviews, reviewActions }: { reviews: ReviewSummary[]; reviewActions?: ReviewActions }) {
   return (
     <>
       <div className="entry-status page-heading">
@@ -61,19 +51,16 @@ function Home({ reviews }: { reviews: ReviewJob[] }) {
               </a>
             ))}
           </div>
-          {reviews.length > 0 && (
-            <section className="session-reviews" aria-labelledby="session-title">
-              <h2 id="session-title">Reviews in this tab</h2>
-              {reviews.map(job => <SessionReview key={job.key} job={job} />)}
-            </section>
-          )}
+          {reviews.length > 0 && <ReviewList reviews={reviews} actions={reviewActions} />}
         </section>
       </div>
     </>
   );
 }
 
-export function PageFrame({ children, reviews = [] }: { children?: ReactNode; reviews?: ReviewJob[] }) {
+export function PageFrame({ children, reviews = [], reviewActions, storageWarning }: {
+  children?: ReactNode; reviews?: ReviewSummary[]; reviewActions?: ReviewActions; storageWarning?: string;
+}) {
   return (
     <>
       <a href="#main" className="skip-link" onClick={(e) => {
@@ -88,8 +75,9 @@ export function PageFrame({ children, reviews = [] }: { children?: ReactNode; re
           </a>
         </div>
       </header>
+      {storageWarning && <p className="local-storage-notice" role="alert">{storageWarning}</p>}
       <main id="main" tabIndex={-1} className={children == null ? 'home-main' : undefined}>
-        {children ?? <Home reviews={reviews} />}
+        {children ?? <Home reviews={reviews} reviewActions={reviewActions} />}
       </main>
     </>
   );

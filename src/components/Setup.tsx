@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Check, FolderOpen, LoaderCircle } from 'lucide-react';
 import { checkInput, checkPolicies, isLoopback } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
 import {
   MAX_POLICY_DOCUMENTS, readScope,
-  type Mode, type Policy, type ReviewInput, type Scope,
+  type Mode, type Policy, type ReviewInput,
 } from '../review/model';
 import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
 import { questionsFromText } from './intakeQuestions';
@@ -14,13 +14,14 @@ import { needsPolicyFile, prepareReview, type IntakePolicy } from './intakeRevie
 import type { ReviewJob } from '../review/reviewJob';
 import { ReviewProgress } from './ReviewProgress';
 import { useIntakeReview } from './useIntakeReview';
+import { draftWarning, IntakeDraftSession, type IntakeDraft, type PolicyRanges } from './intakeDraft';
 import './intake.css';
 
 type SetupProps = {
   initialMode: Mode;
   sourceStep: boolean;
   onClose: () => void;
-  onSubmit: (job: ReviewJob) => void;
+  onSubmit: (job: ReviewJob) => Promise<boolean>;
 };
 
 const intakeCopy = {
@@ -85,7 +86,11 @@ function sourceQuestions(source: IntakeSource, mode: Mode): string[] {
   return source.questions ?? (mode === 'guide' || source.readSourcePdf ? [] : questionsFromText(source.text));
 }
 
-type PolicyRanges = Record<string, Policy['pages']>;
+function stepError(step: number, lastError: { step: number; message: string }, failure?: { error: unknown }) {
+  if (step === 2 && failure) return documentErrorMessage(failure.error);
+  return lastError.step === step ? lastError.message : '';
+}
+
 function selectedPolicies(originals: Policy[], ranges: PolicyRanges): Policy[] {
   return originals.map((doc) => Object.hasOwn(ranges, doc.id) ? { ...doc, pages: ranges[doc.id] } : doc);
 }
@@ -113,13 +118,14 @@ function IntakeSteps({ step, sourceLabel, busy, sourceUnlocked, onSelect }: {
   );
 }
 
-function IntakeActions({ busy, ready, submitLabel, view, onCancel }: {
-  busy: string; ready: boolean; submitLabel: string;
+function IntakeActions({ busy, ready, submitLabel, view, onCancel, storageError }: {
+  busy: string; ready: boolean; submitLabel: string; storageError: boolean;
   view: ReturnType<typeof useIntakeReview>['view']; onCancel: () => void;
 }) {
   return (
     <div className="intake-actions">
       <div className="intake-review-status">
+        {storageError && <output className="intake-help">{draftWarning}</output>}
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
         {view.kind === 'changed' && ready && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
       </div>
@@ -153,20 +159,54 @@ function useFileRead(sourceStep: boolean) {
   return { busy: reading?.page === page ? reading.message : '', begin, finish: () => setReading(undefined) };
 }
 
-export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps) {
-  const [mode, setMode] = useState(initialMode);
-  const [source, setSource] = useState<IntakeSource>({ text: '', name: '' });
-  const [originalDocuments, setOriginalDocuments] = useState<IntakePolicy[]>([]);
-  const [policyRanges, setPolicyRanges] = useState<PolicyRanges>({});
+export function Setup(props: SetupProps) {
+  const [session] = useState(() => new IntakeDraftSession(props.initialMode));
+  const [initial, setInitial] = useState<IntakeDraft>();
+  const [storageError, setStorageError] = useState(false);
+  useEffect(() => {
+    let active = true;
+    if (session.submitted) {
+      window.location.replace('#/review/' + session.submitted);
+      return;
+    }
+    session.rememberEntry();
+    void session.load().then(
+      draft => { if (active) setInitial(draft); },
+      () => { if (active) { setStorageError(true); setInitial(session.empty()); } },
+    );
+    return () => {
+      active = false;
+      const path = window.location.hash;
+      const start = '#/new/' + session.workflow;
+      if (![start, start + '/source', start + '/policies'].includes(path)) {
+        void session.leave().catch(() => {});
+      }
+    };
+  }, [session]);
+  if (!initial) return <div className="page-heading"><p><output>Opening review…</output></p></div>;
+  return <IntakeForm {...props} session={session} initial={initial} storageError={storageError} onStorageError={setStorageError} />;
+}
+
+function IntakeForm({ initialMode, sourceStep, onClose, onSubmit, initial, session, storageError, onStorageError }: SetupProps & {
+  initial: IntakeDraft; session: IntakeDraftSession; storageError: boolean; onStorageError: (failed: boolean) => void;
+}) {
+  const [selection, setSelection] = useState(initial.selection);
+  const { mode, policyRanges, scope } = selection;
+  const [source, setSource] = useState(initial.source);
+  const [originalDocuments, setOriginalDocuments] = useState(initial.policies);
   const documents = useMemo(() => selectedPolicies(originalDocuments, policyRanges), [originalDocuments, policyRanges]);
-  const [scope, setScope] = useState<Scope>();
-  const [draft, setDraft] = useState(emptyPolicyDraft);
+  const [draft, setDraft] = useState(initial.supplemental);
+  const [registration, setRegistration] = useState<'editing' | 'saving' | 'submitted'>('editing');
+  const editedSourceText = useRef(false);
   const [lastError, setLastError] = useState({ step: 1, message: '' });
   const fileRead = useFileRead(sourceStep);
-  const { busy } = fileRead;
+  const busy = registration === 'saving' ? 'Saving review…' : fileRead.busy;
   const heading = useRef<HTMLHeadingElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
-  const review = useIntakeReview(sourceStep, onSubmit, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }));
+  const review = useIntakeReview(sourceStep, registerReview, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }), () => {
+    session.reopen();
+    setRegistration('editing');
+  });
   const isGuide = mode === 'guide';
   const needsUpload = needsPolicyFile(mode, originalDocuments);
   const copy = intakeCopy[mode];
@@ -179,14 +219,45 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
   const page = step === 1
     ? { label: 'Existing policies', title: 'Add existing policies', intro: copy.policyIntro, action: copy.next, ready: canContinue }
     : { label: copy.sourceLabel, title: copy.sourceTitle, intro: copy.sourceIntro, action: copy.submit, ready: sourceReady };
-  const error = step === 2 && review.failure ? documentErrorMessage(review.failure.error) : lastError.step === step ? lastError.message : '';
+  const error = stepError(step, lastError, review.failure);
 
   function setError(message: string) {
     setLastError({ step, message });
   }
 
+  async function registerReview(job: ReviewJob) {
+    const submission = session.beginSubmission();
+    setRegistration('saving');
+    try {
+      const saved = await onSubmit(job);
+      if (!session.isCurrent(submission)) return false;
+      if (saved) {
+        session.markSubmitted(job.key);
+        await session.discard();
+      } else {
+        onStorageError(true);
+      }
+    } catch {
+      onStorageError(true);
+    }
+    if (!session.isCurrent(submission)) return false;
+    setRegistration('submitted');
+    return true;
+  }
+
+  useLayoutEffect(() => {
+    session.rememberEntry();
+  }, [session, sourceStep]);
+  useLayoutEffect(() => {
+    if (registration !== 'editing') return;
+    void session.save({ policies: originalDocuments, source, selection, supplemental: draft })
+      .then(written => { if (written) onStorageError(false); }, () => onStorageError(true));
+  }, [session, registration, originalDocuments, source, selection, draft, onStorageError]);
   useEffect(() => {
-    if (sourceStep && step === 1) window.location.replace(policyPath);
+    if (sourceStep && step === 1) {
+      window.history.replaceState(window.history.state, '', policyPath);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    }
   }, [sourceStep, step, policyPath]);
   useEffect(() => {
     heading.current?.focus({ preventScroll: true });
@@ -209,7 +280,7 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
       setError(documentErrorMessage(cause) + ' Open a PDF policy preview to choose the pages to review.');
     }
     setOriginalDocuments(next);
-    setScope(undefined);
+    if (scope) setSelection({ ...selection, scope: undefined });
     if (fromDraft) setDraft(emptyPolicyDraft);
   }
 
@@ -221,11 +292,9 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
       if (kind === 'bundle') {
         const prepared = await readPreparedReview(files[0]);
         if (!isCurrent()) return false;
-        setMode(prepared.mode);
+        setSelection({ mode: prepared.mode, policyRanges: {}, scope: prepared.scope });
         setSource(prepared.source);
         setOriginalDocuments(prepared.documents);
-        setPolicyRanges({});
-        setScope(prepared.scope);
         setDraft(emptyPolicyDraft);
       } else if (kind === 'source') {
         if (files.length > 1) throw Error('Choose one source file for this review.');
@@ -258,24 +327,21 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
     review.edit();
     const next = documents.filter((doc) => doc.id !== id);
     setOriginalDocuments(originalDocuments.filter((doc) => doc.id !== id));
-    setPolicyRanges((current) => {
-      const nextRanges = { ...current };
-      delete nextRanges[id];
-      return nextRanges;
-    });
-    if (scope) {
-      setScope({
+    const nextRanges = { ...policyRanges };
+    delete nextRanges[id];
+    setSelection({
+      ...selection, policyRanges: nextRanges, scope: scope && {
         ...scope,
         selectedDocuments: next.length,
         selectedPages: next.reduce((count, doc) => count + doc.pages.length, 0),
-      });
-    }
+      },
+    });
   }
 
   function selectPolicyPages(id: string, pages: Policy['pages']) {
     review.edit();
     const ranges = { ...policyRanges, [id]: pages };
-    setPolicyRanges(ranges);
+    setSelection({ ...selection, policyRanges: ranges });
     try {
       checkPolicies(selectedPolicies(originalDocuments, ranges));
       setError('');
@@ -299,12 +365,13 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
         setError(documentErrorMessage(cause));
         return;
       }
-      window.history.pushState({ folioPolicies: policyPath }, '', policyPath + '/source');
+      window.history.pushState({ ...window.history.state, folioPolicies: policyPath }, '', policyPath + '/source');
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     } else if (window.history.state?.folioPolicies === policyPath) {
       window.history.back();
     } else {
-      window.location.replace(policyPath);
+      window.history.replaceState(window.history.state, '', policyPath);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
     }
   }
 
@@ -317,6 +384,7 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
   }
 
   function updateSource(next: IntakeSource) {
+    if (next.text !== source.text) editedSourceText.current = true;
     if (next.text !== source.text || next.document !== source.document || next.range !== source.range ||
       next.selection !== source.selection || next.name !== source.name) review.edit();
     setSource(next);
@@ -379,7 +447,10 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
                   source={source}
                   questions={questions}
                   onFiles={files => importFiles(files, 'source')}
-                  onFinishText={() => { if (sourceReady) review.start(() => prepareReview(snapshot), true); }}
+                  onFinishText={() => {
+                    if (editedSourceText.current && sourceReady) review.start(() => prepareReview(snapshot), true);
+                    editedSourceText.current = false;
+                  }}
                   onEditRange={review.edit}
                   onChange={updateSource}
                 />
@@ -387,7 +458,7 @@ export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps
               </>}
             </fieldset>
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
-            <IntakeActions busy={busy} ready={page.ready}
+            <IntakeActions busy={busy} ready={page.ready} storageError={storageError}
               submitLabel={page.action} view={review.view} onCancel={review.cancel} />
             {busy && <output className="intake-sr-only">{busy}</output>}
           </form>
