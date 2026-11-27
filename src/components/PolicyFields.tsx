@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
 import { ChevronDown, ClipboardPaste, FileText, X } from 'lucide-react';
 import { documentErrorMessage, textPages } from '../review/files';
-import { MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGE_CHARACTERS, type Policy } from '../review/model';
+import { MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGE_CHARACTERS, type IntakePolicy, type Policy } from '../review/model';
+import { LastPolicies, type LastPolicyChoice } from './LastPolicies';
 import { IntakeFile } from './IntakeFile';
 import { PdfViewer } from './PdfViewer';
 import { formatRange, pdfScopeLabel, SourceRange } from './SourceRange';
@@ -21,7 +22,8 @@ export function pastedPolicy(draft: PolicyDraft, number: number): Policy {
 type PolicyFieldsProps = {
   allowPaste: boolean;
   documents: Policy[];
-  originalDocuments: Policy[];
+  originalDocuments: IntakePolicy[];
+  onUseLast: (choice: LastPolicyChoice) => Promise<void>;
   draft: PolicyDraft;
   onDraft: (value: PolicyDraft) => void;
   onFiles: (files: File[]) => Promise<boolean>;
@@ -82,7 +84,7 @@ function PolicyItem({ doc, original, onRemove, onRange, onEditRange }: {
   );
 }
 
-export function PolicyFields({ allowPaste, documents, originalDocuments, draft, onDraft, onFiles, onAdd, onRemove, onRange, onEditRange, onError }: PolicyFieldsProps) {
+export function PolicyFields({ allowPaste, documents, originalDocuments, draft, onDraft, onFiles, onUseLast, onAdd, onRemove, onRange, onEditRange, onError }: PolicyFieldsProps) {
   const upload = useRef<HTMLInputElement>(null);
   const pasteButton = useRef<HTMLButtonElement>(null);
 
@@ -106,6 +108,7 @@ export function PolicyFields({ allowPaste, documents, originalDocuments, draft, 
     <>
       <IntakeFile ref={upload} label="Upload policy files" detail="Drop one or more PDF, TXT or Markdown files here."
         describedBy="intake-intro" attachedFiles={documents.map(doc => doc.pdfFile)} multiple onFiles={onFiles} />
+      {originalDocuments.every(doc => doc.pasted) && <LastPolicies onUse={onUseLast} onError={onError} />}
       {documents.length > 0 && (
         <ul className="intake-documents" aria-label="Added policies">
           {documents.map((doc, index) => <PolicyItem key={doc.id} doc={doc} original={originalDocuments[index]}

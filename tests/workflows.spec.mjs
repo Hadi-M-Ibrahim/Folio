@@ -562,6 +562,182 @@ test('reloading unfinished intake restores the source step, typed questions and 
   await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
 });
 
+test('a new guide can explicitly reuse the full PDF and text policies from a questionnaire', async ({ page, context }) => {
+  const sheets = ['Clerks maintain a visitor register.', 'Managers record closing exceptions.', 'The registrar signs the inspection log.'];
+  const pdf = await printPdf(context, sheets);
+  const pdfName = 'Register handbook.pdf';
+  const textName = 'Closing procedure.txt';
+  const text = ['Staff check the register at closing.', 'Supervisors file the signed copy.'];
+  const pastedName = 'Supplemental memo';
+  const questionFile = 'Closing questionnaire.txt';
+  const guideFile = 'Closing guide.txt';
+  const requests = captureReviewRequests(page);
+  await page.goto('/#/new/questionnaire');
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Use last policies' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Paste a policy' }).click();
+  await page.getByLabel(/Policy title/).fill(pastedName);
+  await page.getByLabel('Policy text', { exact: true }).fill('The front desk holds the spare key.');
+  await page.getByRole('button', { name: 'Add policy', exact: true }).click();
+  await page.getByLabel('Upload policy files').setInputFiles([
+    { name: pdfName, mimeType: 'application/pdf', buffer: pdf },
+    { name: textName, mimeType: 'text/plain', buffer: Buffer.from(text.join('\f')) },
+  ]);
+  await page.getByRole('button', { name: 'Preview ' + pdfName }).click();
+  await chooseRange(page, 'Choose policy pages', /Policy pages/, '1');
+  await continueToSource(page, 'questionnaire');
+  expect(requests).toHaveLength(0);
+  const question = 'Who maintains the visitor register?';
+  const first = page.waitForResponse('**/api/review');
+  await page.getByLabel('Upload questionnaire').setInputFiles({
+    name: questionFile, mimeType: 'text/plain', buffer: Buffer.from(question),
+  });
+  await submitReview(page, 'questionnaire', first);
+  await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
+  expect(requests[0].postDataJSON().pdfAttachments[0].pages).toEqual([1]);
+
+  const guide = await context.newPage();
+  const reusedRequests = captureReviewRequests(guide);
+  await page.close();
+  await guide.goto('/#/new/guide');
+  const use = guide.getByRole('button', { name: 'Use last policies', exact: true });
+  const added = guide.getByRole('list', { name: 'Added policies' });
+  await expect(use).toBeVisible();
+  const intake = guide.getByRole('region', { name: 'Add existing policies' });
+  for (const filename of [pdfName, textName]) await expect(intake).toContainText(filename);
+  for (const excluded of [pastedName, questionFile]) await expect(intake).not.toContainText(excluded);
+  await expect(added).toHaveCount(0);
+  await expect(guide.getByRole('button', { name: 'Continue to guide' })).toBeDisabled();
+  await use.click();
+  await expect(added.getByRole('listitem')).toHaveCount(2);
+  await added.getByRole('button', { name: 'Preview ' + textName }).click();
+  await guide.getByRole('combobox', { name: 'Page in ' + textName }).selectOption({ label: 'Page 2' });
+  await expect(guide.getByRole('textbox', { name: 'Text of ' + textName + ', page 2' })).toHaveValue(text[1]);
+  await added.getByRole('button', { name: 'Preview ' + pdfName }).click();
+  const viewer = guide.getByRole('region', { name: 'PDF preview' });
+  await expect(viewer.getByRole('combobox', { name: 'PDF page' }).getByRole('option')).toHaveCount(3);
+  await chooseRange(guide, 'Choose policy pages', /Policy pages/, '3');
+  await expectPdfCanvas(viewer, pdfName, 3);
+  await chooseRange(guide, 'Choose policy pages', /Policy pages/, '1–3');
+  await continueToSource(guide, 'guide');
+  await expect(guide.getByRole('button', { name: 'Review obligations' })).toBeDisabled();
+  expect(reusedRequests).toHaveLength(0);
+
+  const duty = 'Staff must sign the inspection log.';
+  const second = guide.waitForResponse('**/api/review');
+  await guide.getByLabel('Upload regulatory guide').setInputFiles({
+    name: guideFile, mimeType: 'text/plain', buffer: Buffer.from(duty),
+  });
+  const response = await submitReview(guide, 'guide', second);
+  await expect(guide.getByRole('heading', { name: duty, exact: true })).toBeVisible();
+  expect(reusedRequests).toHaveLength(1);
+  const input = response.request().postDataJSON();
+  expect(input.guide).toBe(duty);
+  expect(input.documents.map(doc => doc.title)).toEqual([pdfName, textName]);
+  expect(input.documents[0].pages).toEqual(sheets.map((text, index) => ({ number: index + 1, text })));
+  expect(input.documents[1].pages).toEqual(text.map((text, index) => ({ number: index + 1, text })));
+  expect(input.pdfAttachments).toHaveLength(1);
+  expect(input.pdfAttachments[0]).toMatchObject({ title: pdfName, role: 'policy', pages: [1, 2, 3] });
+  expect(Buffer.from(input.pdfAttachments[0].data, 'base64').equals(pdf)).toBe(true);
+  await guide.getByRole('link', { name: 'All reviews' }).click();
+  await guide.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await expect(use).toBeVisible();
+  await expect(intake).not.toContainText(guideFile);
+  await use.click();
+  await expect(added.getByRole('listitem')).toHaveCount(2);
+  for (const filename of [pdfName, textName]) await expect(added).toContainText(filename);
+});
+
+test('a later valid upload replaces the reusable set before submission and forgetting it persists', async ({ page, context }) => {
+  const original = 'Original register.txt';
+  const latest = 'Revised register.txt';
+  const requests = captureReviewRequests(page);
+  await page.goto('/#/new/guide');
+  await addPolicy(page, original, 'The registrar keeps the original register.');
+  await page.getByRole('link', { name: 'Folio home' }).click();
+  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  const use = page.getByRole('button', { name: 'Use last policies', exact: true });
+  const intake = page.getByRole('region', { name: 'Add existing policies' });
+  await expect(use).toBeVisible();
+  await expect(intake).toContainText(original);
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
+  await addPolicy(page, latest, 'The supervisor signs the revised register.');
+  await page.getByLabel('Upload policy files').setInputFiles([
+    { name: 'Unaccepted.txt', mimeType: 'text/plain', buffer: Buffer.from('A tentative replacement.') },
+    { name: 'Unsupported.csv', mimeType: 'text/csv', buffer: Buffer.from('title,owner') },
+  ]);
+  await expect(page.getByRole('alert')).toContainText('Choose a PDF, TXT, or Markdown file.');
+  const added = page.getByRole('list', { name: 'Added policies' });
+  await expect(added.getByRole('listitem')).toHaveCount(1);
+  await expect(added).toContainText(latest);
+  expect(requests).toHaveLength(0);
+
+  const fresh = await context.newPage();
+  await page.close();
+  const freshRequests = captureReviewRequests(fresh);
+  await fresh.goto('/#/new/guide');
+  const forget = fresh.getByRole('button', { name: 'Forget saved policies', exact: true });
+  const freshIntake = fresh.getByRole('region', { name: 'Add existing policies' });
+  await expect(forget).toBeVisible();
+  await expect(freshIntake).toContainText(latest);
+  for (const excluded of [original, 'Unaccepted.txt', 'Unsupported.csv']) await expect(freshIntake).not.toContainText(excluded);
+  await expect(fresh.getByRole('button', { name: 'Continue to guide' })).toBeDisabled();
+  await forget.click();
+  await expect(fresh.getByRole('button', { name: 'Use last policies' })).toHaveCount(0);
+  await expect(freshIntake).not.toContainText(latest);
+  await fresh.getByRole('link', { name: 'Folio home' }).click();
+  await fresh.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await fresh.reload();
+  await expect(fresh.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
+  await expect(fresh.getByRole('button', { name: 'Use last policies' })).toHaveCount(0);
+  await expect(freshIntake).not.toContainText(latest);
+  expect(freshRequests).toHaveLength(0);
+});
+
+test('an older saved review can supply policy uploads when a newer review used only pasted text', async ({ page, context }) => {
+  await page.goto('/');
+  await createNamedQuestionnaire(page, 'Earlier review');
+  await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
+  await page.getByRole('button', { name: 'Paste a policy' }).click();
+  await page.getByLabel(/Policy title/).fill('Pasted.txt');
+  await page.getByLabel('Policy text', { exact: true }).fill('The clerk signs the log.');
+  await continueToSource(page, 'questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who signs the log?');
+  await clickReview(page, 'questionnaire');
+  await expect(page.getByRole('heading', { name: 'Who signs the log?', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'All reviews' }).click();
+
+  // Recreate the catalog and draft-store shapes used before reusable uploads.
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('folio-local-reviews');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['catalog', 'drafts'], 'readwrite');
+      tx.objectStore('drafts').delete(IDBKeyRange.bound('recent-policies:', 'recent-policies;'));
+      const cursor = tx.objectStore('catalog').openCursor();
+      cursor.onsuccess = () => {
+        if (!cursor.result) return;
+        const { key, mode, title, status, owner, position } = cursor.result.value;
+        cursor.result.update({ key, mode, title, status, owner, position });
+        cursor.result.continue();
+      };
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  }));
+  const fresh = await context.newPage();
+  await fresh.goto('/#/new/guide');
+  const use = fresh.getByRole('button', { name: 'Use policies from a saved review' });
+  await expect(use).toHaveAccessibleDescription(/Earlier review.*Records\.txt/);
+  await expect(fresh.getByRole('button', { name: 'Continue to guide' })).toBeDisabled();
+  await use.click();
+  const policies = fresh.getByRole('list', { name: 'Added policies' });
+  await expect(policies.getByRole('listitem')).toHaveCount(1);
+  await expect(policies).toContainText('Records.txt');
+  await expect(fresh.getByRole('button', { name: 'Continue to guide' })).toBeEnabled();
+});
+
 test('a submitted review pauses across refresh and resumes once from its saved inputs', async ({ page }) => {
   const questions = Array.from({ length: 11 }, (_, index) => 'Who retains inspection log ' + (index + 1) + ' at closing?');
   const requests = captureReviewRequests(page);

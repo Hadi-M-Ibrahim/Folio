@@ -1,4 +1,4 @@
-import type { FindingState, Mode, Review } from './model';
+import { isUploadedPolicy, type FindingState, type Mode, type Policy, type Review } from './model';
 import type { LocalEdit } from './editJournal';
 import type { ReviewRecipe, StoredJob } from './reviewJob';
 import type { ReviewCheckpoint } from './wholeReview';
@@ -6,7 +6,7 @@ import type { ReviewCheckpoint } from './wholeReview';
 export type ReviewSummary = { key: string; title: string; mode: Mode; status: StoredJob['status'] };
 export type ReviewMeta = ReviewSummary & { owner: string };
 
-type CatalogEntry = ReviewMeta & { position: number };
+type CatalogEntry = ReviewMeta & { position: number; policyFiles?: string[] };
 type FindingEntry = { reviewKey: string; findingKey: string; state: FindingState };
 type StoreName = 'catalog' | 'jobs' | 'progress' | 'findings' | 'drafts' | 'edits';
 type Progress = { checkpoint?: ReviewCheckpoint; error?: string };
@@ -138,6 +138,38 @@ export function readCatalog(): Promise<ReviewMeta[]> {
   });
 }
 
+function uploadNames(content: Pick<Review, 'input' | 'scope'>) {
+  // Prepared reviews contain extracted passages from a selected corpus.
+  return content.scope ? [] : content.input.documents.filter(isUploadedPolicy).map(doc => doc.title);
+}
+
+const legacyUploadNames = new Map<string, string[]>();
+export function readPreviousPolicyReview(): Promise<{ key: string; title: string; files: string[] } | undefined> {
+  return transaction(['catalog', 'jobs'], 'readonly', async tx => {
+    const rows: CatalogEntry[] = await request(tx.objectStore('catalog').index('position').getAll());
+    for (const { key, title, policyFiles } of rows.reverse()) {
+      let files = policyFiles ?? legacyUploadNames.get(key);
+      if (!files) {
+        // Older rows lack the names index. Inspect the stored input without rebuilding PDFs.
+        const payload: PackedValue | undefined = await request(tx.objectStore('jobs').get(key));
+        files = payload ? uploadNames(payload.data as Pick<Review, 'input' | 'scope'>) : [];
+        legacyUploadNames.set(key, files);
+      }
+      if (files.length) return { key, title, files };
+    }
+  });
+}
+
+export function readSavedPolicyUploads(key: string): Promise<Policy[]> {
+  return transaction(['jobs'], 'readonly', async tx => {
+    const payload: PackedValue | undefined = await request(tx.objectStore('jobs').get(key));
+    if (!payload) return [];
+    const files = payload.files.filter(({ path }) => path[1] === 'input' && path[2] === 'documents');
+    const content = unpackFiles<Pick<Review, 'input' | 'scope'>>({ data: payload.data, files });
+    return content.scope ? [] : content.input.documents.filter(isUploadedPolicy);
+  });
+}
+
 function findingRange(reviewKey: string) {
   // Array keys sort after every string, so this includes every finding key for this review.
   return IDBKeyRange.bound([reviewKey], [reviewKey, []]);
@@ -196,7 +228,8 @@ export function createSavedReview(record: StoredJob, owner: string): Promise<voi
     const newest = await request(catalog.index('position').openKeyCursor(null, 'prev'));
     const position = newest ? Number(newest.key) + 1 : 0;
     const { key, title, mode, status } = record;
-    catalog.add({ key, title, mode, status, owner, position } satisfies CatalogEntry);
+    const policyFiles = uploadNames(record.status === 'complete' ? record.review : record.recipe);
+    catalog.add({ key, title, mode, status, owner, position, policyFiles } satisfies CatalogEntry);
     tx.objectStore('jobs').add(payload, key);
     if (record.status !== 'complete') storeProgress(tx, record);
   }, () => packFiles(record.status === 'complete' ? record.review : record.recipe));
@@ -292,17 +325,39 @@ export function forgetStagedEdit(id: string): Promise<void> {
   return transaction(['edits'], 'readwrite', tx => { tx.objectStore('edits').delete(id); });
 }
 
+type DraftVersion = { key: string; revision: string | null | undefined };
+
+async function getDraft<T>(drafts: IDBObjectStore, key: string): Promise<T | undefined> {
+  const value: PackedValue | undefined = await request(drafts.get(key));
+  return value && unpackFiles<T>(value);
+}
+
+async function matchesVersion(drafts: IDBObjectStore, expected: DraftVersion) {
+  const current = await getDraft<{ revision: string } | null>(drafts, expected.key);
+  return (current === null ? null : current?.revision) === expected.revision;
+}
+
 export function readDraft<T>(key: string): Promise<T | undefined> {
+  return transaction(['drafts'], 'readonly', tx => getDraft<T>(tx.objectStore('drafts'), key));
+}
+
+export function readDraftParts<T>(keys: string[], expected: DraftVersion): Promise<T[] | undefined> {
   return transaction(['drafts'], 'readonly', async tx => {
-    const value: PackedValue | undefined = await request(tx.objectStore('drafts').get(key));
-    return value && unpackFiles<T>(value);
+    const drafts = tx.objectStore('drafts');
+    if (!await matchesVersion(drafts, expected)) return undefined;
+    const values: (T | undefined)[] = await Promise.all(keys.map(key => getDraft<T>(drafts, key)));
+    if (values.every((part): part is T => part !== undefined)) return values;
+    throw Error('Some of the saved policy files are missing.');
   });
 }
 
-export function writeDraftParts(entries: Record<string, unknown>): Promise<void> {
-  return transaction(['drafts'], 'readwrite', (tx, packed) => {
+export function writeDraftParts(entries: Record<string, unknown>, expected?: DraftVersion, remove: string[] = []): Promise<boolean> {
+  return transaction(['drafts'], 'readwrite', async (tx, packed) => {
     const drafts = tx.objectStore('drafts');
+    if (expected && !await matchesVersion(drafts, expected)) return false;
     for (const [key, value] of packed) drafts.put(value, key);
+    for (const key of remove) drafts.delete(key);
+    return true;
   }, () => Promise.all(Object.entries(entries).map(async ([key, value]) => [key, await packFiles(value)] as const)));
 }
 

@@ -183,6 +183,18 @@
 }
 .intake-fields:disabled .intake-file { opacity: .65; }
 .intake-bundle { justify-self: start; font-size: 12px; }
+.last-policies {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.last-policies-use, .last-policies-forget { min-height: 36px; }
+.last-policies-use { display: inline-flex; align-items: center; justify-self: start; gap: 8px; text-align: left; font-weight: 550; }
+.last-policies-forget { padding: 0 4px; color: var(--muted); font-size: 13px; }
+.last-policies button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.last-policies p { grid-column: 1 / -1; margin: 0 0 0 25px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .intake-source-options { display: flex; align-items: start; flex-wrap: wrap; gap: 0 24px; }
 .intake-source-options:has(> div [aria-expanded='true']) { display: grid; gap: 6px; }
 .intake-text-button { font-weight: 500; }

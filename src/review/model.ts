@@ -17,6 +17,14 @@ export type Policy = {
   pages: { number: number; text: string }[];
   pdfFile?: File;
 };
+export type IntakePolicy = Policy & { pasted?: true; prepared?: true };
+
+const uploadedTextId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export function isUploadedPolicy(doc: IntakePolicy) {
+  // Native file imports have a browser-generated ID. Older prepared bundles can lack origin flags.
+  return !doc.pasted && !doc.prepared && (Boolean(doc.pdfFile) || (/\.(txt|md)$/i.test(doc.title) && uploadedTextId.test(doc.id)));
+}
+
 export type PdfAttachment = {
   role: 'source' | 'policy';
   documentId: string;

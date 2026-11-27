@@ -15,6 +15,8 @@ Keep the tab open while Folio reviews a long document. The progress bar tracks c
 
 Each section sends the corresponding source PDF pages to Anthropic. Folio searches every selected policy page before assessing a question. For larger PDF packets, it attaches the policy pages containing candidate evidence, including exceptions and follow-up matches. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section sent to Folio and must fit its 4 MB request budget.
 
+On the existing-policies step, **Use last policies** adds the files you last uploaded in this browser. You can change the files or choose new page ranges for this review. **Forget** clears the reusable set.
+
 Folio saves uploaded files, page selections, responses, and decisions in this browser. After a refresh, choose **Resume review** to continue an interrupted run from its last finished section. The **Reviews** list has a menu on each row to rename, move, or delete it. Clearing this site’s browser data removes the saved copies.
 
 ## Repository layout

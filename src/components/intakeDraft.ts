@@ -1,6 +1,5 @@
 import { deleteDraft, readDraft, writeDraftParts } from '../review/localReviews';
-import type { Mode, Policy, Scope } from '../review/model';
-import type { IntakePolicy } from './intakeReview';
+import type { IntakePolicy, Mode, Policy, Scope } from '../review/model';
 import { emptyPolicyDraft } from './PolicyFields';
 import type { IntakeSource } from './SourceFields';
 
