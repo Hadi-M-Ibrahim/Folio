@@ -120,6 +120,20 @@ class ProviderUnavailable(Exception):
     pass
 
 
+class ProviderServiceError(ProviderUnavailable):
+    """Changing the review input will not resolve this upstream failure."""
+
+
+def provider_http_error(status):
+    if status == 429:
+        return ProviderServiceError("Anthropic has reached its request limit. Wait a few minutes, then retry.")
+    if status in (401, 402, 403, 404):
+        return ProviderServiceError("Folio cannot access its Anthropic model. The service owner needs to check the API configuration.")
+    if status >= 500:
+        return ProviderServiceError("Anthropic is temporarily unavailable. Try again shortly.")
+    return ProviderUnavailable()
+
+
 class OutputTruncated(ProviderUnavailable):
     """A smaller tool assignment may fit the provider's response budget."""
 
@@ -207,12 +221,12 @@ def provider_retry_delay(exc):
 def read_provider_response(outgoing, deadline):
     # Both attempts and the wait share the original call's timeout budget.
     call_deadline = min(deadline, time.monotonic() + CALL_SECONDS)
-    retried = False
+    retry_status = None
     while True:
         check_session()
         timeout = call_deadline - time.monotonic()
-        if retried and timeout < MIN_RETRY_BUDGET:
-            raise ProviderUnavailable
+        if retry_status is not None and timeout < MIN_RETRY_BUDGET:
+            raise provider_http_error(retry_status)
         if timeout <= 0:
             raise DeadlineExceeded
         try:
@@ -220,12 +234,12 @@ def read_provider_response(outgoing, deadline):
                 return response.read(MAX_RESPONSE_BYTES + 1)
         except error.HTTPError as exc:
             with exc:
-                delay = None if retried else provider_retry_delay(exc)
+                delay = provider_retry_delay(exc) if retry_status is None else None
                 retry = delay is not None and delay + MIN_RETRY_BUDGET <= call_deadline - time.monotonic()
                 logger.warning("anthropic_http_error status=%d retry=%s", exc.code, retry)
-            if not retry:
-                raise ProviderUnavailable from None
-        retried = True
+                if not retry:
+                    raise provider_http_error(exc.code) from None
+                retry_status = exc.code
         time.sleep(delay)
 
 
@@ -249,7 +263,7 @@ def invoke_tool(system, tool, input_data, key, deadline, max_tokens=3800, *, att
     except (error.URLError, OSError) as exc:
         if isinstance(getattr(exc, "reason", exc), TimeoutError):
             raise DeadlineExceeded from None
-        raise ProviderUnavailable from None
+        raise ProviderServiceError("Folio could not reach Anthropic. Try again shortly.") from None
     except (HTTPException, ValueError, KeyError, TypeError, AttributeError, RecursionError):
         # Provider responses may contain source content. Never log a provider body or exception.
         raise ProviderUnavailable from None
@@ -444,6 +458,10 @@ def assess_findings(findings, pages, key, deadline, *, allow_followup=True, atta
                 batch = assess_batch(original, pages, key, deadline, allow_followup=permit_lookup,
                                      attachments=attachments, require_complete=required)
             except ProviderUnavailable as exc:
+                if isinstance(exc, ProviderServiceError) and (required or not any(
+                    row["analysisEngine"] == "anthropic" for row in by_id.values()
+                )):
+                    raise
                 if required:
                     if len(findings) > 1 and isinstance(exc, (DeadlineExceeded, OutputTruncated, IncompleteAssessment, MissingToolCall)):
                         raise ReviewPartTooLarge("The model could not finish assessing every criterion in this part.") from None
@@ -517,9 +535,30 @@ def planning_failure(exc, mode, source, require_complete):
     return ProviderUnavailable("Anthropic could not complete the search plan. Try again.")
 
 
+def review_plan(mode, source, criteria, key, deadline, source_pdf, document_part, require_complete):
+    from .planner import IncompletePlan, UnverifiedQuestionnairePlan, plan_criteria
+
+    try:
+        plan = plan_criteria(mode, source, criteria, key, deadline, attachments=source_pdf, document_part=document_part)
+        return plan, "anthropic", ""
+    except ProviderServiceError:
+        raise
+    except ProviderUnavailable as exc:
+        # A questionnaire already specifies every criterion. Its search terms are optional.
+        if mode == "questionnaire" and criteria and not isinstance(exc, DeadlineExceeded):
+            plan = [{**row, "source": question} for row, question in zip(basic_plan(criteria), source, strict=True)]
+        elif require_complete or isinstance(exc, IncompletePlan) or not criteria:
+            raise planning_failure(exc, mode, source, require_complete) from None
+        else:
+            plan = basic_plan(criteria)
+        plan_notice = "The model planner was unavailable. Search used terms from the original criteria."
+        if isinstance(exc, UnverifiedQuestionnairePlan):
+            plan_notice = "Search used the original questions because the model's search plan could not be verified."
+        return plan, "local", plan_notice
+
+
 def review_with_provider(payload, criteria, pages, key):
     from .pdf_reader import read_pdf_text, read_source
-    from .planner import IncompletePlan, UnverifiedQuestionnairePlan, plan_criteria
 
     deadline = time.monotonic() + REVIEW_SECONDS
     mode = payload["mode"]
@@ -537,21 +576,7 @@ def review_with_provider(payload, criteria, pages, key):
     if payload.get("readSourcePdf"):
         criteria = source_criteria(mode, {**read_text, "documentPart": document_part})
     source = source_input["questions" if mode == "questionnaire" else "guide"]
-    plan_notice = ""
-    try:
-        plan = plan_criteria(mode, source, criteria, key, deadline, attachments=source_pdf, document_part=document_part)
-        planner = "anthropic"
-    except UnverifiedQuestionnairePlan:
-        # An invalid set of search terms cannot change the submitted questions or their wording.
-        plan = [{**row, "source": question} for row, question in zip(basic_plan(criteria), source, strict=True)]
-        planner = "local"
-        plan_notice = "Search used the original questions because the model's search plan could not be verified."
-    except ProviderUnavailable as exc:
-        if require_complete or isinstance(exc, IncompletePlan) or not criteria:
-            raise planning_failure(exc, mode, source, require_complete) from None
-        plan = basic_plan(criteria)
-        planner = "local"
-        plan_notice = "The model planner was unavailable. Search used terms from the original criteria."
+    plan, planner, plan_notice = review_plan(mode, source, criteria, key, deadline, source_pdf, document_part, require_complete)
     findings = retrieve(pages, plan) if plan else []
     notice = ""
     if findings:

@@ -238,7 +238,7 @@ def plan_batch(mode, source, batch, key, deadline, attachments):
     try:
         for part in parts:
             rows.extend(plan_batch(mode, source, part, key, deadline, attachments))
-    except (model.DeadlineExceeded, UnverifiedQuestionnairePlan):
+    except (model.DeadlineExceeded, model.ProviderServiceError, UnverifiedQuestionnairePlan):
         raise
     except model.ProviderUnavailable:
         raise IncompletePlan from None
@@ -253,7 +253,7 @@ def plan_criteria(mode, source, fallback, key, deadline, *, attachments=(), docu
     for batch in groups:
         try:
             plan.extend(plan_batch(mode, source, batch, key, deadline, attachments))
-        except (model.DeadlineExceeded, UnverifiedQuestionnairePlan):
+        except (model.DeadlineExceeded, model.ProviderServiceError, UnverifiedQuestionnairePlan):
             raise
         except model.ProviderUnavailable:
             if len(groups) > 1:

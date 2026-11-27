@@ -40,7 +40,7 @@ def transcribe(mode, attachment, numbers, key, deadline):
     try:
         result = model.invoke_tool(SYSTEM, TOOL, {"role": attachment["role"], "mode": mode, "pages": numbers},
                                    key, deadline, max_tokens=16000, attachments=[attachment])
-    except (model.DeadlineExceeded, model.OutputTruncated):
+    except (model.DeadlineExceeded, model.OutputTruncated, model.ProviderServiceError):
         raise
     except model.ProviderUnavailable:
         raise model.ProviderUnavailable(message) from None

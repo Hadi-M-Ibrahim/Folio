@@ -218,6 +218,18 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("planner was unavailable", result["notice"])
         self.assertEqual(result["findings"][0]["supporting"][0]["page"], 2)
 
+    def test_global_provider_limit_reaches_user_without_splitting_or_restarting(self):
+        questions = [f"Who keeps inspection records for site {n}?" for n in range(25)]
+        payload = sample(questions=questions, allowModel=True, modelSharingConsent=True, requireComplete=True)
+        limited = model.provider_http_error(429)
+        plan = {"criteria": [{"sourceId": "s1", "searchTerms": ["records"]}]}
+        for submitted, responses in ((questions, [limited]), (questions[:1], [plan, limited])):
+            with self.subTest(questions=len(submitted)), patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test"}, clear=True), \
+                 patch.object(model, "invoke_tool", side_effect=responses) as invoke, \
+                 self.assertRaisesRegex(model.ProviderServiceError, "request limit"):
+                api.review({**payload, "questions": submitted}, local_operator=True)
+            self.assertEqual(invoke.call_count, len(responses))
+
     def test_interrupted_assessment_keeps_completed_batch_and_all_remaining_criteria(self):
         questions = [f"What does procedure {n} require?" for n in range(12)]
         plan = {"criteria": [{"sourceId": f"s{n + 1}", "searchTerms": ["procedure"]} for n in range(len(questions))]}
@@ -276,7 +288,7 @@ class ReviewTests(unittest.TestCase):
                     with patch.object(model, "invoke_tool", side_effect=responses), self.assertRaises(ReviewPartTooLarge):
                         api.review({**payload, **flags})
             with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable), \
-                 self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
+                 self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
                 api.review({**payload, "requireComplete": True, "documentPart": False})
 
     def test_direct_large_questionnaire_returns_every_assessed_prompt_with_verified_policy_citations(self):

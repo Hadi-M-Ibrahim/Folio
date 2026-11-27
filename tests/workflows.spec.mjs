@@ -350,7 +350,7 @@ test('a provider outage preserves the question and uploaded policy for retry', a
   release();
   const first = await response;
   expect(first.status()).toBe(503);
-  await expect(page.getByRole('alert')).toContainText('Anthropic could not complete the assessment. Try again.');
+  await expect(page.getByRole('alert')).toContainText('Folio could not reach Anthropic. Try again shortly.');
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Outages.txt');
   const retry = await submitReview(page, 'questionnaire');
   expect(retry.ok()).toBe(true);
@@ -1085,6 +1085,8 @@ test('one submission recovers late incomplete batches and exports all 65 questio
   );
   expect(parts.flatMap(part => part.calls.filter(call => call.omitted).map(call => [call.tool, call.omitted])))
     .toEqual([['record_search_plan', questions[56]], ['record_review', questions[63]]]);
+  expect(parts[0].result.planningEngine).toBe('local');
+  expect(parts[0].result.engine).toBe('anthropic');
   for (const { input, calls, result } of parts) {
     const originalPages = [...new Set(input.questions.map(question => Math.floor(questions.indexOf(question) / 5) + 1))];
     expect(input.pdfAttachments).toHaveLength(2);
@@ -1283,7 +1285,7 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
   await page.getByRole('button', { name: 'Find evidence' }).click();
   release();
-  await expect(page.getByRole('alert')).toContainText('Anthropic could not complete the assessment.');
+  await expect(page.getByRole('alert')).toContainText('Folio could not reach Anthropic.');
   page.off('response', capture);
   expect(firstAttempt.length).toBeGreaterThan(2);
   expect(firstAttempt[0].status()).toBe(429);

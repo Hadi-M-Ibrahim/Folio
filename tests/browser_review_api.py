@@ -123,6 +123,9 @@ def provider_reply(outgoing, *, timeout):
     if name == "record_pdf_pages":
         result = read_scan(data)
     elif name == "record_search_plan":
+        if any(unit["text"] == "1. Who keeps inspection log 1?" for unit in data["sources"]):
+            # No usable plan on the very first part of the 65-question PDF.
+            return io.BytesIO(b'{"stop_reason":"end_turn","content":null}')
         result = search_plan(data)
     else:
         assert name == "record_review"
