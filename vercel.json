@@ -1,6 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
+  "redirects": [
+    { "source": "/assets/exportResponsePdf-:hash([A-Za-z0-9_-]+).js", "destination": "/downloads/responses-v1.js", "permanent": false }
+  ],
   "rewrites": [
     { "source": "/api/review-session", "destination": "/api/review?control=session" }
   ],
@@ -10,6 +13,12 @@
     }
   },
   "headers": [
+    {
+      "source": "/downloads/responses-v1.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
     {
       "source": "/assets/:path*",
       "headers": [
