@@ -387,6 +387,123 @@ test('a provider outage preserves the question and uploaded policy for retry', a
   await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
 });
 
+for (const mode of ['questionnaire', 'guide']) {
+  test(`a submitted ${mode} reopens from home while running and finishes at the same link`, async ({ page }) => {
+    const source = mode === 'guide' ? 'Staff must retain the inspection log.' : 'Who retains the inspection log?';
+    const requests = captureReviewRequests(page);
+    await page.goto('/#/new/' + mode);
+    await pasteSource(page, mode, source);
+    await page.getByRole('button', { name: 'Continue to policies' }).click();
+    const release = await holdNextReview(page);
+    const started = page.waitForRequest('**/api/review');
+    await addPolicy(page, 'Inspection.txt', 'The registrar retains the inspection log.');
+    const request = await started;
+    const home = page.getByRole('link', { name: 'Folio home' });
+    const progress = page.getByRole('progressbar', { name: 'Review progress' });
+    const row = page.getByRole('region', { name: 'Reviews in this tab' }).getByRole('link');
+    let href;
+    try {
+      await clickReview(page, mode);
+      await expect(progress).toBeVisible();
+      await home.click();
+      await expect(row).toHaveCount(1);
+      await expect(row).toContainText('In progress');
+      href = await row.getAttribute('href');
+      await row.click();
+      await expect(progress).toBeVisible();
+      await home.click();
+      await expect(row).toContainText('In progress');
+    } finally {
+      release();
+    }
+    const result = await request.response();
+    expect(result?.ok()).toBe(true);
+    await expect(row).not.toContainText('In progress');
+    await expect(row).toHaveCount(1);
+    await expect(row).toHaveAttribute('href', href);
+    await expect(page).toHaveURL(/#\/$/);
+    await row.click();
+    await expect(page.getByRole('heading', { name: source, exact: true })).toBeVisible();
+    expect(requests).toHaveLength(1);
+  });
+}
+
+test('cancelling a second review leaves the first available for retry from home', async ({ page }) => {
+  const question = 'Who keeps the register?';
+  const requests = captureReviewRequests(page);
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', question);
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  const failQuestionnaire = await holdNextReview(page, route => route.fulfill({
+    status: 503, json: { error: 'Assessment interrupted.' },
+  }));
+  const started = page.waitForRequest('**/api/review');
+  await addPolicy(page, 'Register.txt', 'The registrar keeps the register.');
+  await started;
+  await clickReview(page, 'questionnaire');
+  await page.getByRole('link', { name: 'All reviews' }).click();
+  const list = page.getByRole('region', { name: 'Reviews in this tab' });
+  const questionnaire = list.getByRole('link', { name: /State questionnaire/ });
+  const href = await questionnaire.getAttribute('href');
+
+  await page.getByRole('link', { name: /Review a new policy guide/ }).click();
+  await pasteSource(page, 'guide', 'Staff must retain the signed register.');
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  const releaseGuide = await holdNextReview(page);
+  const guide = page.waitForRequest('**/api/review');
+  try {
+    await addPolicy(page, 'Records.txt', 'Staff keep the signed register.');
+    const guideRequest = await guide;
+    await clickReview(page, 'guide');
+    await page.getByRole('link', { name: 'All reviews' }).click();
+    await expect(list.getByRole('link', { name: /In progress/ })).toHaveCount(2);
+    await list.getByRole('link', { name: /Regulatory guide/ }).click();
+    const token = guideRequest.headers()['x-folio-review-token'];
+    const revoked = page.waitForRequest(req => req.url().endsWith('/api/review-session') && req.postDataJSON().token === token);
+    await page.getByRole('button', { name: 'Cancel review' }).click();
+    await revoked;
+    await expect(list.getByRole('link')).toHaveCount(1);
+    await expect(questionnaire).toContainText('In progress');
+  } finally {
+    releaseGuide();
+    failQuestionnaire();
+  }
+
+  await expect(questionnaire).toContainText('Needs attention');
+  await questionnaire.click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.getByRole('button', { name: 'Retry review' }).click();
+  await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'All reviews' }).click();
+  await expect(list.getByRole('link')).toHaveCount(1);
+  await expect(questionnaire).toHaveAttribute('href', href);
+  await expect(questionnaire).toContainText('Ready');
+  expect(requests.map(req => req.postDataJSON().mode)).toEqual(['questionnaire', 'guide', 'questionnaire']);
+});
+
+test('leaving an unsubmitted review keeps speculative work out of the tab list', async ({ page }) => {
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?');
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  const release = await holdNextReview(page);
+  const started = page.waitForRequest('**/api/review');
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  const request = await started;
+  const list = page.getByRole('region', { name: 'Reviews in this tab' });
+  try {
+    await expectQuietReview(page);
+    await page.getByRole('link', { name: 'Folio home' }).click();
+    await expect(page.getByRole('heading', { name: 'Policy review', exact: true })).toBeVisible();
+    await expect(list).toHaveCount(0);
+  } finally {
+    release();
+  }
+  const response = await request.response();
+  await response?.finished();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(list).toHaveCount(0);
+});
+
 test('a prepared review waits for submission and rejects a keyword-only result', async ({ page }) => {
   const question = 'Who keeps inspection records?';
   const input = { mode: 'questionnaire', questions: [question], allowModel: false, documents: [{

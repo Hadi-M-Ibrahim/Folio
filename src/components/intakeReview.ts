@@ -7,7 +7,7 @@ import {
 } from '../review/model';
 import { emptyPolicyDraft, pastedPolicy } from './PolicyFields';
 import type { IntakeSource } from './SourceFields';
-import type { RunReview } from './useIntakeReview';
+import { ReviewJob } from '../review/reviewJob';
 
 export type IntakePolicy = Policy & { pasted?: true };
 
@@ -58,7 +58,7 @@ export function reviewInput(mode: Mode, source: IntakeSource, questions: string[
 export function prepareReview({ mode, source, questions, documents, originals, draft, scope }: {
   mode: Mode; source: IntakeSource; questions: string[]; documents: Policy[]; originals: IntakePolicy[];
   draft: typeof emptyPolicyDraft; scope?: Scope;
-}): RunReview {
+}): ReviewJob {
   if (needsPolicyFile(mode, originals)) throw Error(guidePolicyRequired);
   const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
   const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
@@ -67,7 +67,8 @@ export function prepareReview({ mode, source, questions, documents, originals, d
   checkInput(input);
   let policyAttachments: PdfAttachment[] | undefined;
 
-  return async (signal, onProgress, mayWaitForQuota) => {
+  const title = source.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || modeLabels[mode] + ' review';
+  return new ReviewJob(mode, title, async (signal, onProgress, mayWaitForQuota) => {
     if (!policyAttachments) {
       const attachments = await attachPolicies(input, originals, Boolean(source.document?.pdfFile), signal);
       signal.throwIfAborted();
@@ -79,8 +80,6 @@ export function prepareReview({ mode, source, questions, documents, originals, d
       policyAttachments, signal, onProgress, mayWaitForQuota,
     });
     return {
-      key: crypto.randomUUID(),
-      title: source.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || modeLabels[mode] + ' review',
       input: {
         ...input, ...(result.guide !== undefined && { guide: result.guide }), ...(result.questions && { questions: result.questions }),
         documents: policies.map(doc => withReturnedPages(doc, result.policyPageText?.find(record => record.documentId === doc.id)?.pages)),
@@ -88,5 +87,5 @@ export function prepareReview({ mode, source, questions, documents, originals, d
       result, sourceDocument: source.document && withReturnedPages(source.document, result.sourcePages),
       sourceSelection: source.selection, scope: includeDraft ? undefined : scope,
     };
-  };
+  });
 }

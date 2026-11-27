@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useReviewState, type ReviewJob } from './review/reviewJob';
 import { PageFrame, workflows } from './components/PageFrame';
-import { modeLabels, type FindingState, type Review } from './review/model';
+import { modeLabels, type FindingState } from './review/model';
 
 function onHashChange(notify: () => void) {
   window.addEventListener('hashchange', notify);
@@ -13,13 +14,14 @@ function currentPath() {
 
 export default function App() {
   const path = useSyncExternalStore(onHashChange, currentPath, () => '');
-  const [reviews, setReviews] = useState<Review[]>([]);
+  const [reviews, setReviews] = useState<ReviewJob[]>([]);
   const [findingStates, setFindingStates] = useState(() => new Map<string, FindingState>());
   const [screens, setScreens] = useState<typeof import('./components/reviewScreens')>();
   const [loadFailed, setLoadFailed] = useState(false);
   const setupMode = workflows.find(({ mode }) => path === '/new/' + mode || path === '/new/' + mode + '/policies')?.mode;
   const lastView = useRef({ path, screens });
   const review = reviews.find((item) => path === '/review/' + item.key);
+  const reviewState = useReviewState(review);
   const home = !setupMode && !review;
 
   useLayoutEffect(() => {
@@ -52,11 +54,12 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' });
     const heading = document.querySelector<HTMLElement>('main h1');
     heading?.focus({ preventScroll: true });
-  }, [home, path, review, setupMode, screens]);
+  }, [home, path, review, reviewState.kind, setupMode, screens]);
 
-  function openReview(newReview: Review) {
-    setReviews((current) => [newReview, ...current]);
-    window.location.hash = '/review/' + newReview.key;
+  function trackReview(job: ReviewJob) {
+    if (job.submitted) return;
+    job.track(() => setReviews(current => current.filter(item => item !== job)));
+    setReviews(current => [job, ...current]);
   }
 
   function updateFinding(key: string, changes: FindingState) {
@@ -81,9 +84,11 @@ export default function App() {
           {loadFailed && <button className="secondary" onClick={() => window.location.reload()}>Reload review</button>}
         </div>
       ) : setupMode ? (
-        <screens.Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onDone={openReview} />
+        <screens.Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onSubmit={trackReview} />
+      ) : reviewState.kind === 'complete' ? (
+        <screens.ReviewWorkspace key={reviewState.review.key} review={reviewState.review} findingStates={findingStates} onUpdateFinding={updateFinding} />
       ) : review && (
-        <screens.ReviewWorkspace key={review.key} review={review} findingStates={findingStates} onUpdateFinding={updateFinding} />
+        <screens.PendingReview job={review} state={reviewState} />
       )}
     </PageFrame>
   );

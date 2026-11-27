@@ -175,7 +175,7 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
     const done = completed.at(-1)?.span.end;
     if (series.phase === 'questions' && done && cause instanceof Error) {
       throw new Error(cause.message + ' ' + done + ' of ' + series.length +
-        ' questions completed. Choose Find evidence to resume in this tab.', { cause });
+        ' questions completed. Retry to resume in this tab.', { cause });
     }
     throw cause;
   }
