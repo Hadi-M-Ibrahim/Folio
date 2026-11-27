@@ -122,19 +122,32 @@ class PdfReviewTests(unittest.TestCase):
         self.assertEqual(result["findings"][0]["supporting"][0]["quote"], RULE)
         self.assertIn("original PDF pages", result["notice"])
 
-    def test_mixed_guide_preserves_page_order_and_offsets_without_policies(self):
+    def test_mixed_guide_preserves_page_order_and_offsets_during_policy_comparison(self):
         source = pdf_attachment("source", [7, 9])
-        request = {**payload(), "readSourcePdf": True, "mode": "guide", "documents": [], "pdfAttachments": [source]}
+        request = {**payload(), "readSourcePdf": True, "mode": "guide", "pdfAttachments": [source]}
         del request["questions"]
         duty = "The office must retain records."
         rows = [{"number": 7, "text": "📋 Paperwork."}, {"number": 9, "text": duty}]
         plan = {"criteria": [{"sourceId": "s2", "question": "Are records retained?", "searchTerms": ["records"]}]}
-        result, calls = self.run_provider(request, [{"pages": rows}, plan])
+        result, calls = self.run_provider(request, [{"pages": rows}, plan, {"assessments": [SUPPORT]}])
         self.assertEqual(result["sourcePages"], rows)
         self.assertEqual(result["guide"], "\n\n".join(row["text"] for row in rows))
         finding, = result["findings"]
         self.assertEqual(result["guide"][finding["criterionStart"]:finding["criterionEnd"]], duty)
         self.assert_documents(calls[1][1], [source])
+
+    def test_guide_transcription_can_omit_policies_but_cannot_be_used_to_review_obligations(self):
+        source = pdf_attachment("source", [2])
+        part = {"mode": "guide", "readSourcePdf": True, "documentPart": True, "documents": [],
+                "allowModel": True, "modelSharingConsent": True, "pdfAttachments": [source]}
+        with patch.object(model, "invoke_tool") as invoke, self.assertRaisesRegex(search.InvalidRequest, "at least one existing policy"):
+            api.review(part)
+        invoke.assert_not_called()
+        rows = [{"number": 2, "text": "Staff must retain forms."}]
+        result, calls = self.run_provider({**part, "transcribeSourceOnly": True}, [{"pages": rows}])
+        self.assertEqual([tool for tool, _, _ in calls], ["record_pdf_pages"])
+        self.assertEqual(result["sourcePages"], rows)
+        self.assertEqual(result["findings"], [])
 
     def test_consent_controls_pdf_transport_and_scanning(self):
         request = payload()

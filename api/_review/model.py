@@ -441,9 +441,7 @@ def local_review(criteria, pages, *, document_part=False):
         if document_part:
             return [], "", "local", {}
         raise InvalidRequest("Local extraction found no explicit review criterion. Select a guide section stating the duty or checklist.")
-    summary = ("Review the ranked policy passages for each criterion." if pages
-               else "Folio extracted guide clauses for review. No policies were supplied for comparison.")
-    return retrieve(pages, basic_plan(criteria)), summary, "local", {}
+    return retrieve(pages, basic_plan(criteria)), "Review the ranked policy passages for each criterion.", "local", {}
 
 
 def model_review(payload, criteria, pages, local_operator=False):
@@ -511,13 +509,13 @@ def review_with_provider(payload, criteria, pages, key):
         plan = plan_criteria(mode, source, criteria, key, deadline, attachments=source_pdf, document_part=document_part)
         planner = "anthropic"
     except ProviderUnavailable as exc:
-        if require_complete or isinstance(exc, IncompletePlan) or not criteria or not pages:
+        if require_complete or isinstance(exc, IncompletePlan) or not criteria:
             raise planning_failure(exc, mode, source, require_complete) from None
         plan = basic_plan(criteria)
         planner = "local"
     findings = retrieve(pages, plan) if plan else []
     notice = ""
-    if pages and findings:
+    if findings:
         findings, notice = assess_findings(findings, pages, key, deadline, attachments=attachments, require_complete=require_complete)
         if not any(row["analysisEngine"] == "anthropic" for row in findings):
             raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.")

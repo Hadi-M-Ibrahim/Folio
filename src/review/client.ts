@@ -6,6 +6,7 @@ import {
 } from './model';
 
 export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(window.location.hostname);
+export const guidePolicyRequired = 'Upload at least one existing policy file to review this guide.';
 
 function hasText(value: unknown, maxLength = Infinity): value is string {
   return typeof value === 'string' && value.length <= maxLength && Boolean(value.trim());
@@ -44,12 +45,14 @@ function checkPolicies(documents: Policy[]) {
     throw Error('This review exceeds the limit of 1,200 pages or 2.4 million policy characters.');
 }
 
-export function checkInput(input: ReviewInput) {
+export function checkInput(input: ReviewInput, { allowGuideDraft = false } = {}) {
   if (!['questionnaire', 'guide'].includes(input.mode)) throw Error('Choose a valid review mode.');
   if (!Array.isArray(input.documents) || input.documents.length > MAX_POLICY_DOCUMENTS)
     throw Error('Include up to 18 policy documents.');
-  if (input.mode === 'questionnaire' && !input.documents.length && !input.transcribeSourceOnly)
-    throw Error('Add at least one policy to search for answers.');
+  if (!input.documents.length && !input.transcribeSourceOnly) {
+    if (input.mode === 'questionnaire') throw Error('Add at least one policy to search for answers.');
+    if (!allowGuideDraft) throw Error(guidePolicyRequired);
+  }
   checkPolicies(input.documents);
 
   if (!input.readSourcePdf) checkSourceText(input);

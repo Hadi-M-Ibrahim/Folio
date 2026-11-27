@@ -23,6 +23,11 @@ def sample(mode="questionnaire", **changes):
     return data
 
 
+def insufficient_assessments(*ids):
+    return {"assessments": [{"id": item_id, "status": "insufficient", "answer": "Insufficient evidence.",
+                             "supporting": [], "counter": []} for item_id in ids]}
+
+
 class ReviewTests(unittest.TestCase):
     def test_first_question_retrieves_rule_and_conflict_without_claiming_compliance(self):
         result = api.review(sample())
@@ -47,31 +52,18 @@ class ReviewTests(unittest.TestCase):
         for f in rows:
             self.assertEqual(guide[f["criterionStart"]:f["criterionEnd"]], clause)
 
-    def test_guide_only_returns_sourced_unassessed_criteria_without_provider_calls(self):
-        clauses = ["The office must keep renewal notices.", "The director shall sign renewals."]
-        guide = "  Renewals\n\n1. " + clauses[0] + "\n\n2. " + clauses[1]
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True), \
-             patch.object(model, "invoke_tool") as invoke:
-            for flags in ({}, {"allowModel": True}):
-                with self.subTest(flags=flags):
-                    result = api.review({"mode": "guide", "guide": guide, "documents": [], **flags})
-                    self.assertEqual(result["reviewScope"], {"documents": 0, "pages": 0, "criteria": 2})
-                    self.assertEqual((result["engine"], result["planningEngine"]), ("local", "local"))
-                    self.assertIn("No policies", result["notice"])
-                    for index, row in enumerate(result["findings"]):
-                        clause = clauses[index]
-                        self.assertEqual(row["criterionSource"], clause)
-                        self.assertEqual(guide[row["criterionStart"]:row["criterionEnd"]], clause)
-                        self.assertEqual((row["status"], row["analysisEngine"]), ("needs_review", "local"))
-                        for field in ("supporting", "counter", "candidates", "searchTerms", "searchProof"):
-                            self.assertEqual(row[field], [])
-                        self.assertEqual(row["totalSearchTerms"], 0)
-        invoke.assert_not_called()
+    def test_guide_requires_a_policy_before_model_work(self):
+        guide = sample("guide", documents=[], allowModel=True, modelSharingConsent=True)
+        with patch.object(api, "model_review") as review_model:
+            for flags in ({}, {"allowModel": False}, {"documentPart": True}):
+                with self.subTest(flags=flags), self.assertRaisesRegex(InvalidRequest, "at least one existing policy"):
+                    api.review({**guide, **flags})
+            review_model.assert_not_called()
 
     def test_large_local_guide_keeps_every_clause_and_its_source_location(self):
         clauses = [f"The operator must retain record {i}." for i in range(63)]
         guide = "\n".join(f"{i}. {clause}" for i, clause in enumerate(clauses, 1))
-        result = api.review({"mode": "guide", "guide": guide, "documents": []})
+        result = api.review(sample("guide", guide=guide))
         self.assertEqual([row["criterionSource"] for row in result["findings"]], clauses)
         self.assertFalse(result["criterionLimitReached"])
         for row in result["findings"]:
@@ -120,8 +112,8 @@ class ReviewTests(unittest.TestCase):
     def test_validation_no_silent_truncation_or_duplicate_page_ids(self):
         for changes in (
             {"questions": []}, {"questions": [7]}, {"questions": [" "]},
-            {"documents": []}, {"mode": "guide", "guide": " ", "documents": []},
-            {"mode": "guide", "guide": "1. ...", "documents": []}, {"mode": "guide", "guide": None, "documents": []},
+            {"documents": []}, {"mode": "guide", "guide": " "},
+            {"mode": "guide", "guide": "1. ..."}, {"mode": "guide", "guide": None},
             {"mode": "guide", "documents": None},
             {"documents": [{"id": "x", "title": "x", "pages": [{"number": 1, "text": "yes"}] * 2}]},
             {"documents": [{"id": "x", "title": "x", "pages": [{"number": 1, "text": ""}]}]},

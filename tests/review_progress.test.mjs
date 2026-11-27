@@ -129,7 +129,8 @@ test('a short scanned guide reports page units and switches phases only when it 
     return Response.json({ mode: 'guide', engine: 'anthropic', notice: '', findings: [], sourcePages: pages });
   });
   const states = [];
-  const options = { input: { mode: 'guide', documents: [], readSourcePdf: true }, sourceDocument, policyAttachments: [],
+  const documents = [{ id: 'records', title: 'Records policy', pages: [{ number: 1, text: 'The clerk retains records.' }] }];
+  const options = { input: { mode: 'guide', documents, readSourcePdf: true }, sourceDocument, policyAttachments: [],
     signal: new AbortController().signal, onProgress: s => states.push([s.phase, s.completed, s.total]) };
   await executeWholeReview(options);
   assert.deepEqual(states, [['scan', 0, 2], ['scan', 2, 2]]);

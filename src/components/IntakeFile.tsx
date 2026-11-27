@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type Ref } from 'react';
 import { ArrowUpFromLine, Check, FileText } from 'lucide-react';
 import './IntakeFile.css';
 
 type IntakeFileProps = {
+  ref?: Ref<HTMLInputElement>;
   label: string;
   fileName?: string;
   detail?: string;
@@ -14,7 +15,7 @@ type IntakeFileProps = {
 
 type PdfFeedback = { id: string; file: File; expires: number; attached: boolean };
 
-export function IntakeFile({ label, fileName, detail, describedBy, attachedFiles, multiple, onFiles }: IntakeFileProps) {
+export function IntakeFile({ ref, label, fileName, detail, describedBy, attachedFiles, multiple, onFiles }: IntakeFileProps) {
   const [dragging, setDragging] = useState(false);
   const [feedback, setFeedback] = useState<PdfFeedback[]>([]);
   const nextExpiry = Math.min(...feedback.filter(row => row.attached).map(row => row.expires));
@@ -56,6 +57,7 @@ export function IntakeFile({ label, fileName, detail, describedBy, attachedFiles
           <ArrowUpFromLine size={15} /> {fileName ? 'Replace file' : multiple ? 'Choose files' : 'Choose file'}
         </span>
         <input
+          ref={ref}
           type="file"
           multiple={multiple}
           aria-label={label}

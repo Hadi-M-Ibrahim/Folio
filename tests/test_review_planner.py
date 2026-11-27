@@ -6,6 +6,7 @@ from unittest.mock import patch
 from api import review as api
 from api._review import model, planner
 from api._review.search import InvalidRequest, ReviewPartTooLarge
+from tests.test_review import insufficient_assessments, sample
 
 
 class PlannerTests(unittest.TestCase):
@@ -118,8 +119,7 @@ class PlannerTests(unittest.TestCase):
 
     def test_unverified_guide_never_becomes_a_partial_review(self):
         guide = "Operators must sign the register."
-        payload = {"mode": "guide", "guide": guide, "documents": [], "allowModel": True,
-                   "modelSharingConsent": True, "requireComplete": True}
+        payload = sample("guide", guide=guide, allowModel=True, modelSharingConsent=True, requireComplete=True)
         bad = {"criteria": [{"sourceId": "s1", "question": "Signed?", "sourceQuote": "Invented passage.",
                              "searchTerms": ["register"]}]}
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test", "VERCEL": "1"}, clear=True):
@@ -136,26 +136,26 @@ class PlannerTests(unittest.TestCase):
             with patch.object(model, "invoke_tool", side_effect=model.DeadlineExceeded), self.assertRaises(ReviewPartTooLarge):
                 api.review({**payload, "guide": implicit})
 
-    def test_guide_only_requires_a_model_plan_and_preserves_the_source_anchors(self):
+    def test_guide_assessment_requires_a_verified_plan_and_preserves_its_source_anchors(self):
         clause = "The operator shall retain the forms and publish the fees."
         questions = ["Does the operator retain the forms?", "Does the operator publish the fees?"]
-        payload = {"mode": "guide", "guide": clause, "documents": [], "allowModel": True, "modelSharingConsent": True}
+        payload = sample("guide", guide=clause, allowModel=True, modelSharingConsent=True, requireComplete=True)
         proposed = {"criteria": [
             {"sourceId": "s1", "question": questions[0], "searchTerms": ["forms"]},
             {"sourceId": "s1", "question": questions[1], "searchTerms": ["fees"]},
         ]}
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True):
-            with patch.object(model, "invoke_tool", return_value=proposed) as invoke:
+            with patch.object(model, "invoke_tool", side_effect=[proposed, insufficient_assessments("q1", "q2")]) as invoke:
                 result = api.review(payload)
-                invoke.assert_called_once()
-                self.assertEqual(invoke.call_args.args[1]["name"], "record_search_plan")
+                self.assertEqual([call.args[1]["name"] for call in invoke.call_args_list], ["record_search_plan", "record_review"])
             self.assertEqual((result["planningEngine"], result["engine"]), ("anthropic", "anthropic"))
             self.assertEqual(result["notice"], "")
             self.assertEqual([row["question"] for row in result["findings"]], questions)
             for row in result["findings"]:
                 self.assertEqual((row["criterionStart"], row["criterionEnd"], row["criterionSource"]), (0, len(clause), clause))
-                self.assertEqual(row["status"], "needs_review")
-                self.assertEqual(row["candidates"] + row["supporting"] + row["counter"] + row["searchProof"], [])
+                self.assertEqual((row["status"], row["analysisEngine"]), ("insufficient", "anthropic"))
+                self.assertEqual(row["supporting"] + row["counter"], [])
+                self.assertTrue(row["searchProof"])
             with patch.object(model, "invoke_tool", side_effect=model.ProviderUnavailable) as invoke, \
                  self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the search plan"):
                 api.review(payload)
@@ -186,7 +186,9 @@ class PlannerTests(unittest.TestCase):
         clause = "Operators must check the register."
         guide = ("📄 History of this form. " * 2800) + "\n" + "\n".join([clause] * 45)
         seen = []
-        def simulate(system, tool, inputs, key, deadline, max_tokens):
+        def simulate(system, tool, inputs, key, deadline, max_tokens=3800):
+            if tool["name"] == "record_review":
+                return insufficient_assessments(*(row["id"] for row in inputs))
             units = inputs["sources"]
             self.assertLessEqual(sum(len(unit["text"]) for unit in units), planner.PLAN_BATCH_CHARS)
             seen.extend(unit["text"] for unit in units)
@@ -195,8 +197,7 @@ class PlannerTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True), \
              patch.object(model, "invoke_tool", side_effect=simulate):
-            result = api.review({"mode": "guide", "guide": guide, "documents": [], "allowModel": True,
-                                 "modelSharingConsent": True})
+            result = api.review(sample("guide", guide=guide, allowModel=True, modelSharingConsent=True))
         self.assertEqual(len([part for part in seen if part == clause]), 45)
         self.assertEqual([row["criterionStart"] for row in result["findings"]],
                          [m.start() for m in re.finditer(re.escape(clause), guide)])

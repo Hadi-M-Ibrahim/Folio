@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 from api import review as api
 from api._review import model, sessions
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit
+from tests.test_review import insufficient_assessments, sample
 from tests.test_review_concurrency import questionnaire, tool_response
 
 
@@ -34,8 +35,11 @@ class HttpContractTests(unittest.TestCase):
             return response.status, response.headers, json.loads(response.read())
 
     def test_http_entry_point_and_errors(self):
-        guide = {"mode": "guide", "guide": "Staff must keep records.", "documents": []}
+        guide = sample("guide", guide="Staff must keep records.")
         self.assertEqual(self.request(json.dumps(guide))[0], 200)
+        status, _, body = self.request(json.dumps({**guide, "documents": []}))
+        self.assertEqual(status, 422)
+        self.assertIn("at least one existing policy", body["error"])
         self.assertEqual(self.request("{")[0], 400)
         self.assertEqual(self.request()[0], 422)
         self.assertEqual(self.request(headers={"Content-Type": "text/plain"})[0], 415)
@@ -48,13 +52,13 @@ class HttpContractTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
 
     def test_required_model_returns_503_and_the_same_request_can_be_retried(self):
-        payload = json.dumps({"mode": "guide", "guide": "Staff must keep records.", "documents": [],
-                              "allowModel": True, "modelSharingConsent": True})
+        payload = json.dumps(sample("guide", guide="Staff must keep records.", allowModel=True,
+                                    modelSharingConsent=True, requireComplete=True))
         plan = {"criteria": [{"sourceId": "s1", "question": "Do staff keep records?", "searchTerms": ["records"]}]}
         for local in (True, False):
             self.server.local_operator = local
             with self.subTest(local=local), patch.dict(os.environ, {} if local else {"VERCEL": "1"}, clear=True), \
-                 patch.object(model, "invoke_tool", side_effect=[model.ProviderUnavailable, plan]) as invoke:
+                 patch.object(model, "invoke_tool", side_effect=[model.ProviderUnavailable, plan, insufficient_assessments("q1")]) as invoke:
                 status, headers, body = self.request(payload)
                 self.assertEqual((status, headers["Cache-Control"]), (503, "no-store"))
                 self.assertIn("missing its Anthropic API key", body["error"])

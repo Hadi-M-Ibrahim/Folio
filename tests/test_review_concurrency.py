@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from api import review as api
 from api._review import model
+from tests.test_review import insufficient_assessments
 
 
 def questionnaire(label):
@@ -21,8 +22,8 @@ def questionnaire(label):
 
 
 GUIDE = {
-    "mode": "guide", "guide": "The office must keep a register.", "documents": [],
-    "allowModel": True, "modelSharingConsent": True,
+    "mode": "guide", "guide": "The office must keep a register.", "documents": questionnaire("filing")["documents"],
+    "allowModel": True, "modelSharingConsent": True, "requireComplete": True,
 }
 
 
@@ -117,7 +118,9 @@ class ConcurrentReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "interrupted"):
                 api.review(GUIDE)
 
-            send.side_effect = lambda *args, **kwargs: tool_response("record_search_plan", plan)
+            send.side_effect = [response for _ in range(2) for response in (
+                tool_response("record_search_plan", plan), tool_response("record_review", insufficient_assessments("q1")),
+            )]
             for _ in range(2):
                 self.assertEqual(api.review(GUIDE)["planningEngine"], "anthropic")
 

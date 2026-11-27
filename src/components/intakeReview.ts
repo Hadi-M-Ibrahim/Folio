@@ -1,4 +1,4 @@
-import { checkInput, encodeRequest } from '../review/client';
+import { checkInput, encodeRequest, guidePolicyRequired } from '../review/client';
 import { makePdfAttachment } from '../review/pdf';
 import { executeWholeReview } from '../review/wholeReview';
 import {
@@ -8,6 +8,12 @@ import {
 import { emptyPolicyDraft, pastedPolicy } from './PolicyFields';
 import type { IntakeSource } from './SourceFields';
 import type { RunReview } from './useIntakeReview';
+
+export type IntakePolicy = Policy & { pasted?: true };
+
+export function needsPolicyFile(mode: Mode, originals: IntakePolicy[]) {
+  return mode === 'guide' && !originals.some(policy => !policy.pasted);
+}
 
 async function attachPolicies(input: ReviewInput, originals: Policy[], hasSourcePdf: boolean, signal: AbortSignal) {
   const pdfs = input.documents.filter(doc => doc.pdfFile);
@@ -50,9 +56,10 @@ export function reviewInput(mode: Mode, source: IntakeSource, questions: string[
 }
 
 export function prepareReview({ mode, source, questions, documents, originals, draft, scope }: {
-  mode: Mode; source: IntakeSource; questions: string[]; documents: Policy[]; originals: Policy[];
+  mode: Mode; source: IntakeSource; questions: string[]; documents: Policy[]; originals: IntakePolicy[];
   draft: typeof emptyPolicyDraft; scope?: Scope;
 }): RunReview {
+  if (needsPolicyFile(mode, originals)) throw Error(guidePolicyRequired);
   const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
   const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
   if (!policies.length && mode === 'questionnaire') throw Error('Upload a policy file or paste a policy to continue.');
