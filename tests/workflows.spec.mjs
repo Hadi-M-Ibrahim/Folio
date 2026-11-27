@@ -760,6 +760,54 @@ test('The question queue resolves and reopens questions independently of saved r
   ]);
 });
 
+test('Resolving a question slides the next question into its place and respects reduced motion', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who records exceptions during an annual inspection of the facility?\nWho keeps the log?');
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', 'The coordinator keeps the inspection log.');
+  await clickReview(page, 'questionnaire');
+  const queue = page.getByRole('complementary', { name: 'Review queue' });
+  await expect(queue).toBeVisible();
+  const showList = queue.getByRole('button', { name: /Show list/ });
+  if (await showList.isVisible()) await showList.click();
+
+  const first = queue.getByRole('button', { name: 'Resolve question 1', exact: true });
+  await expect(first.locator('svg')).toHaveClass(/lucide-check\b/);
+  const measure = () => first.evaluate(async button => {
+    const row = button.closest('.queue-item');
+    const sibling = row.nextElementSibling;
+    const group = row.parentElement;
+    const top = () => sibling.getBoundingClientRect().top - group.getBoundingClientRect().top;
+    const before = top();
+    button.click();
+    await new Promise(requestAnimationFrame);
+    const [slide] = sibling.getAnimations();
+    if (!slide) return { before, end: top() };
+    slide.pause();
+    slide.currentTime = 0;
+    const start = top();
+    slide.currentTime = slide.effect.getTiming().duration / 2;
+    const middle = top();
+    slide.finish();
+    return { before, start, middle, end: top() };
+  });
+
+  const slide = await measure();
+  expect(slide.start).toBeCloseTo(slide.before, 0);
+  expect(slide.middle).toBeLessThan(slide.start);
+  expect(slide.middle).toBeGreaterThan(slide.end);
+  expect(slide.end).toBeCloseTo(0, 0);
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await queue.getByRole('button', { name: 'Resolved 1', exact: true }).click();
+  await queue.getByRole('button', { name: 'Reopen question 1', exact: true }).click();
+  const instant = await measure();
+  expect(instant.start).toBeUndefined();
+  expect(instant.before).toBeGreaterThan(instant.end);
+  expect(instant.end).toBeCloseTo(0, 0);
+});
+
 test('Responses downloads a paginated PDF of saved answers and selected citations', async ({ page }) => {
   const questions = [
     'Who controls the vehicle gate?', 'Who keeps the inspection log?',
