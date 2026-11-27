@@ -212,7 +212,7 @@ async function expectQuietReview(page) {
 async function clickReview(page, mode) {
   const guide = mode === 'guide';
   const submit = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
-  if (!guide) await expect(submit).toHaveAccessibleDescription('');
+  await expect(submit).toHaveAccessibleDescription('');
   await expect(page.getByRole('checkbox')).toHaveCount(0);
   await submit.click();
 }
@@ -424,8 +424,7 @@ test('a guide waits for a policy file, then finishes in intake and opens once af
   await expect(policies).toHaveAttribute('aria-current', 'step');
   await expect(page.getByRole('button', { name: 'Review obligations' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Review obligations' })).toHaveAccessibleDescription('');
-  await expect(page.locator('#intake-sharing')).toHaveCount(0);
-  await expect(page.getByLabel('Upload policy files')).toHaveAccessibleDescription(/Anthropic/i);
+  await expect(page.getByLabel('Upload policy files')).toHaveAccessibleDescription('Upload an existing policy file to start comparing it with the guide.');
   await expect(page.getByRole('progressbar', { name: 'Review progress' })).toHaveCount(0);
   expect(requests).toHaveLength(0);
   const started = page.waitForRequest('**/api/review');
@@ -573,7 +572,7 @@ test('each selected PDF shows preparation, attachment, and a persistent policy e
   await page.getByRole('button', { name: 'Continue to policies' }).click();
   const requests = captureReviewRequests(page);
   const upload = page.getByLabel('Upload policy files');
-  await expect(upload).toHaveAccessibleDescription(/Anthropic/i);
+  await expect(upload).toHaveAccessibleDescription('Add your first policy to start finding evidence for the state’s questions.');
   await upload.setInputFiles([
     { name: 'Clerk.pdf', mimeType: 'application/pdf', buffer: first },
     { name: 'Manager.pdf', mimeType: 'application/pdf', buffer: second },
@@ -1123,7 +1122,6 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
   await expect(submit).toBeDisabled();
   await addPolicy(page, file, text);
   await expect(submit).toBeEnabled();
-  await expect(submit).toHaveAccessibleDescription('This review shares your guide and relevant policy text with Anthropic.');
   expect(requests).toHaveLength(1);
   const response = await submitReview(page, 'guide');
   expect(response.request().postDataJSON().documents.map(doc => doc.title)).toEqual(['Facilities policy', file]);

@@ -27,14 +27,14 @@ const intakeCopy = {
     sourceLabel: 'Regulatory guide',
     sourceTitle: 'Review a new policy guide',
     sourceIntro: 'Upload or paste the guide. On the next step, add an existing policy file to compare.',
-    policyIntro: 'Upload at least one existing policy file. The first upload starts the comparison with Anthropic.',
+    policyIntro: 'Upload an existing policy file to start comparing it with the guide.',
     submit: 'Review obligations',
   },
   questionnaire: {
     sourceLabel: 'State questions',
     sourceTitle: 'Answer a questionnaire',
     sourceIntro: 'Start with the state questionnaire or a single question you need to answer.',
-    policyIntro: 'Attaching the first policy starts an Anthropic review of your questions and policy evidence.',
+    policyIntro: 'Add your first policy to start finding evidence for the state’s questions.',
     submit: 'Find evidence',
   },
 };
@@ -90,11 +90,6 @@ function selectedPolicies(originals: Policy[], ranges: PolicyRanges): Policy[] {
   return originals.map((doc) => Object.hasOwn(ranges, doc.id) ? { ...doc, pages: ranges[doc.id] } : doc);
 }
 
-function guideSharingDisclosure(source: IntakeSource, documents: Policy[]) {
-  if (source.document?.pdfFile || documents.some((doc) => doc.pdfFile)) return undefined;
-  return 'This review shares your guide and relevant policy text with Anthropic.';
-}
-
 function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnlocked, onSelect }: {
   step: number; sourceLabel: string; sourceDescription: string;
   busy: boolean; policiesUnlocked: boolean; onSelect: (step: number) => void;
@@ -122,16 +117,13 @@ function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnloc
   );
 }
 
-function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view, onCancel }: {
-  step: number; busy: string; needsUpload: boolean; disclosure?: string; submitLabel: string;
+function IntakeActions({ step, busy, needsUpload, submitLabel, view, onCancel }: {
+  step: number; busy: string; needsUpload: boolean; submitLabel: string;
   view: ReturnType<typeof useIntakeReview>['view']; onCancel: () => void;
 }) {
   return (
     <div className="intake-actions">
       <div className="intake-review-status">
-        {disclosure && <p className="intake-disclosure" id="intake-sharing">
-          {disclosure}
-        </p>}
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
         {view.kind === 'changed' && step === 2 && !needsUpload && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
       </div>
@@ -140,7 +132,7 @@ function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view,
           event.preventDefault();
           onCancel();
         }}>Cancel review</button>
-        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || needsUpload} aria-describedby={disclosure ? 'intake-sharing' : undefined}>
+        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || needsUpload}>
           <span>{busy || (step === 1 ? 'Continue to policies' : submitLabel)}</span>
           {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
         </button>}
@@ -391,7 +383,6 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
             </fieldset>
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
             <IntakeActions step={step} busy={busy} needsUpload={step === 2 && needsUpload}
-              disclosure={isGuide && step === 2 ? guideSharingDisclosure(source, documents) : undefined}
               submitLabel={copy.submit} view={review.view} onCancel={review.cancel} />
             {busy && <output className="intake-sr-only">{busy}</output>}
           </form>

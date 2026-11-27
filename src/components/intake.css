@@ -270,7 +270,6 @@
   padding-bottom: max(10px, env(safe-area-inset-bottom));
   background: white;
 }
-.intake-disclosure { max-width: 44ch; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .intake-review-status { display: grid; flex: 1; min-width: 0; gap: 10px; }
 .intake-review-status:empty { display: none; }
 .intake-changed { color: var(--muted); font-size: 13px; }
