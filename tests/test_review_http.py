@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 from api import review as api
 from api._review import model, sessions
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit
+from tests.test_response_draft import response_request
 from tests.test_review import insufficient_assessments, sample
 from tests.test_review_concurrency import questionnaire, tool_response
 
@@ -50,6 +51,49 @@ class HttpContractTests(unittest.TestCase):
         status, headers, _ = self.request(None, headers={"Content-Length": str(api.MAX_BODY + 1)})
         self.assertEqual(status, 413)
         self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_draft_uses_protected_review_route_and_shared_quota(self):
+        path = "/api/review?operation=draft"
+        payload = json.dumps(response_request())
+        generated = {"answer": "We normally notify applicants in writing and call for urgent requests."}
+        self.server.local_operator = True
+        with patch.object(model, "open_provider_request", return_value=tool_response("record_response_draft", generated)) as send, \
+             patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True), \
+             patch.object(api, "REVIEW_LIMIT", ReviewRateLimit(limit=4)):
+            self.assertEqual(self.request(path=path, headers={"Sec-Fetch-Site": "cross-site"})[0], 403)
+            self.assertEqual(self.request(path=path, headers={"Host": "example.org"})[0], 403)
+            self.assertEqual(self.request(path=path + "&operation=draft")[0], 400)
+            self.assertEqual(self.request(None, path=path, headers={"Content-Length": str(api.MAX_DRAFT_BYTES + 1)})[0], 413)
+            self.assertEqual(self.request(payload, path=path, headers={"X-Folio-Review-Token": "invalid"})[0], 409)
+            self.assertEqual(self.request(path=path)[0], 422)
+            send.assert_not_called()
+            status, headers, result = self.request(payload, path=path)
+            self.assertEqual((status, headers["Cache-Control"], result), (200, "no-store", generated))
+            for route in (path, "/api/review"):
+                status, headers, _ = self.request(path=route)
+                self.assertEqual(status, 429)
+                self.assertGreater(int(headers["Retry-After"]), 0)
+            send.assert_called_once()
+
+    def test_draft_requires_hosted_or_local_operator_credentials_and_an_available_slot(self):
+        payload = json.dumps(response_request())
+        path = "/api/review?operation=draft"
+        with patch.dict(os.environ, {}, clear=True), patch.object(model, "open_provider_request") as send:
+            for local, env, message in (
+                (False, {"ANTHROPIC_API_KEY": "test-key"}, "loopback"),
+                (True, {}, "missing its Anthropic API key"),
+                (False, {"VERCEL": "1"}, "missing its Anthropic API key"),
+            ):
+                self.server.local_operator = local
+                with self.subTest(local=local, message=message), patch.dict(os.environ, env):
+                    status, _, result = self.request(payload, path=path)
+                    self.assertEqual(status, 503)
+                    self.assertIn(message, result["error"])
+            with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}), model.SLOTS, model.SLOTS:
+                status, _, result = self.request(payload, path=path)
+                self.assertEqual(status, 503)
+                self.assertIn("busy", result["error"])
+            send.assert_not_called()
 
     def test_required_model_returns_503_and_the_same_request_can_be_retried(self):
         payload = json.dumps(sample("guide", guide="Staff must keep records.", allowModel=True,
