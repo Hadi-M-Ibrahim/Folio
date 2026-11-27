@@ -6,7 +6,7 @@ import './SearchTrail.css';
 
 type Proof = Finding['searchProof'][number];
 type Followup = NonNullable<Finding['followup']>;
-type Section = 'Ranked passages' | 'Search terms' | 'Follow-up search';
+type Section = 'Relevant passages' | 'Search terms' | 'Follow-up search';
 const origins: Record<string, string> = {
   model: 'Model-planned term', related_form: 'Related word form', criterion: 'Requirement term', followup: 'Follow-up term',
 };
@@ -57,13 +57,11 @@ function SearchTerms({ finding, documents, selected, onSelect, onOpen }: {
   const total = finding.totalSearchTerms ?? terms.length;
   return (
     <section aria-label="Search terms">
-      {terms.length > 0 && <div className="trail-filter">
-        <label htmlFor="trail-term-filter">Search term</label>
-        <select id="trail-term-filter" value={selected} onChange={event => onSelect(event.target.value)}>
-          <option value="">All terms</option>
-          {terms.map(term => <option key={term}>{term}</option>)}
-        </select>
-      </div>}
+      {terms.length > 0 && <fieldset className="term-chips" aria-label="Filter by search term">
+        <button type="button" aria-pressed={!selected} onClick={() => onSelect('')}>All terms</button>
+        {terms.map(term => <button key={term} type="button" aria-pressed={selected === term}
+          onClick={() => onSelect(selected === term ? '' : term)}>{term}</button>)}
+      </fieldset>}
       {total > terms.length && <p className="muted-note">Showing the first {terms.length} terms.</p>}
       {proofs.map(proof => <TermProof key={selected + '/' + proof.term} proof={proof} documents={documents}
         expanded={Boolean(selected)} onOpen={onOpen} />)}
@@ -72,10 +70,10 @@ function SearchTerms({ finding, documents, selected, onSelect, onOpen }: {
   );
 }
 
-function RankedPassages({ finding, ...controls }: EvidenceControls & { finding: Finding }) {
+function RelevantPassages({ finding, ...controls }: EvidenceControls & { finding: Finding }) {
   const passages = finding.candidates;
   return (
-    <section aria-label="Ranked passages">
+    <section aria-label="Relevant passages">
       {(finding.totalCandidatePassages ?? 0) > passages.length &&
         <p className="muted-note">Showing {passages.length} shortlisted passages.</p>}
       {passages.map((passage, index) => (
@@ -112,10 +110,10 @@ function FollowupSearch({ followup, documents, ...controls }: EvidenceControls &
 export function SearchTrail({ finding, documents, open, onToggle, ...controls }: EvidenceControls & {
   finding: Finding; documents: Policy[]; open: boolean; onToggle: () => void;
 }) {
-  const [section, setSection] = useState<Section>(finding.candidates.length ? 'Ranked passages' : 'Search terms');
+  const [section, setSection] = useState<Section>(finding.candidates.length ? 'Relevant passages' : 'Search terms');
   const [term, setTerm] = useState('');
   const sections: { label: Section; count?: number }[] = [
-    { label: 'Ranked passages', count: finding.totalCandidatePassages ?? finding.candidates.length },
+    { label: 'Relevant passages', count: finding.totalCandidatePassages ?? finding.candidates.length },
     { label: 'Search terms', count: finding.totalSearchTerms ?? finding.searchTerms.length },
   ];
   if (finding.followup) sections.push({ label: 'Follow-up search' });
@@ -133,7 +131,7 @@ export function SearchTrail({ finding, documents, open, onToggle, ...controls }:
               {label}{count !== undefined && <small id={'trail-count-' + index}>{count.toLocaleString()}</small>}
             </button>)}
           </fieldset>
-          {section === 'Ranked passages' && <RankedPassages finding={finding} {...controls} />}
+          {section === 'Relevant passages' && <RelevantPassages finding={finding} {...controls} />}
           {section === 'Search terms' && <SearchTerms finding={finding} documents={documents} selected={term} onSelect={setTerm} onOpen={controls.onOpen} />}
           {section === 'Follow-up search' && finding.followup && <FollowupSearch followup={finding.followup} documents={documents} {...controls} />}
         </>}

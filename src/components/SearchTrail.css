@@ -68,17 +68,29 @@
 }
 .trail-match blockquote, .trail-match .evidence-tools { padding-left: calc(2ch + 10px); }
 .trail-match .evidence-tools { padding-bottom: 14px; }
-.trail-filter { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
-.trail-filter label, .trail-reason { font-size: 14px; }
-.trail-filter select {
+.term-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
-  max-width: min(65%, 24rem);
-  padding: 5px 24px 5px 8px;
+  margin: 0;
+  padding: 12px 0;
+  border: 0;
+}
+.term-chips button {
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 12px;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--ink);
-  font: inherit;
+  border-radius: 999px;
   font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.term-chips button:hover { background: var(--paper); }
+.term-chips button[aria-pressed='true'] {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: white;
 }
 .trail-term-label { display: grid; gap: 2px; min-width: 0; }
 .trail-term-label small { color: var(--muted); font-size: 13px; }
@@ -98,7 +110,7 @@
 .trail-page span:last-child { flex: none; }
 .trail-page:hover { background: var(--paper); }
 #search-results .muted-note { margin: 10px 0; }
-.trail-reason { padding: 10px 0 12px; color: var(--muted); }
+.trail-reason { padding: 10px 0 12px; color: var(--muted); font-size: 14px; }
 .trail-followup .evidence-card { padding: 12px 0; }
 .trail-followup .trail-term { border-top: 1px solid var(--line); }
 @media (max-width: 540px) {
