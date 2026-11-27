@@ -60,9 +60,9 @@ def allowed_request(headers, *, local_operator, hosted):
         return False
 
 
-def review(payload, *, local_operator=False):
+def review(payload, *, local_operator=False, progress=None):
     mode, criteria, pages = validate(payload)
-    findings, notice, planner, read_text = model_review(payload, criteria, pages, local_operator)
+    findings, notice, planner, read_text = model_review(payload, criteria, pages, local_operator, progress=progress)
     used_model = planner == "anthropic" or any(f["analysisEngine"] == "anthropic" for f in findings)
     return {
         **read_text,
@@ -73,6 +73,20 @@ def review(payload, *, local_operator=False):
 
 
 class handler(BaseHTTPRequestHandler):
+    streaming = False
+
+    def progress(self, stage, completed, total):
+        if not self.streaming:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Cache-Control", "no-store, no-transform")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.streaming = True
+        event = {"stage": stage, "completed": completed, "total": total}
+        self.wfile.write(json.dumps(event).encode("ascii") + b"\n")
+        self.wfile.flush()
+
     def reply(self, status, data, *, retry_after=None):
         body = bytearray()
         for part in json.JSONEncoder(ensure_ascii=True, separators=(",", ":")).iterencode(data):
@@ -81,6 +95,11 @@ class handler(BaseHTTPRequestHandler):
                 body = b'{"code":"review_part_too_large","error":"The review results are too large. Select fewer questions or fewer policy pages."}'
                 break
             body.extend(part.encode("ascii"))
+        if self.streaming:
+            self.wfile.write(b'{"status":' + str(status).encode("ascii") + b',"body":' + body + b'}\n')
+            self.wfile.flush()
+            self.streaming = False
+            return
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -169,7 +188,11 @@ class handler(BaseHTTPRequestHandler):
     def review_body(self, payload, local_operator, work):
         try:
             with review_session(self.headers.get("X-Folio-Review-Token"), local_operator):
-                result = work(payload, local_operator=local_operator)
+                options = {}
+                if (work is review and isinstance(payload, dict) and payload.get("mode") == "guide"
+                        and self.headers.get("Accept") == "application/x-ndjson"):
+                    options["progress"] = self.progress
+                result = work(payload, local_operator=local_operator, **options)
         except ReviewCancelled:
             return self.reply(409, {"code": "review_cancelled", "error": "This review session has stopped or expired."})
         except SessionUnavailable:

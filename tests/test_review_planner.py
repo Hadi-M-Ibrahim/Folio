@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,25 @@ class PlannerTests(unittest.TestCase):
             plan = planner.plan_criteria(mode, source, fallback, "test-key", 100)
         invoke.assert_called_once()
         return plan, invoke.call_args
+
+    def test_dense_guide_plans_overlap_without_losing_source_context_or_order(self):
+        clauses = [f"Office {i} must keep records for the following services: " + "local, regional, " * 20 for i in range(12)]
+        source = "\n".join(clauses)
+        fallback = [(clause, source.index(clause)) for clause in clauses]
+        gate = threading.Barrier(2, timeout=3)
+        contexts = []
+
+        def plan(system, tool, data, key, deadline, **kwargs):
+            gate.wait()
+            contexts.append((bool(data.get("contextBefore")), bool(data.get("contextAfter"))))
+            return {"criteria": [{"sourceId": unit["sourceId"], "question": "Who keeps the records?",
+                                  "searchTerms": ["records"]} for unit in data["sources"]]}
+
+        with patch.object(model, "invoke_tool", side_effect=plan) as invoke:
+            result = planner.plan_criteria("guide", source, fallback, "test-key", 100)
+        self.assertEqual(invoke.call_count, 2)
+        self.assertCountEqual(contexts, [(False, True), (True, False)])
+        self.assertEqual([(item["source"], item["start"]) for item in result], fallback)
 
     def test_compound_obligations_share_verbatim_source_and_offset(self):
         clause = "Plans must notify members and record appeals within 10 days."

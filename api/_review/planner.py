@@ -1,6 +1,7 @@
 """Turn guide obligations and questions into source-anchored search plans."""
 
 import re
+from functools import partial
 
 from . import model
 from .search import WORD, InvalidRequest
@@ -249,16 +250,23 @@ def plan_batch(mode, source, batch, key, deadline, attachments):
 
 def plan_criteria(mode, source, fallback, key, deadline, *, attachments=(), document_part=False):
     groups = list(batches(source_units(mode, source, fallback)))
+    # A dense guide can fit on two pages but contain many independent duties.
+    # Divide only between anchored units. Each call keeps its surrounding context and PDF.
+    if mode == "guide" and len(groups) == 1 and len(groups[0]) >= 10 and len(source) >= 3600:
+        group = groups[0]
+        middle = min(range(1, len(group)), key=lambda i: abs(group[i][1] - len(source) // 2))
+        groups = [group[:middle], group[middle:]]
     plan = []
-    for batch in groups:
-        try:
-            plan.extend(plan_batch(mode, source, batch, key, deadline, attachments))
-        except (model.DeadlineExceeded, model.ProviderServiceError, UnverifiedQuestionnairePlan):
-            raise
-        except model.ProviderUnavailable:
-            if len(groups) > 1:
-                raise IncompletePlan from None
-            raise
+    run = partial(plan_batch, mode, source, key=key, deadline=deadline, attachments=attachments)
+    try:
+        for rows in model.run_batches(groups, run, mode == "guide" and len(groups) > 1):
+            plan.extend(rows)
+    except (model.DeadlineExceeded, model.ProviderServiceError, UnverifiedQuestionnairePlan):
+        raise
+    except model.ProviderUnavailable:
+        if len(groups) > 1:
+            raise IncompletePlan from None
+        raise
     if not plan and mode == "guide" and not document_part:
         raise InvalidRequest("No reviewable obligation was identified in this guide section. Select a section describing a policy duty.")
     return plan

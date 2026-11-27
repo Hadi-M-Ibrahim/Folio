@@ -109,9 +109,15 @@ async function send(options: ReviewAttempt, cache: Cache, section: Section, forc
   const onRateLimit = (seconds: number) => report(work.start, 'Review paused at the submission limit. Resuming in ' +
     Math.max(1, Math.ceil(seconds / 60)) + ' min…');
   options.signal.throwIfAborted();
-  const result = await requestReview(wire, options.signal, partial ? {
-    onRateLimit, onResume: () => report(work.start), mayWaitForQuota: options.mayWaitForQuota,
-  } : undefined);
+  const result = await requestReview(wire, options.signal, {
+    ...(partial && { onRateLimit, onResume: () => report(work.start), mayWaitForQuota: options.mayWaitForQuota }),
+    ...(input.mode === 'guide' && !input.transcribeSourceOnly && options.onProgress && {
+      onGuideProgress: progress => {
+        options.signal.throwIfAborted();
+        options.onProgress?.(progress);
+      },
+    }),
+  });
   options.signal.throwIfAborted();
   validatePart(input, numbers, result);
   cache.completed.set(section.key, result);
@@ -239,7 +245,7 @@ function guideSeries(input: ReviewInput, source: Policy | undefined, cache: Cach
     section: (span, partial) => ({
       input: { ...input, guide: guide.slice(span.start, span.end), documents: indexedPolicies(input, cache) },
       numbers: partial ? pagesIn(spans, span) : pages.map(page => page.number),
-      label: 'Reviewing guide obligations…',
+      label: 'Sending guide for review…',
     }) };
 }
 
