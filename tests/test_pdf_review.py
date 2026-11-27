@@ -172,13 +172,46 @@ class PdfReviewTests(unittest.TestCase):
 
     def test_consent_controls_pdf_transport_and_scanning(self):
         request = payload()
-        with patch.object(model, "open_provider_request") as send:
+        with patch.object(model, "open_provider_request") as send, patch.object(pdf_context, "PdfReader") as reader:
             for flag in ("allowModel", "modelSharingConsent"):
                 self.assertEqual(api.review({**request, flag: False})["engine"], "local")
             del request["questions"]
             with self.assertRaisesRegex(search.InvalidRequest, "consent"):
                 api.review({**request, "readSourcePdf": True, "modelSharingConsent": False, "publicInputConsent": True})
             send.assert_not_called()
+            reader.assert_not_called()
+
+    def test_entire_packet_page_counts_are_verified_before_any_provider_call(self):
+        for read_source in (False, True):
+            for role, physical_pages in (("source", [1, 2]), ("policy", [1])):
+                with self.subTest(read_source=read_source, role=role):
+                    request = payload()
+                    if read_source:
+                        del request["questions"]
+                        request["readSourcePdf"] = True
+                    attachment = next(a for a in request["pdfAttachments"] if a["role"] == role)
+                    attachment["data"] = pdf_attachment(role, physical_pages)["data"]
+                    with patch.object(model, "open_provider_request") as send, self.assertRaisesRegex(search.InvalidRequest, "verify"):
+                        api.review(request)
+                    send.assert_not_called()
+
+    def test_pdf_parser_errors_have_a_content_free_message(self):
+        with patch.object(pdf_context, "PdfReader", side_effect=ValueError("synthetic parser detail")), \
+             patch.object(model, "open_provider_request") as send, self.assertRaises(search.InvalidRequest) as caught:
+            api.review(payload())
+        self.assertNotIn("synthetic parser detail", str(caught.exception))
+        send.assert_not_called()
+
+    def test_locked_pdf_requires_reexport_before_provider_use(self):
+        request = payload()
+        with PdfWriter() as writer, io.BytesIO() as raw:
+            writer.add_blank_page(width=100, height=100)
+            writer.encrypt("synthetic password")
+            writer.write(raw)
+            request["pdfAttachments"][0]["data"] = base64.b64encode(raw.getvalue()).decode("ascii")
+        with patch.object(model, "open_provider_request") as send, self.assertRaisesRegex(search.InvalidRequest, "Re-export"):
+            api.review(request)
+        send.assert_not_called()
 
     def test_invalid_attachments_never_reach_provider(self):
         request = payload()
@@ -232,6 +265,26 @@ class PdfReviewTests(unittest.TestCase):
              self.assertRaisesRegex(search.InvalidRequest, "policy characters"):
             api.review(request)
 
+    def test_policy_ocr_checks_the_aggregate_budget_before_requesting_the_next_batch(self):
+        request = payload()
+        numbers = list(range(1, pdf_reader.SCAN_BATCH_PAGES + 2))
+        policy = pdf_attachment("policy", numbers)
+        request["pdfAttachments"] = [policy]
+        request["documents"][0]["pages"] = [{"number": n, "text": ""} for n in numbers]
+        first = [{"number": n, "text": "Reading."} for n in numbers[:-1]]
+        with patch.object(pdf_reader, "MAX_CHARS", 8), patch.object(model, "invoke_tool", return_value={"pages": first}) as invoke:
+            with self.assertRaisesRegex(search.InvalidRequest, "policy characters"):
+                api.review(request)
+            invoke.assert_called_once()
+
+        # The first batch can use space originally occupied by blank pages in a later batch.
+        budget = sum(len(row["text"]) for row in first)
+        request["documents"][0]["pages"][-1]["text"] = " " * budget
+        with patch.object(pdf_reader, "MAX_CHARS", budget):
+            _, calls = self.run_provider(request, [
+                {"pages": first}, {"pages": [{"number": numbers[-1], "text": ""}]}, PLAN, {"assessments": [SUPPORT]},
+            ])
+        self.assertEqual([tool for tool, _, _ in calls[:2]], ["record_pdf_pages", "record_pdf_pages"])
 
     def test_transcription_only_bypasses_planner_and_policy_ocr_but_checks_consent_and_anchors(self):
         request = payload()

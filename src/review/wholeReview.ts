@@ -1,7 +1,7 @@
 import { questionsFromPdfPages, type PdfQuestion } from '../components/intakeQuestions';
 import { requestReview } from './client';
 import { MAX_PDF_ATTACHMENT_PAGES, ReviewSizeError, type Policy, type PdfAttachment, type Result, type ReviewInput } from './model';
-import { makePdfAttachment } from './pdf';
+import { createPdfAttachmentReader } from './pdf';
 import type { ReviewPhase, ReviewProgressState } from './reviewProgress';
 import { combineScanQuestions, divide, locateQuestions, pageSpans, pagesIn, questionSpans, sourceSpans, type Span, type Transcript } from './wholeReviewSource';
 
@@ -20,6 +20,7 @@ type Options = {
   checkpoint?: ReviewCheckpoint;
   onCheckpoint?: (checkpoint: ReviewCheckpoint) => void;
 };
+type ReviewAttempt = Options & { sourcePdf: ReturnType<typeof createPdfAttachmentReader> | undefined };
 
 const questionsPerPart = 10;
 const guideCharactersPerPart = 10_000;
@@ -79,7 +80,7 @@ type Section = {
   work: Span & { phase: ReviewPhase; total: number };
 };
 
-async function send(options: Options, cache: Cache, section: Section, forceRender = false): Promise<Result> {
+async function send(options: ReviewAttempt, cache: Cache, section: Section, forceRender = false): Promise<Result> {
   options.signal.throwIfAborted();
   const prior = cache.completed.get(section.key);
   if (prior) return prior;
@@ -90,14 +91,13 @@ async function send(options: Options, cache: Cache, section: Section, forceRende
   };
   report(work.start);
   const attachments = input.transcribeSourceOnly ? [] : [...options.policyAttachments];
-  const doc = options.sourceOriginal ?? options.sourceDocument;
-  if (doc?.pdfFile) {
+  if (options.sourcePdf) {
     if (attachments.reduce((sum, file) => sum + file.pages.length, numbers.length) > MAX_PDF_ATTACHMENT_PAGES)
       throw new ReviewSizeError('The source and policy PDFs exceed the per-request PDF page limit.');
     const renderSelectedPages = Boolean(forceRender || partial || options.renderItemSubset);
     const key = (renderSelectedPages ? 'render/' : 'original/') + numbers.join(',');
     if (cache.lastPdf?.key !== key) {
-      const attachment = await makePdfAttachment(doc, 'source', numbers, options.signal, { renderSelectedPages });
+      const attachment = await options.sourcePdf.attachment(numbers, renderSelectedPages);
       options.signal.throwIfAborted();
       cache.lastPdf = { key, attachment };
     }
@@ -150,7 +150,7 @@ type Series = {
   section: (span: Span, partial: boolean) => Pick<Section, 'input' | 'numbers' | 'label'>;
 };
 
-async function runSeries(options: Options, cache: Cache, series: Series): Promise<Completed[]> {
+async function runSeries(options: ReviewAttempt, cache: Cache, series: Series): Promise<Completed[]> {
   const completed: Completed[] = [];
   async function processSpan(span: Span, partial: boolean): Promise<void> {
     options.signal.throwIfAborted();
@@ -264,7 +264,7 @@ function questionSeries(input: ReviewInput, source: Policy | undefined, cache: C
     }) };
 }
 
-async function reviewText(options: Options, cache: Cache, input: ReviewInput, source?: Policy,
+async function reviewText(options: ReviewAttempt, cache: Cache, input: ReviewInput, source?: Policy,
   questionPages?: Options['questionPages'], alwaysPart = false) {
   const series = input.mode === 'guide' ? guideSeries(input, source, cache) : questionSeries(input, source, cache, questionPages);
   const parts = await runSeries(options, cache, { ...series, alwaysPart });
@@ -276,7 +276,7 @@ async function reviewText(options: Options, cache: Cache, input: ReviewInput, so
   return merge(input, parts, cache);
 }
 
-async function readSource(options: Options, cache: Cache, source: Policy): Promise<Transcript[]> {
+async function readSource(options: ReviewAttempt, cache: Cache, source: Policy): Promise<Transcript[]> {
   const groups: Transcript[] = [];
   const missingText = source.pages.some(page => !page.text.trim());
   // An entirely indexed questionnaire explicitly requesting PDF reading has no usable prompt index.
@@ -311,7 +311,7 @@ async function readSource(options: Options, cache: Cache, source: Policy): Promi
   return groups;
 }
 
-async function reviewScan(options: Options, cache: Cache, source: Policy): Promise<Result> {
+async function reviewScan(options: ReviewAttempt, cache: Cache, source: Policy): Promise<Result> {
   const { input } = options;
   const count = source.pages.length;
   const numbers = source.pages.map(page => page.number);
@@ -351,14 +351,24 @@ export async function executeWholeReview(options: Options): Promise<Result> {
   const { input, sourceDocument } = options;
   options.signal.throwIfAborted();
   const cache = checkpoint(options);
-  let result: Result;
-  if (input.readSourcePdf) {
-    if (!sourceDocument?.pdfFile) throw Error('Attach the original PDF to read its pages.');
-    result = await reviewScan(options, cache, sourceDocument);
-  } else {
-    result = await reviewText(options, cache, input, sourceDocument, options.questionPages);
+  const original = options.sourceOriginal ?? sourceDocument;
+  const sourcePdf = original?.pdfFile ? createPdfAttachmentReader(original, 'source', options.signal) : undefined;
+  const attempt = { ...options, sourcePdf };
+  try {
+    let result: Result;
+    if (input.readSourcePdf) {
+      if (!sourceDocument?.pdfFile) throw Error('Attach the original PDF to read its pages.');
+      result = await reviewScan(attempt, cache, sourceDocument);
+    } else {
+      result = await reviewText(attempt, cache, input, sourceDocument, options.questionPages);
+    }
+    options.signal.throwIfAborted();
+    if (retries.get(input) === cache) retries.delete(input);
+    return result;
+  } catch (cause) {
+    options.signal.throwIfAborted();
+    throw cause;
+  } finally {
+    await sourcePdf?.close();
   }
-  options.signal.throwIfAborted();
-  if (retries.get(input) === cache) retries.delete(input);
-  return result;
 }

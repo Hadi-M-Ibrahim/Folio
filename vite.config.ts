@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { build, defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
@@ -12,6 +12,28 @@ export default defineConfig({
     transformIndexHtml: {
       order: 'pre',
       handler: html => html.replace('<!--folio-landing-->', () => renderToString(createElement(PageFrame, {}))),
+    },
+  }, {
+    name: 'standalone-pdf-export',
+    apply: 'build',
+    async buildStart() {
+      // An old tab can request its first export after a deployment. Bundle all imports, including fonts.
+      const result = await build({
+        configFile: false, publicDir: false,
+        build: { write: false, rollupOptions: {
+          input: 'src/review/exportResponsePdf.ts', preserveEntrySignatures: 'strict',
+          output: { inlineDynamicImports: true, entryFileNames: 'downloads/responses-v1.js' },
+        } },
+      });
+      if (!('output' in result)) this.error('Expected a single PDF exporter build.');
+      const [entry] = result.output;
+      if (result.output.length !== 1 || entry.type !== 'chunk' || entry.imports.length || entry.dynamicImports.length) {
+        this.error('The PDF exporter must be a standalone module.');
+      }
+      for (const id of entry.moduleIds) {
+        if (!id.startsWith('\0')) this.addWatchFile(id.split('?')[0]);
+      }
+      this.emitFile({ type: 'asset', fileName: entry.fileName, source: entry.code });
     },
   }, {
     name: 'pdf-reader-assets',
@@ -29,15 +51,6 @@ export default defineConfig({
       }
     },
   }],
-  // An open review may request its first export after the next deployment.
-  build: { rollupOptions: {
-    input: { index: 'index.html', responsePdf: 'src/review/exportResponsePdf.ts' },
-    preserveEntrySignatures: 'exports-only',
-    output: {
-      entryFileNames: chunk => chunk.name === 'responsePdf' ? 'downloads/responses-v1.js' : 'assets/[name]-[hash].js',
-      manualChunks: id => id.includes('commonjsHelpers') || /\/src\/review\/(model|downloadFile|guideSource)\.ts$/.test(id) ? 'shared' : undefined,
-    },
-  } },
   server: { proxy: { '/api/review': { target: 'http://127.0.0.1:8000', changeOrigin: false } } },
   preview: {
     headers: Object.fromEntries(deployment.headers

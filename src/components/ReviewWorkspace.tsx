@@ -219,8 +219,9 @@ let pdfLoadFailed = false;
 function loadPdfExporter() {
   if (!pdfExporter) {
     // Browsers can cache a rejected import for the lifetime of the tab.
-    const load: Promise<typeof import('../review/exportResponsePdf')> = pdfLoadFailed && import.meta.env.PROD
-      ? import(/* @vite-ignore */ '/downloads/responses-v1.js?retry=' + Date.now())
+    const url = import.meta.env.BASE_URL + 'downloads/responses-v1.js' + (pdfLoadFailed ? '?retry=' + Date.now() : '');
+    const load: Promise<typeof import('../review/exportResponsePdf')> = import.meta.env.PROD
+      ? import(/* @vite-ignore */ url)
       : import('../review/exportResponsePdf');
     pdfExporter = load.catch((error: unknown) => {
       pdfLoadFailed = true;

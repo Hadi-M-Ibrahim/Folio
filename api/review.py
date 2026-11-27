@@ -36,24 +36,26 @@ SESSION_LIMIT = ReviewRateLimit(limit=60)
 INVALID_BODY = object()
 
 
-def same_origin(headers):
-    origin = headers.get("Origin")
-    if origin is None:
-        return True
-    try:
-        source = urlsplit(origin)
-        return source.scheme in ("http", "https") and source.netloc.lower() == headers.get("Host", "").lower()
-    except ValueError:
+def allowed_request(headers, *, local_operator, hosted):
+    if headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
         return False
-
-
-def allowed_local_request(headers):
-    # Loopback also serves the Vite proxy. Check the HTTP authority before granting local-operator access.
     try:
         host = urlsplit("//" + headers.get("Host", ""))
-        if host.hostname not in ("localhost", "127.0.0.1", "::1") or host.username is not None or host.path or host.query or host.fragment:
+        if not host.hostname or host.username is not None or host.path or host.query or host.fragment:
             return False
-        return same_origin(headers)
+        if local_operator and host.hostname not in ("localhost", "127.0.0.1", "::1"):
+            return False
+        origin = headers.get("Origin")
+        if origin is None:
+            return True
+        source = urlsplit(origin)
+        if (source.scheme not in ("http", "https") or (hosted and source.scheme != "https")
+                or source.username is not None or source.path or source.query or source.fragment):
+            return False
+        default_port = 443 if source.scheme == "https" else 80
+        source_port, host_port = source.port, host.port
+        return (source.hostname == host.hostname and (default_port if source_port is None else source_port)
+                == (default_port if host_port is None else host_port))
     except ValueError:
         return False
 
@@ -97,14 +99,13 @@ class handler(BaseHTTPRequestHandler):
         if path not in ("/api/review", "/api/review-session"):
             return self.reply(404, {"error": "Review endpoint not found."})
         local_operator = getattr(self.server, "local_operator", False)
-        if self.headers.get("Sec-Fetch-Site") == "cross-site" or (local_operator and not allowed_local_request(self.headers)):
+        hosted = not local_operator and os.environ.get("VERCEL") == "1"
+        if not allowed_request(self.headers, local_operator=local_operator, hosted=hosted):
             return self.reply(403, {"error": "Open Folio to submit a review from this site."})
         peer = self.client_address[0] if self.client_address else None
-        key = network_key(self.headers, peer, vercel=not local_operator and os.environ.get("VERCEL") == "1")
+        key = network_key(self.headers, peer, vercel=hosted)
         query = parse_qs(route.query, keep_blank_values=True)
         if path == "/api/review-session" or query.get("control") == ["session"]:
-            if self.headers.get("Sec-Fetch-Site") == "same-site" or not same_origin(self.headers):
-                return self.reply(403, {"error": "Open Folio to manage a review session."})
             return self.session_body(key, local_operator)
         self.submit_review(key, local_operator, query.get("operation"))
 

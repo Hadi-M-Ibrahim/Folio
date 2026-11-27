@@ -304,6 +304,10 @@ test('the cold landing page is painted before the application downloads and stay
 });
 
 test('a cold workflow deep link paints no landing hero', async ({ page }) => {
+  const landscapeRequests = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/paper-landscape.webp') landscapeRequests.push(request.url());
+  });
   await page.addInitScript(() => {
     window.homeWasPainted = false;
     function sample() {
@@ -326,6 +330,7 @@ test('a cold workflow deep link paints no landing hero', async ({ page }) => {
   }
   await expect(page.getByRole('heading', { name: 'Add existing policies', exact: true })).toBeFocused();
   expect(await page.evaluate(() => window.homeWasPainted)).toBe(false);
+  expect(landscapeRequests).toHaveLength(0);
 });
 
 test('a late font keeps the headline at its first painted width', async ({ page }) => {
@@ -1606,6 +1611,14 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
   expect(lastDraftPage).toBeGreaterThan(firstDraftPage);
 });
 
+test('an open tab can load the PDF exporter with only its stable URL available', async ({ page }) => {
+  await page.route('**/assets/**', route => route.abort());
+  await page.route('**/previous-release', route => route.fulfill({ contentType: 'text/html', body: '<title>Older review</title>' }));
+  await page.goto('/previous-release');
+  const names = await page.evaluate(async () => Object.keys(await import('/downloads/responses-v1.js')));
+  expect(names.sort()).toEqual(['exportActionListPdf', 'exportResponsePdf']);
+});
+
 test('an embedded Mac browser can retry a failed PDF download in the same review', async ({ page }) => {
   // FileSaver's embedded-WebKit path previously opened a blank popup here.
   await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', {
@@ -2285,6 +2298,16 @@ test('questionnaire items send the physical PDF pages they span and the selected
 });
 
 test('non-contiguous guide pages reach the planner and open at the original citation', async ({ page, context }) => {
+  await page.addInitScript(() => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, ...keys) {
+      const source = value?.data;
+      if (this.name === 'drafts' && source?.selection && source.range?.original?.pdfFile) {
+        window.rangeUsesOriginalBytes = source.document.pdfFile === source.range.original.pdfFile;
+      }
+      return put.call(this, value, ...keys);
+    };
+  });
   const obligations = ['Staff must record inspection dates.', 'Supervisors must sign inspection reports.'];
   const guide = await printPdf(context, [obligations[0], 'Unselected payroll instructions.', obligations[1]], { portraitPages: [1] });
   const submissions = captureReviewRequests(page);
@@ -2296,6 +2319,7 @@ test('non-contiguous guide pages reach the planner and open at the original cita
   await uploadPdf(page, 'Upload regulatory guide', 'Audit.pdf', guide);
   await original;
   await chooseRange(page, 'Choose guide pages', /Guide pages/, '1, 3');
+  await expect.poll(() => page.evaluate(() => window.rangeUsesOriginalBytes)).toBe(true);
   await expect(page.getByText('Review ready', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
@@ -2605,9 +2629,14 @@ test('a complete scanned form joins a question across transcription requests bef
   await addPolicy(page, 'Records.txt', 'The registrar keeps the inspection log after the archive closes.');
   await continueToSource(page, 'questionnaire');
   const requests = captureReviewRequests(page);
+  const pdfWorkers = [];
+  page.on('worker', worker => { if (worker.url().endsWith('/pdf.worker.min.mjs')) pdfWorkers.push(worker); });
   await uploadPdf(page, 'Upload questionnaire', 'Archive scan.pdf', form);
   await expectCompactPdf(page);
   const parts = await finishDocumentReview(page, 'questionnaire', requests);
+  // One worker builds the local page index. A second serves all transcription and assessment groups.
+  expect(pdfWorkers).toHaveLength(2);
+  await expect.poll(() => page.workers().filter(worker => pdfWorkers.includes(worker)).length).toBe(0);
 
   const transcripts = parts.filter(({ input }) => input.transcribeSourceOnly);
   expect(transcripts.length).toBeGreaterThan(1);

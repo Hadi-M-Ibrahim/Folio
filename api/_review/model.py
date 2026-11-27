@@ -603,11 +603,13 @@ def review_plan(mode, source, criteria, key, deadline, source_pdf, document_part
 
 
 def review_with_provider(payload, criteria, pages, key):
+    from .pdf_context import verify_pdf_page_counts
     from .pdf_reader import read_pdf_text, read_source
 
     deadline = time.monotonic() + REVIEW_SECONDS
     mode = payload["mode"]
     attachments = payload.get("pdfAttachments", [])
+    verify_pdf_page_counts(attachments)
     source_pdf = [a for a in attachments if a["role"] == "source"]
     document_part = payload.get("documentPart", False)
     require_complete = document_part or payload.get("requireComplete", False)

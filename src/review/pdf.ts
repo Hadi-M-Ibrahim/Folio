@@ -5,8 +5,9 @@ import { MAX_REQUEST_BYTES, ReviewSizeError, type PdfAttachment, type Policy } f
 const maxAttachmentBytes = Math.floor(MAX_REQUEST_BYTES / 4) * 3;
 const pdfPageCounts = new WeakMap<File, number>();
 
-export async function openPdf(file: File) {
+export async function openPdf(file: File, signal?: AbortSignal) {
   const [pdfjs, data] = await Promise.all([import('pdfjs-dist'), file.arrayBuffer()]);
+  signal?.throwIfAborted();
   const directory = import.meta.env.DEV ? 'node_modules/pdfjs-dist/' : 'assets/pdfjs-' + pdfVersion + '/';
   const assets = new URL(import.meta.env.BASE_URL + directory, window.location.origin);
   pdfjs.GlobalWorkerOptions.workerSrc = assets + 'build/pdf.worker.min.mjs';
@@ -100,36 +101,65 @@ async function selectedPagesPdf(pdf: PDFDocumentProxy, numbers: number[], signal
   return new Blob(chunks, { type: 'application/pdf' });
 }
 
+// Each review attempt owns its reader. A retry can begin while the cancelled attempt's worker shuts down.
+export function createPdfAttachmentReader(doc: Policy, role: PdfAttachment['role'], signal?: AbortSignal) {
+  let loading: ReturnType<typeof openPdf> | undefined;
+  let closing: Promise<void> | undefined;
+
+  function close() {
+    signal?.removeEventListener('abort', onAbort);
+    if (!closing) closing = loading ? loading.then(task => task.destroy(), () => {}) : Promise.resolve();
+    return closing;
+  }
+
+  function onAbort() {
+    // The caller also awaits close() in its finally block.
+    void close().catch(() => {});
+  }
+
+  async function attachment(pageNumbers: readonly number[], renderSelectedPages = false): Promise<PdfAttachment> {
+    signal?.throwIfAborted();
+    if (closing) throw Error('This PDF reader is closed.');
+    const file = doc.pdfFile;
+    if (!file) throw Error('Choose the original PDF again to attach its pages.');
+    const pages = [...new Set(pageNumbers)].sort((a, b) => a - b);
+    if (!pages.length || pages.some(n => !Number.isSafeInteger(n) || n < 1)) {
+      throw Error('Choose at least one valid PDF page.');
+    }
+    const lastPage = pages[pages.length - 1];
+    // Large policy originals can include bulky embedded resources. Try a visual copy before requiring a narrower policy scope.
+    const keepOriginal = !renderSelectedPages && (role !== 'policy' || file.size < maxAttachmentBytes);
+    const useOriginal = (count?: number) => keepOriginal && pages.length === count && lastPage === count;
+    let blob: Blob = file;
+    if (!useOriginal(pdfPageCounts.get(file))) {
+      if (!loading) {
+        loading = openPdf(file, signal);
+        signal?.addEventListener('abort', onAbort, { once: true });
+      }
+      const pdf = await (await loading).promise;
+      signal?.throwIfAborted();
+      if (lastPage > pdf.numPages) throw Error('Choose pages within the original PDF.');
+      if (!useOriginal(pdf.numPages)) blob = await selectedPagesPdf(pdf, pages, signal);
+    }
+    signal?.throwIfAborted();
+    const data = await base64Pdf(blob);
+    signal?.throwIfAborted();
+    return { role, documentId: doc.id, title: doc.title, pages, data };
+  }
+  return { attachment, close };
+}
+
 export async function makePdfAttachment(
   doc: Policy, role: PdfAttachment['role'], pageNumbers: readonly number[], signal?: AbortSignal,
   options?: { renderSelectedPages?: boolean },
 ): Promise<PdfAttachment> {
-  signal?.throwIfAborted();
-  const file = doc.pdfFile;
-  if (!file) throw Error('Choose the original PDF again to attach its pages.');
-  const pages = [...new Set(pageNumbers)].sort((a, b) => a - b);
-  if (!pages.length || pages.some((n) => !Number.isSafeInteger(n) || n < 1)) {
-    throw Error('Choose at least one valid PDF page.');
-  }
-  const attachment = { role, documentId: doc.id, title: doc.title, pages };
-  const lastPage = pages[pages.length - 1];
-  // Large policy originals can include bulky embedded resources. Try a visual copy before requiring a narrower policy scope.
-  const keepOriginal = !options?.renderSelectedPages && (role !== 'policy' || file.size < maxAttachmentBytes);
-  const useOriginal = (count?: number) => keepOriginal && pages.length === count && lastPage === count;
-  if (useOriginal(pdfPageCounts.get(file))) return { ...attachment, data: await base64Pdf(file) };
-
-  const task = await openPdf(file);
+  const reader = createPdfAttachmentReader(doc, role, signal);
   try {
-    const pdf = await task.promise;
-    signal?.throwIfAborted();
-    if (lastPage > pdf.numPages) throw Error('Choose pages within the original PDF.');
-    const blob = useOriginal(pdf.numPages) ? file : await selectedPagesPdf(pdf, pages, signal);
-    signal?.throwIfAborted();
-    return { ...attachment, data: await base64Pdf(blob) };
+    return await reader.attachment(pageNumbers, options?.renderSelectedPages);
   } catch (error) {
     signal?.throwIfAborted();
     throw error;
   } finally {
-    await task.destroy();
+    await reader.close();
   }
 }

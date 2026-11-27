@@ -4,7 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- The CSP in vercel.json allows this exact pre-paint route hint. -->
-    <script>if (location.hash.startsWith('#/new/') || location.hash.startsWith('#/review/')) document.documentElement.classList.add('opening-review');</script>
+    <script>
+      if (location.hash.startsWith('#/new/') || location.hash.startsWith('#/review/')) {
+        document.documentElement.classList.add('opening-review');
+      } else {
+        const image = document.createElement('link');
+        image.rel = 'preload';
+        image.as = 'image';
+        image.href = '/paper-landscape.webp';
+        image.fetchPriority = 'high';
+        document.head.append(image);
+      }
+    </script>
     <link rel="preload" as="font" type="font/woff2" href="/node_modules/@fontsource/instrument-serif/files/instrument-serif-latin-400-normal.woff2" crossorigin>
     <link rel="preload" as="font" type="font/woff2" href="/node_modules/@fontsource-variable/dm-sans/files/dm-sans-latin-wght-normal.woff2" crossorigin>
     <link rel="stylesheet" href="/src/styles.css">
