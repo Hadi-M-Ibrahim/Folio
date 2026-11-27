@@ -13,7 +13,7 @@ Folio can start an Anthropic review once both the source and the first policy ar
 
 Keep the tab open while Folio reviews a long document. The progress bar tracks completed work, and the findings appear in document order. Use the range controls to choose questions or physical pages. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment. Changing the selection cannot recall pages already sent to Anthropic.
 
-Each section sends the corresponding PDF pages to Anthropic as a document attachment, alongside the questions, guide text, and policies used to find evidence. Short reviews can use the original file. For a narrower range or a large source, Folio builds PDFs from the visible contents of the relevant pages. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. The form keeps your inputs and completed sections available for retry in the same tab. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section and must fit its 4 MB request budget. Download the final review before refreshing or closing it.
+Each section sends the corresponding source PDF pages to Anthropic. Folio searches every selected policy page before assessing a question. For larger PDF packets, it attaches the policy pages containing candidate evidence, including exceptions and follow-up matches. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. The form keeps your inputs and completed sections available for retry in the same tab. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section sent to Folio and must fit its 4 MB request budget. Download the final review before refreshing or closing it.
 
 ## Repository layout
 
@@ -32,6 +32,7 @@ Each section sends the corresponding PDF pages to Anthropic as a document attach
 Use Python 3.12 and Node 22.23.5 or a newer 22.x release. Set `ANTHROPIC_API_KEY` in the Python API’s environment to run reviews. Start the API in one terminal and Vite in another.
 
 ```sh
+python3 -m pip install -r requirements.txt
 python3 api/review.py
 ```
 
@@ -72,13 +73,14 @@ Run `python3 scripts/evaluate_followup.py` to check the synthetic cases and thei
 Both workflows share a limit of 30 submissions from one IP address in 10 minutes. The Vercel Firewall rule **Folio review submissions** counts POSTs to `/api/review` and `/api/review/` per edge region. Each API worker also enforces the limit before reading documents. A limited request receives HTTP 429. A multi-part review waits for the quota to reset and then resumes. A single-request review keeps the inputs for retry. Both use the `Retry-After` header when available. [Vercel rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
 
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements/lint.txt -r requirements/test.txt
 npm run lint
 npm run test:unit
 npm run build
 npx playwright install --only-shell chromium
 npm run test:e2e
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements/lint.txt -r requirements/test.txt
 .venv/bin/python -m ruff check api scripts tests
 .venv/bin/python -m coverage run --branch --source=api -m unittest discover -s tests -v
 .venv/bin/python -m coverage report --show-missing --precision=1

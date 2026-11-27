@@ -19,7 +19,7 @@ def first_pass(lookup=REQUEST):
 
 
 class FollowupReviewTests(unittest.TestCase):
-    def run_case(self, outputs, *, annex=True, questions=(QUESTION,), enabled=True):
+    def run_case(self, outputs, *, annex=True, questions=(QUESTION,), enabled=True, required=False):
         docs = [{"id": "book", "title": "Shipping", "pages": [{"number": 1, "text": RULE}]}]
         if annex:
             docs[0]["pages"].append({"number": 19, "text": ANNEX})
@@ -27,7 +27,8 @@ class FollowupReviewTests(unittest.TestCase):
         initial = retrieve(pages, basic_plan(criteria))
         deadline = time.monotonic() + 70
         with patch.object(model, "invoke_tool", side_effect=outputs) as invoke:
-            result, _ = model.assess_findings(initial, pages, "test-key", deadline, allow_followup=enabled)
+            result, _ = model.assess_findings(initial, pages, "test-key", deadline,
+                                              allow_followup=enabled, require_complete=required)
         self.assertEqual({call.args[4] for call in invoke.call_args_list}, {deadline})
         return result, invoke.call_args_list
 
@@ -86,6 +87,15 @@ class FollowupReviewTests(unittest.TestCase):
                 self.assertEqual(len(calls), 2)
                 self.assertEqual(rows[0]["followup"]["passages"][0]["page"], 19)
                 self.assertEqual(rows[0]["status"], "needs_review")
+
+    def test_complete_review_keeps_initial_verified_evidence_when_the_optional_followup_fails(self):
+        for failure in (model.ProviderUnavailable(), model.OutputTruncated(), model.DeadlineExceeded(), {"assessments": []}):
+            with self.subTest(failure=failure):
+                rows, calls = self.run_case([{"assessments": [first_pass()]}, failure], required=True)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual((rows[0]["analysisEngine"], rows[0]["status"]), ("anthropic", "needs_review"))
+                self.assertEqual(rows[0]["supporting"][0]["quote"], RULE)
+                self.assertEqual(rows[0]["followup"]["passages"][0]["quote"], ANNEX)
 
     def test_first_passes_have_priority_and_final_calls_keep_the_same_deadline(self):
         first = {"assessments": [first_pass()]}

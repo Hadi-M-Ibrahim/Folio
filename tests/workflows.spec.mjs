@@ -350,7 +350,7 @@ test('a provider outage preserves the question and uploaded policy for retry', a
   release();
   const first = await response;
   expect(first.status()).toBe(503);
-  await expect(page.getByRole('alert')).toContainText('Anthropic could not complete the assessment. Try again.');
+  await expect(page.getByRole('alert')).toContainText('Folio could not reach Anthropic. Try again shortly.');
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Outages.txt');
   const retry = await submitReview(page, 'questionnaire');
   expect(retry.ok()).toBe(true);
@@ -1053,7 +1053,7 @@ async function selectLastFinding(page, questions) {
   await expect(page.getByRole('heading', { name: questions.at(-1), exact: true })).toBeVisible();
 }
 
-test('one submission reviews 65 native PDF questions in full and exports every response', async ({ page, context }) => {
+test('one submission recovers late incomplete batches and exports all 65 questions against a full policy PDF', async ({ page, context }) => {
   test.setTimeout(120_000);
   const questions = Array.from({ length: 65 }, (_, i) => `${i + 1}. Who keeps inspection log ${i + 1}?`);
   questions[32] = '33. Who keeps the inspection log covering ' + 'archived inspection entries and '.repeat(73) + 'the final register?';
@@ -1061,7 +1061,13 @@ test('one submission reviews 65 native PDF questions in full and exports every r
   const sheets = Array.from({ length: 13 }, (_, i) => questions.slice(i * 5, i * 5 + 5).join('\n'));
   const form = await printPdf(context, sheets, { fontSize: 8 });
   const policyQuote = 'The registrar keeps the inspection log for every site.';
-  const policy = await printPdf(context, ['Car park hours vary.', policyQuote]);
+  const policyPages = Array.from({ length: 145 }, (_, i) => i + 1);
+  const parking = [
+    'Visitor parking is available in marked bays. Drivers obtain a temporary pass at reception and display it throughout the visit.',
+    'Use the pedestrian walkway to reach the entrance. Accessible bays beside the entrance must remain clear of deliveries and bicycles.',
+    'Reception provides an alternate location during maintenance. An attendant directs delivery vehicles to the loading bay on arrival.',
+  ].join('\n\n');
+  const policy = await printPdf(context, policyPages.map(number => number === 145 ? policyQuote : parking), { fontSize: 12 });
   await page.goto('/#/new/questionnaire');
   await uploadPdf(page, 'Upload questionnaire', 'Register.pdf', form);
   await expectCompactPdf(page);
@@ -1077,28 +1083,39 @@ test('one submission reviews 65 native PDF questions in full and exports every r
   expect(parts.flatMap(({ assessed }) => assessed).sort()).toEqual(
     questions.map(question => createHash('sha256').update(question).digest('hex')).sort(),
   );
+  expect(parts.flatMap(part => part.calls.filter(call => call.omitted).map(call => [call.tool, call.omitted])))
+    .toEqual([['record_search_plan', questions[56]], ['record_review', questions[63]]]);
+  expect(parts[0].result.planningEngine).toBe('local');
+  expect(parts[0].result.engine).toBe('anthropic');
   for (const { input, calls, result } of parts) {
     const originalPages = [...new Set(input.questions.map(question => Math.floor(questions.indexOf(question) / 5) + 1))];
     expect(input.pdfAttachments).toHaveLength(2);
     const source = await expectAttachedSheets(input.pdfAttachments.find(pdf => pdf.role === 'source'), originalPages);
     const attachedPolicy = input.pdfAttachments.find(pdf => pdf.role === 'policy');
-    const policyBlock = await expectAttachedSheets(attachedPolicy, [1, 2]);
+    expect(input.documents[0].pages.map(page => page.number)).toEqual(policyPages);
+    expect(input.documents[0].pages.at(-1).text).toBe(policyQuote);
+    expect(attachedPolicy.pages).toEqual(policyPages);
     expect(Buffer.from(attachedPolicy.data, 'base64').equals(policy)).toBe(true);
     expect(source.title).toBe('Register.pdf');
-    expect(policyBlock).toMatchObject({ title: 'Records.pdf', documentId: input.documents[0].id });
     expect(calls.map(call => call.tool)).toContain('record_search_plan');
     expect(calls.map(call => call.tool)).toContain('record_review');
     for (const call of calls) {
-      expect(call.documents).toEqual(call.tool === 'record_search_plan' ? [source] : [source, policyBlock]);
+      if (call.tool === 'record_search_plan') expect(call.documents).toEqual([source]);
+      else {
+        expect(call.documents).toHaveLength(2);
+        expect(call.documents[0]).toEqual(source);
+        expect(call.documents[1]).toMatchObject({ role: 'policy', title: 'Records.pdf',
+          documentId: input.documents[0].id, pages: [145] });
+      }
     }
     for (const finding of result.findings) {
-      expect(finding).toMatchObject({ analysisEngine: 'anthropic', supporting: [{ page: 2, quote: policyQuote }] });
+      expect(finding).toMatchObject({ analysisEngine: 'anthropic', supporting: [{ page: 145, quote: policyQuote }] });
     }
   }
 
   await selectLastFinding(page, questions);
-  await page.getByRole('button', { name: /Records\.pdf.*p\. 2/ }).first().click();
-  await expectPdfCanvas(page.getByRole('dialog'), 'Records.pdf', 2);
+  await page.getByRole('button', { name: /Records\.pdf.*p\. 145/ }).first().click();
+  await expectPdfCanvas(page.getByRole('dialog'), 'Records.pdf', 145);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Use suggested answer' }).click();
   await page.getByRole('button', { name: 'Confirm response' }).click();
@@ -1109,7 +1126,7 @@ test('one submission reviews 65 native PDF questions in full and exports every r
   expect(output.match(/^Response status — Pending$/gm)).toHaveLength(64);
   const finalResponse = output.slice(output.indexOf('## Question 65.'), output.indexOf('## Evidence and search record'));
   expect(finalResponse).toContain('Response status — Confirmed');
-  expect(finalResponse).toContain('Records.pdf, p. 2');
+  expect(finalResponse).toContain('Records.pdf, p. 145');
   expect(finalResponse).toContain(policyQuote);
 });
 
@@ -1268,7 +1285,7 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
   await page.getByRole('button', { name: 'Find evidence' }).click();
   release();
-  await expect(page.getByRole('alert')).toContainText('Anthropic could not complete the assessment.');
+  await expect(page.getByRole('alert')).toContainText('Folio could not reach Anthropic.');
   page.off('response', capture);
   expect(firstAttempt.length).toBeGreaterThan(2);
   expect(firstAttempt[0].status()).toBe(429);

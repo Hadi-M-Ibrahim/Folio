@@ -120,6 +120,20 @@ class ProviderUnavailable(Exception):
     pass
 
 
+class ProviderServiceError(ProviderUnavailable):
+    """Changing the review input will not resolve this upstream failure."""
+
+
+def provider_http_error(status):
+    if status == 429:
+        return ProviderServiceError("Anthropic has reached its request limit. Wait a few minutes, then retry.")
+    if status in (401, 402, 403, 404):
+        return ProviderServiceError("Folio cannot access its Anthropic model. The service owner needs to check the API configuration.")
+    if status >= 500:
+        return ProviderServiceError("Anthropic is temporarily unavailable. Try again shortly.")
+    return ProviderUnavailable()
+
+
 class OutputTruncated(ProviderUnavailable):
     """A smaller tool assignment may fit the provider's response budget."""
 
@@ -130,6 +144,10 @@ class DeadlineExceeded(ProviderUnavailable):
 
 class MissingToolCall(ProviderUnavailable):
     """The model completed its turn without the single requested tool call."""
+
+
+class IncompleteAssessment(ProviderUnavailable):
+    """The tool responded but did not return usable assessments for every assigned ID."""
 
 
 class NoProviderRedirects(request.HTTPRedirectHandler):
@@ -203,12 +221,12 @@ def provider_retry_delay(exc):
 def read_provider_response(outgoing, deadline):
     # Both attempts and the wait share the original call's timeout budget.
     call_deadline = min(deadline, time.monotonic() + CALL_SECONDS)
-    retried = False
+    retry_status = None
     while True:
         check_session()
         timeout = call_deadline - time.monotonic()
-        if retried and timeout < MIN_RETRY_BUDGET:
-            raise ProviderUnavailable
+        if retry_status is not None and timeout < MIN_RETRY_BUDGET:
+            raise provider_http_error(retry_status)
         if timeout <= 0:
             raise DeadlineExceeded
         try:
@@ -216,12 +234,12 @@ def read_provider_response(outgoing, deadline):
                 return response.read(MAX_RESPONSE_BYTES + 1)
         except error.HTTPError as exc:
             with exc:
-                delay = None if retried else provider_retry_delay(exc)
+                delay = provider_retry_delay(exc) if retry_status is None else None
                 retry = delay is not None and delay + MIN_RETRY_BUDGET <= call_deadline - time.monotonic()
                 logger.warning("anthropic_http_error status=%d retry=%s", exc.code, retry)
-            if not retry:
-                raise ProviderUnavailable from None
-        retried = True
+                if not retry:
+                    raise provider_http_error(exc.code) from None
+                retry_status = exc.code
         time.sleep(delay)
 
 
@@ -245,13 +263,16 @@ def invoke_tool(system, tool, input_data, key, deadline, max_tokens=3800, *, att
     except (error.URLError, OSError) as exc:
         if isinstance(getattr(exc, "reason", exc), TimeoutError):
             raise DeadlineExceeded from None
-        raise ProviderUnavailable from None
+        raise ProviderServiceError("Folio could not reach Anthropic. Try again shortly.") from None
     except (HTTPException, ValueError, KeyError, TypeError, AttributeError, RecursionError):
         # Provider responses may contain source content. Never log a provider body or exception.
         raise ProviderUnavailable from None
 
 
-def call_provider(model_input, key, deadline, *, allow_followup=False, attachments=()):
+def call_provider(model_input, key, deadline, *, allow_followup=False, attachments=(), repair=False):
+    from .pdf_context import assessment_pdfs
+
+    attachments = assessment_pdfs(attachments, model_input)
     system = SYSTEM
     if attachments:
         system += ("\nRead the source PDF for context on the submitted criteria and policy PDFs for context on the candidate "
@@ -261,10 +282,13 @@ def call_provider(model_input, key, deadline, *, allow_followup=False, attachmen
         system += LOOKUP_INSTRUCTION
     elif any("lookup" in row for row in model_input):
         system += FINAL_INSTRUCTION
+    if repair:
+        system += ("\nRepair the missing or invalid assessments. Call record_review once and provide exactly one "
+                   "complete assessment per ID in this request. Copy the IDs exactly.")
     options = {"attachments": attachments} if attachments else {}
     result = invoke_tool(system, LOOKUP_TOOL if allow_followup else TOOL, model_input, key, deadline, **options)
     if not isinstance(result.get("assessments"), list):
-        raise ProviderUnavailable
+        raise IncompleteAssessment
     return result["assessments"]
 
 
@@ -389,39 +413,63 @@ def assessment_input(finding, *, locate_passages=False):
     return assignment, refs
 
 
-def assess_batch(findings, pages, key, deadline, *, allow_followup=True, attachments=()):
-    inputs = {finding["id"]: assessment_input(finding, locate_passages=bool(attachments)) for finding in findings}
-    outputs = call_provider([row for row, _ in inputs.values()], key, deadline, allow_followup=allow_followup,
-                            attachments=attachments)
+def assessment_rows(outputs):
     by_id = {}
     for item in outputs:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
             item_id = item["id"]
             # Duplicate assignments are ambiguous. Keep the local finding for that criterion.
             by_id[item_id] = None if item_id in by_id else item
-    return [review_row(finding, by_id.get(finding["id"]), inputs[finding["id"]][1], pages, allow_followup, deadline)
-            for finding in findings]
+    return by_id
+
+
+def assess_batch(findings, pages, key, deadline, *, allow_followup=True, attachments=(), require_complete=False):
+    inputs = {finding["id"]: assessment_input(finding, locate_passages=bool(attachments)) for finding in findings}
+    pending = {row["id"]: row for row in findings}
+    reviewed = pending.copy()
+    for attempt in range(2 if require_complete else 1):
+        if attempt:
+            logger.warning("assessment_repair missing=%d", len(pending))
+        try:
+            outputs = call_provider([inputs[item_id][0] for item_id in pending], key, deadline, attachments=attachments,
+                                    allow_followup=allow_followup, repair=bool(attempt))
+        except (MissingToolCall, IncompleteAssessment):
+            if require_complete and not attempt:
+                continue
+            raise
+        rows = assessment_rows(outputs)
+        for item_id, finding in list(pending.items()):
+            result = review_row(finding, rows.get(item_id), inputs[item_id][1], pages, allow_followup, deadline)
+            if result is not finding:
+                reviewed[item_id] = result
+                del pending[item_id]
+        if not require_complete or not pending:
+            return list(reviewed.values())
+    raise IncompleteAssessment
 
 
 def assess_findings(findings, pages, key, deadline, *, allow_followup=True, attachments=(), require_complete=False):
     # Each completed batch replaces those local findings, preserving original criterion order.
     by_id = {row["id"]: row for row in findings}
-    def assess(rows, *, permit_lookup):
+    def assess(rows, *, permit_lookup, required=False):
         for offset in range(0, len(rows), BATCH_SIZE):
             original = rows[offset:offset + BATCH_SIZE]
             try:
-                batch = assess_batch(original, pages, key, deadline, allow_followup=permit_lookup, attachments=attachments)
-                if require_complete and any(new is old for new, old in zip(batch, original, strict=True)):
-                    raise ProviderUnavailable
+                batch = assess_batch(original, pages, key, deadline, allow_followup=permit_lookup,
+                                     attachments=attachments, require_complete=required)
             except ProviderUnavailable as exc:
-                if require_complete:
-                    if len(findings) > 1 and isinstance(exc, (DeadlineExceeded, OutputTruncated)):
-                        raise ReviewPartTooLarge("The model could not finish this review part within its budget.") from None
+                if isinstance(exc, ProviderServiceError) and (required or not any(
+                    row["analysisEngine"] == "anthropic" for row in by_id.values()
+                )):
+                    raise
+                if required:
+                    if len(findings) > 1 and isinstance(exc, (DeadlineExceeded, OutputTruncated, IncompleteAssessment, MissingToolCall)):
+                        raise ReviewPartTooLarge("The model could not finish assessing every criterion in this part.") from None
                     raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.") from None
                 break
             by_id.update((row["id"], row) for row in batch)
 
-    assess(findings, permit_lookup=allow_followup)
+    assess(findings, permit_lookup=allow_followup, required=require_complete)
     # Give all criteria their first assessment before spending another model call.
     pending = [row for row in by_id.values() if row.get("followup", {}).get("passages")]
     assess(pending, permit_lookup=False)
@@ -433,6 +481,8 @@ def assess_findings(findings, pages, key, deadline, *, allow_followup=True, atta
         notice = f"Anthropic assessed {assessed} of {len(findings)} criteria. Review the remaining criteria using their search results."
     else:
         notice = "Anthropic could not complete its assessment. Review the search results for each criterion."
+    if any(by_id[row["id"]] is row for row in pending):
+        notice = (notice + " Some follow-up checks could not finish. Inspect the flagged findings and their passages.").strip()
     return reviewed, notice
 
 
@@ -485,9 +535,30 @@ def planning_failure(exc, mode, source, require_complete):
     return ProviderUnavailable("Anthropic could not complete the search plan. Try again.")
 
 
+def review_plan(mode, source, criteria, key, deadline, source_pdf, document_part, require_complete):
+    from .planner import IncompletePlan, UnverifiedQuestionnairePlan, plan_criteria
+
+    try:
+        plan = plan_criteria(mode, source, criteria, key, deadline, attachments=source_pdf, document_part=document_part)
+        return plan, "anthropic", ""
+    except ProviderServiceError:
+        raise
+    except ProviderUnavailable as exc:
+        # A questionnaire already specifies every criterion. Its search terms are optional.
+        if mode == "questionnaire" and criteria and not isinstance(exc, DeadlineExceeded):
+            plan = [{**row, "source": question} for row, question in zip(basic_plan(criteria), source, strict=True)]
+        elif require_complete or isinstance(exc, IncompletePlan) or not criteria:
+            raise planning_failure(exc, mode, source, require_complete) from None
+        else:
+            plan = basic_plan(criteria)
+        plan_notice = "The model planner was unavailable. Search used terms from the original criteria."
+        if isinstance(exc, UnverifiedQuestionnairePlan):
+            plan_notice = "Search used the original questions because the model's search plan could not be verified."
+        return plan, "local", plan_notice
+
+
 def review_with_provider(payload, criteria, pages, key):
     from .pdf_reader import read_pdf_text, read_source
-    from .planner import IncompletePlan, plan_criteria
 
     deadline = time.monotonic() + REVIEW_SECONDS
     mode = payload["mode"]
@@ -505,22 +576,15 @@ def review_with_provider(payload, criteria, pages, key):
     if payload.get("readSourcePdf"):
         criteria = source_criteria(mode, {**read_text, "documentPart": document_part})
     source = source_input["questions" if mode == "questionnaire" else "guide"]
-    try:
-        plan = plan_criteria(mode, source, criteria, key, deadline, attachments=source_pdf, document_part=document_part)
-        planner = "anthropic"
-    except ProviderUnavailable as exc:
-        if require_complete or isinstance(exc, IncompletePlan) or not criteria:
-            raise planning_failure(exc, mode, source, require_complete) from None
-        plan = basic_plan(criteria)
-        planner = "local"
+    plan, planner, plan_notice = review_plan(mode, source, criteria, key, deadline, source_pdf, document_part, require_complete)
     findings = retrieve(pages, plan) if plan else []
     notice = ""
     if findings:
         findings, notice = assess_findings(findings, pages, key, deadline, attachments=attachments, require_complete=require_complete)
         if not any(row["analysisEngine"] == "anthropic" for row in findings):
             raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.")
-    if planner == "local":
-        notice = ("The model planner was unavailable. Search used terms from the original criteria. " + notice).strip()
+    if plan_notice:
+        notice = (plan_notice + " " + notice).strip()
     if read_text:
         notice = (notice + " " + transcript_notice).strip()
     return findings, notice, planner, read_text

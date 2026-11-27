@@ -166,8 +166,18 @@ async function runSeries(options: Options, cache: Cache, series: Series): Promis
     }
     for (const part of parts ?? divide(span, series.guide)) await processSpan(part, true);
   }
-  for (const span of series.spans) {
-    await processSpan(span, Boolean(series.alwaysPart || span.end - span.start < series.length));
+  try {
+    for (const span of series.spans) {
+      await processSpan(span, Boolean(series.alwaysPart || span.end - span.start < series.length));
+    }
+  } catch (cause) {
+    options.signal.throwIfAborted();
+    const done = completed.at(-1)?.span.end;
+    if (series.phase === 'questions' && done && cause instanceof Error) {
+      throw new Error(cause.message + ' ' + done + ' of ' + series.length +
+        ' questions completed. Choose Find evidence to resume in this tab.', { cause });
+    }
+    throw cause;
   }
   return completed;
 }

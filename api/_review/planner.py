@@ -136,6 +136,10 @@ class IncompletePlan(model.ProviderUnavailable):
     """A failed part must not replace a full guide plan with a partial local extraction."""
 
 
+class UnverifiedQuestionnairePlan(model.ProviderUnavailable):
+    """Model search terms could not be verified; the original questions remain authoritative."""
+
+
 class InvalidPlan(model.ProviderUnavailable):
     """A completed tool response that can be corrected against the same sources."""
 
@@ -204,12 +208,15 @@ def request_batch(mode, source, batch, key, deadline, attachments):
     try:
         return propose(system)
     except (InvalidPlan, model.MissingToolCall) as exc:
-        if mode != "guide":
-            raise
-        model.logger.warning("guide_plan_repair reason=%s", getattr(exc, "reason", "missing_tool_call"))
+        model.logger.warning("%s_plan_repair reason=%s", mode, getattr(exc, "reason", "missing_tool_call"))
         correction = str(exc) if isinstance(exc, InvalidPlan) else "Call the record_search_plan tool exactly once."
     # Retry just this batch, with the original source IDs, attachments and deadline.
-    return propose(system + "\nRebuild the complete plan for this batch. " + correction)
+    try:
+        return propose(system + "\nRebuild the complete plan for this batch. " + correction)
+    except (InvalidPlan, model.MissingToolCall):
+        if mode == "questionnaire":
+            raise UnverifiedQuestionnairePlan from None
+        raise
 
 
 def plan_batch(mode, source, batch, key, deadline, attachments):
@@ -226,12 +233,12 @@ def plan_batch(mode, source, batch, key, deadline, attachments):
     elif mode == "guide":
         parts = split_unit(batch[0])
     else:
-        raise IncompletePlan
+        raise UnverifiedQuestionnairePlan
     rows = []
     try:
         for part in parts:
             rows.extend(plan_batch(mode, source, part, key, deadline, attachments))
-    except model.DeadlineExceeded:
+    except (model.DeadlineExceeded, model.ProviderServiceError, UnverifiedQuestionnairePlan):
         raise
     except model.ProviderUnavailable:
         raise IncompletePlan from None
@@ -246,7 +253,7 @@ def plan_criteria(mode, source, fallback, key, deadline, *, attachments=(), docu
     for batch in groups:
         try:
             plan.extend(plan_batch(mode, source, batch, key, deadline, attachments))
-        except model.DeadlineExceeded:
+        except (model.DeadlineExceeded, model.ProviderServiceError, UnverifiedQuestionnairePlan):
             raise
         except model.ProviderUnavailable:
             if len(groups) > 1:

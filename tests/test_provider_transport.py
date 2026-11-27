@@ -61,7 +61,8 @@ class ProviderTransportTests(unittest.TestCase):
         self.send.side_effect = failures
         with self.assertLogs(model.logger) as logs, self.assertRaises(model.ProviderUnavailable) as error:
             self.invoke()
-        self.assertIs(type(error.exception), model.ProviderUnavailable)
+        self.assertIsInstance(error.exception, model.ProviderServiceError)
+        self.assertIn("temporarily unavailable", str(error.exception))
         self.assertEqual([r.getMessage() for r in logs.records],
                          ["anthropic_http_error status=529 retry=True", "anthropic_http_error status=503 retry=False"])
         self.assertEqual(self.send.call_count, 2)
@@ -81,7 +82,14 @@ class ProviderTransportTests(unittest.TestCase):
                 self.send.side_effect = failure
                 with self.assertLogs(model.logger) as logs, self.assertRaises(model.ProviderUnavailable) as error:
                     self.invoke(deadline=deadline)
-                self.assertIs(type(error.exception), model.ProviderUnavailable)
+                if failure.code == 400:
+                    self.assertIs(type(error.exception), model.ProviderUnavailable)
+                else:
+                    self.assertIsInstance(error.exception, model.ProviderServiceError)
+                    expected = "request limit" if failure.code == 429 else (
+                        "temporarily unavailable" if failure.code >= 500 else "API configuration")
+                    self.assertIn(expected, str(error.exception))
+                    self.assertNotIn("private", str(error.exception))
                 self.assertEqual([r.getMessage() for r in logs.records],
                                  [f"anthropic_http_error status={failure.code} retry=False"])
                 self.send.assert_called_once()
@@ -101,7 +109,8 @@ class ProviderTransportTests(unittest.TestCase):
         self.sleep.side_effect = lambda seconds: self.advance(seconds + 4)
         with self.assertLogs(model.logger), self.assertRaises(model.ProviderUnavailable) as error:
             self.invoke(deadline=105)
-        self.assertIs(type(error.exception), model.ProviderUnavailable)
+        self.assertIsInstance(error.exception, model.ProviderServiceError)
+        self.assertIn("request limit", str(error.exception))
         self.send.assert_called_once()
 
     def test_timeout_exposes_budget_failure_without_replaying_request(self):

@@ -60,6 +60,45 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan[0]["searchTerms"], ["Benefit cap", "maximum benefit"])
         self.assertIsNone(plan[0]["start"])
 
+    def test_questionnaire_repairs_only_the_invalid_batch_with_its_original_ids(self):
+        questions = [f"Who keeps register {i}?" for i in range(1, 66)]
+        batches = []
+        def simulate(system, tool, inputs, key, deadline, max_tokens):
+            batch = inputs["sources"]
+            batches.append(batch)
+            rows = [{"sourceId": unit["sourceId"], "searchTerms": ["register"]} for unit in reversed(batch)]
+            if len(batches) == 4:
+                return {"criteria": rows[:-1]}
+            return {"criteria": rows}
+
+        with patch.object(model, "invoke_tool", side_effect=simulate) as invoke:
+            plan = planner.plan_criteria("questionnaire", questions, [], "test", 100)
+        self.assertEqual([row["question"] for row in plan], questions)
+        self.assertEqual([len(batch) for batch in batches], [20, 20, 20, 5, 5])
+        self.assertEqual(batches[3], batches[4])
+        self.assertIn("missing required source IDs: s1", invoke.call_args.args[0])
+
+    def test_unverified_questionnaire_plan_still_assesses_every_original_question_with_policy_evidence(self):
+        questions = ["  Who records the inspections?  ", "Who keeps inspection records?"]
+        quote = "The registrar records the inspections and keeps the inspection records."
+        payload = sample(questions=questions, allowModel=True, modelSharingConsent=True, documentPart=True,
+                         documents=[{"id": "policy", "title": "Records", "pages": [{"number": 65, "text": quote}]}])
+        assessment = {"assessments": [{"id": f"q{i}", "status": "supported", "answer": "The registrar.",
+                                       "supporting": [{"passage": "p1", "quote": quote}], "counter": []} for i in (1, 2)]}
+        for invalid in ({"criteria": [{"sourceId": "s2", "searchTerms": ["unverified term"]}]}, model.MissingToolCall):
+            with self.subTest(invalid=invalid), patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test"}, clear=True), \
+                 patch.object(model, "invoke_tool", side_effect=[invalid, invalid, assessment]) as invoke:
+                result = api.review(payload)
+            self.assertEqual([call.args[1]["name"] for call in invoke.call_args_list],
+                             ["record_search_plan", "record_search_plan", "record_review"])
+            self.assertEqual((result["planningEngine"], result["engine"]), ("local", "anthropic"))
+            self.assertIn("original questions", result["notice"])
+            self.assertEqual([row["criterionSource"] for row in result["findings"]], questions)
+            for row, question in zip(result["findings"], questions, strict=True):
+                self.assertEqual((row["question"], row["analysisEngine"]), (question.strip(), "anthropic"))
+                self.assertEqual(row["plannedTerms"], [])
+                self.assertEqual(row["supporting"], [{"documentId": "policy", "title": "Records", "page": 65, "quote": quote}])
+
     def test_malformed_anchors_and_partial_coverage_trigger_fallback(self):
         clause = "Members must send notice and send notice again."
         other = "Plans must keep records."
