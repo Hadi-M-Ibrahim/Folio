@@ -1234,7 +1234,7 @@ test('questionnaire items send the physical PDF pages they span and the selected
   const firstCanvas = await expectPdfCanvas(viewer, 'Intake.pdf', 1);
   const width = (await firstCanvas.boundingBox()).width;
   await viewer.getByRole('button', { name: 'Zoom in', exact: true }).click();
-  await expect.poll(async () => (await firstCanvas.boundingBox()).width).toBeGreaterThan(width);
+  await expect.poll(async () => (await firstCanvas.boundingBox())?.width ?? 0).toBeGreaterThan(width);
   await viewer.getByRole('button', { name: 'Fit to width', exact: true }).click();
   await viewer.getByRole('button', { name: 'Next PDF page' }).click();
   await expectPdfCanvas(viewer, 'Intake.pdf', 2);
