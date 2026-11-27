@@ -6,9 +6,13 @@ import os
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import copy_context
 from email.utils import parsedate_to_datetime
+from functools import partial
 from http.client import HTTPException
+from itertools import batched
 from urllib import error, request
 
 from .search import (
@@ -29,7 +33,9 @@ from .search import (
 from .sessions import check_session
 
 MODEL = "claude-sonnet-5-5"
+MAX_CONCURRENT_CALLS = 2
 SLOTS = threading.BoundedSemaphore(2)
+CONNECTIONS = threading.BoundedSemaphore(MAX_CONCURRENT_CALLS)
 REVIEW_SECONDS = 70
 CALL_SECONDS = 40
 MAX_RETRY_WAIT = 5
@@ -220,6 +226,18 @@ def provider_retry_delay(exc):
 
 
 def read_provider_response(outgoing, deadline):
+    # Queue time counts toward the review deadline. The per-call budget starts when
+    # capacity is available, and the session is checked before every outbound attempt.
+    if not CONNECTIONS.acquire(timeout=max(0, deadline - time.monotonic())):
+        check_session()
+        raise DeadlineExceeded
+    try:
+        return read_with_retry(outgoing, deadline)
+    finally:
+        CONNECTIONS.release()
+
+
+def read_with_retry(outgoing, deadline):
     # Both attempts and the wait share the original call's timeout budget.
     call_deadline = min(deadline, time.monotonic() + CALL_SECONDS)
     retry_status = None
@@ -449,26 +467,46 @@ def assess_batch(findings, pages, key, deadline, *, allow_followup=True, attachm
     raise IncompleteAssessment
 
 
+def assessment_batches(rows, run, required):
+    groups = batched(rows, BATCH_SIZE)
+    if not required or len(rows) <= BATCH_SIZE:
+        for group in groups:
+            yield run(group)
+        return
+
+    # Submit at most one pair before learning whether repair or subdivision is needed.
+    # Each worker inherits this request's revocable session, never another review's.
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CALLS) as workers:
+        for pair in batched(groups, MAX_CONCURRENT_CALLS):
+            requests = [workers.submit(copy_context().run, run, group) for group in pair]
+            # Do not subdivide a request because of a sibling's incomplete output if
+            # another sibling already reported a cancellation, outage or account limit.
+            for job in requests:
+                failure = job.exception()
+                if failure and (isinstance(failure, ProviderServiceError) or not isinstance(failure, ProviderUnavailable)):
+                    raise failure
+            for job in requests:
+                yield job.result()
+
+
 def assess_findings(findings, pages, key, deadline, *, allow_followup=True, attachments=(), require_complete=False):
     # Each completed batch replaces those local findings, preserving original criterion order.
     by_id = {row["id"]: row for row in findings}
     def assess(rows, *, permit_lookup, required=False):
-        for offset in range(0, len(rows), BATCH_SIZE):
-            original = rows[offset:offset + BATCH_SIZE]
-            try:
-                batch = assess_batch(original, pages, key, deadline, allow_followup=permit_lookup,
-                                     attachments=attachments, require_complete=required)
-            except ProviderUnavailable as exc:
-                if isinstance(exc, ProviderServiceError) and (required or not any(
-                    row["analysisEngine"] == "anthropic" for row in by_id.values()
-                )):
-                    raise
-                if required:
-                    if len(findings) > 1 and isinstance(exc, (DeadlineExceeded, OutputTruncated, IncompleteAssessment, MissingToolCall)):
-                        raise ReviewPartTooLarge("The model could not finish assessing every criterion in this part.") from None
-                    raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.") from None
-                break
-            by_id.update((row["id"], row) for row in batch)
+        run = partial(assess_batch, pages=pages, key=key, deadline=deadline, allow_followup=permit_lookup,
+                      attachments=attachments, require_complete=required)
+        try:
+            for batch in assessment_batches(rows, run, required):
+                by_id.update((row["id"], row) for row in batch)
+        except ProviderUnavailable as exc:
+            if isinstance(exc, ProviderServiceError) and (required or not any(
+                row["analysisEngine"] == "anthropic" for row in by_id.values()
+            )):
+                raise
+            if required:
+                if len(findings) > 1 and isinstance(exc, (DeadlineExceeded, OutputTruncated, IncompleteAssessment, MissingToolCall)):
+                    raise ReviewPartTooLarge("The model could not finish assessing every criterion in this part.") from None
+                raise ProviderUnavailable("Anthropic could not complete the assessment. Try again.") from None
 
     assess(findings, permit_lookup=allow_followup, required=require_complete)
     # Give all criteria their first assessment before spending another model call.

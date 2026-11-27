@@ -353,7 +353,14 @@ def phrase_pattern(term):
 
 
 def phrase_hits(text, patterns):
+    if not patterns:
+        return
+    # Plan phrases already have folded case and single spaces. An absent ASCII
+    # substring rules out a match only when both sides have ASCII case rules.
+    normalized = normalize_term(text) if text.isascii() else None
     for phrase, pattern in patterns.items():
+        if normalized is not None and phrase.isascii() and phrase not in normalized:
+            continue
         count = sum(1 for _ in pattern.finditer(text))
         if count:
             yield phrase, count

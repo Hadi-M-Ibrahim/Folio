@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+from contextvars import ContextVar
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -18,23 +19,34 @@ from api import review
 from api._review import model
 
 failed_outage_cases = set()
-transport = threading.local()
+outage_lock = threading.Lock()
+transport = ContextVar("browser_provider_transport", default=None)
+
+
+class ProviderTrace:
+    def __init__(self):
+        self.calls = []
+        self.assessed = []
+        self.lock = threading.Lock()
 
 
 class BrowserReviewHandler(review.handler):
     def do_POST(self):
-        transport.calls = []
-        transport.assessed = []
-        super().do_POST()
+        token = transport.set(ProviderTrace())
+        try:
+            super().do_POST()
+        finally:
+            transport.reset(token)
 
     def end_headers(self):
         # The browser test can compare the actual provider bytes with its uploaded and selected PDFs.
-        self.send_header("X-Test-Provider-Calls", json.dumps(getattr(transport, "calls", [])))
-        self.send_header("X-Test-Assessed-Criteria", json.dumps(getattr(transport, "assessed", [])))
+        trace = transport.get()
+        self.send_header("X-Test-Provider-Calls", json.dumps(trace.calls if trace else []))
+        self.send_header("X-Test-Assessed-Criteria", json.dumps(trace.assessed if trace else []))
         super().end_headers()
 
 
-def provider_input(name, content):
+def provider_input(content):
     documents = []
     if isinstance(content, list):
         assert content[-1]["type"] == "text"
@@ -48,16 +60,15 @@ def provider_input(name, content):
                               "sha256": hashlib.sha256(pdf).hexdigest()})
         assert documents
         content = content[-1]["text"]
-    transport.calls.append({"tool": name, "documents": documents})
-    return json.loads(content)
+    return json.loads(content), documents
 
 
-def read_scan(data):
+def read_scan(data, documents):
     # The scanned fixture prints these lines into images on the stated physical pages.
     source = data["role"] == "source"
     pages = [{"number": n, "text": f"Who keeps inspection log {n}?" if source
               else f"The registrar keeps inspection log {n}."} for n in data["pages"]]
-    crossing = source and transport.calls[-1]["documents"][0]["title"] == "Archive scan.pdf"
+    crossing = source and documents[0]["title"] == "Archive scan.pdf"
     if crossing:
         for page in pages:
             if page["number"] == 3:
@@ -76,19 +87,22 @@ def read_scan(data):
     return result
 
 
-def omit_once(rows, field, question):
+def omit_once(rows, field, question, call):
     # Simulate a valid tool envelope missing one of the later questionnaire rows.
-    if any(call.get("omitted") == question for call in transport.calls):
-        return rows
     present = [row for row in rows if row[field] != question]
-    if len(present) != len(rows):
-        transport.calls[-1]["omitted"] = question
+    if len(present) == len(rows):
+        return rows
+    trace = transport.get()
+    with trace.lock:
+        if any(previous.get("omitted") == question for previous in trace.calls):
+            return rows
+        call["omitted"] = question
     return present
 
 
-def search_plan(data):
+def search_plan(data, call):
     rows = []
-    for source in omit_once(data["sources"], "text", "57. Who keeps inspection log 57?"):
+    for source in omit_once(data["sources"], "text", "57. Who keeps inspection log 57?", call):
         if source["required"]:
             row = {"sourceId": source["sourceId"], "searchTerms": ["inspection log"]}
             if data["mode"] == "guide":
@@ -98,10 +112,14 @@ def search_plan(data):
 
 
 def assess(row):
-    transport.assessed.append(hashlib.sha256(row["criterion"].encode()).hexdigest())
-    if row["criterion"].startswith("Who keeps the outage log for case ") and row["criterion"] not in failed_outage_cases:
-        failed_outage_cases.add(row["criterion"])
-        raise OSError("Simulated upstream outage")
+    trace = transport.get()
+    with trace.lock:
+        trace.assessed.append(hashlib.sha256(row["criterion"].encode()).hexdigest())
+    if row["criterion"].startswith("Who keeps the outage log for case "):
+        with outage_lock:
+            if row["criterion"] not in failed_outage_cases:
+                failed_outage_cases.add(row["criterion"])
+                raise OSError("Simulated upstream outage")
     passages = row["passages"]
     if not passages:
         return {"id": row["id"], "status": "insufficient", "answer": "No passages.", "supporting": [], "counter": []}
@@ -119,9 +137,13 @@ def provider_reply(outgoing, *, timeout):
     assert outgoing.full_url == "https://api.anthropic.com/v1/messages"
     payload = json.loads(outgoing.data)
     name = payload["tools"][0]["name"]
-    data = provider_input(name, payload["messages"][0]["content"])
+    data, documents = provider_input(payload["messages"][0]["content"])
+    call = {"tool": name, "documents": documents}
+    trace = transport.get()
+    with trace.lock:
+        trace.calls.append(call)
     if name == "record_pdf_pages":
-        result = read_scan(data)
+        result = read_scan(data, documents)
     elif name == "record_response_draft":
         if data["action"] == "draft":
             answer = data["assessment"] if data["citations"] else "The available policy does not establish the answer."
@@ -136,10 +158,10 @@ def provider_reply(outgoing, *, timeout):
         if any(unit["text"] == "1. Who keeps inspection log 1?" for unit in data["sources"]):
             # No usable plan on the very first part of the 65-question PDF.
             return io.BytesIO(b'{"stop_reason":"end_turn","content":null}')
-        result = search_plan(data)
+        result = search_plan(data, call)
     else:
         assert name == "record_review"
-        rows = omit_once(data, "criterion", "64. Who keeps inspection log 64?")
+        rows = omit_once(data, "criterion", "64. Who keeps inspection log 64?", call)
         result = {"assessments": [assess(row) for row in rows]}
     envelope = {"stop_reason": "tool_use", "content": [{"type": "tool_use", "name": name, "input": result}]}
     return io.BytesIO(json.dumps(envelope).encode())

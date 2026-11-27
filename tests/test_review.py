@@ -13,6 +13,8 @@ from api._review.search import (
     InvalidRequest,
     ReviewPartTooLarge,
     basic_plan,
+    phrase_hits,
+    phrase_pattern,
     retrieve,
     validate,
 )
@@ -32,6 +34,18 @@ def insufficient_assessments(*ids):
 
 
 class ReviewTests(unittest.TestCase):
+    def test_phrase_hits_preserve_literal_regex_counts(self):
+        terms = ["late notice", "form (a)", "r&d", "item code", "ıtem code", "site key", "missing phrase"]
+        patterns = {term: phrase_pattern(term) for term in terms}
+        for text in (
+            "LATE\t\n NOTICE. Late notice! TooLate notice, late notices, late notice_3.",
+            "FORM\f(A) form (a)b 1form (a) [R&D] R&DIARY; item code.",
+            "İTEM\u00a0CODE. ſite Key. LATE\u2003NOTICE.",
+        ):
+            with self.subTest(text=text):
+                expected = {term: len(pattern.findall(text)) for term, pattern in patterns.items()}
+                self.assertEqual(dict(phrase_hits(text, patterns)), {term: n for term, n in expected.items() if n})
+
     def test_first_question_retrieves_rule_and_conflict_without_claiming_compliance(self):
         result = api.review(sample())
         first = result["findings"][0]
