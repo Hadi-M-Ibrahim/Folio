@@ -4,7 +4,7 @@ import { writeResponse, type DraftAction } from '../review/client';
 import { samePassage, type Decision, type Evidence, type Finding } from '../review/model';
 
 const actions = {
-  draft: ['Draft response', 'Drafting…'],
+  draft: ['Generate response', 'Generating…'],
   shorten: ['Shorten', 'Shortening…'],
   simplify: ['Simplify', 'Simplifying…'],
   expand: ['Add detail', 'Adding detail…'],
@@ -52,7 +52,7 @@ export function ResponseComposer({ finding, decision, onChange }: {
       onChange(action === 'draft' ? { answer: next, citations } : { answer: next });
       input.current?.focus({ preventScroll: true });
     } catch (cause) {
-      if (!controller.signal.aborted) setFailure({ decision, message: cause instanceof Error ? cause.message : 'Try drafting again.' });
+      if (!controller.signal.aborted) setFailure({ decision, message: cause instanceof Error ? cause.message : 'Please try again.' });
     } finally {
       if (active.current === controller) {
         active.current = null;
