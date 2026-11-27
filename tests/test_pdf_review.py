@@ -5,8 +5,10 @@ import os
 import unittest
 from unittest.mock import patch
 
+from pypdf import PdfReader, PdfWriter
+
 from api import review as api
-from api._review import model, pdf_reader, search
+from api._review import model, pdf_context, pdf_reader, search
 
 QUESTION = "Does the clerk stamp every parcel before dispatch?"
 RULE = "The clerk stamps every parcel before dispatch. See Appendix B for fragile items."
@@ -46,6 +48,25 @@ def payload():
 
 
 class PdfReviewTests(unittest.TestCase):
+    def test_long_policy_context_preserves_actual_sheets_from_a_noncontiguous_selection(self):
+        numbers = list(range(7, 37, 2))
+        policy = pdf_attachment("policy", numbers)
+        with PdfWriter() as writer, io.BytesIO() as raw:
+            for number in numbers:
+                writer.add_blank_page(width=100 + number, height=200)
+            writer.write(raw)
+            policy["data"] = base64.b64encode(raw.getvalue()).decode("ascii")
+        source = pdf_attachment("source", [3])
+        evidence = [{"passages": [{"documentId": policy["documentId"], "page": n} for n in (35, 13, 13)]}]
+        original, selected = pdf_context.assessment_pdfs([source, policy], evidence)
+        self.assertIs(original, source)
+        self.assertEqual(selected["pages"], [13, 35])
+        sheets = PdfReader(io.BytesIO(base64.b64decode(selected["data"]))).pages
+        self.assertEqual([p.mediabox.width for p in sheets], [113, 135])
+        self.assertEqual(pdf_context.assessment_pdfs([source, policy], [{"passages": []}]), [source])
+        with self.assertRaises(search.InvalidRequest):
+            pdf_context.pdf_pages({**policy, "pages": numbers[:-1]}, {13})
+
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "VERCEL": "1"}, clear=True))
 

@@ -1,5 +1,7 @@
+import io
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,7 @@ from api._review.search import (
     retrieve,
     validate,
 )
+from api._review.sessions import ReviewCancelled
 
 
 def sample(mode="questionnaire", **changes):
@@ -257,10 +260,14 @@ class ReviewTests(unittest.TestCase):
                                    "supporting": [], "counter": []}]}
         payload = sample(questions=questions, allowModel=True, modelSharingConsent=True, documentPart=True)
         with patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True):
-            for response in (one_row, model.ProviderUnavailable):
-                with patch.object(model, "invoke_tool", side_effect=[plan, response]), \
-                     self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
-                    api.review(payload)
+            with patch.object(model, "invoke_tool", side_effect=[plan, one_row, one_row]) as invoke, \
+                 self.assertRaises(ReviewPartTooLarge):
+                api.review(payload)
+            self.assertEqual([row["id"] for row in invoke.call_args.args[2]], ["q2"])
+            with patch.object(model, "invoke_tool", side_effect=[plan, model.ProviderUnavailable]) as invoke, \
+                 self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
+                api.review(payload)
+            self.assertEqual(invoke.call_count, 2)
             with patch.object(model, "invoke_tool", side_effect=[plan, model.OutputTruncated]), \
                  self.assertRaises(ReviewPartTooLarge):
                 api.review(payload)
@@ -314,3 +321,50 @@ class ReviewTests(unittest.TestCase):
         with patch.object(model, "call_provider", return_value=[raw, raw, {**raw, "id": "q2"}]):
             result = model.assess_batch(rows, pages, "test-key", 100)
         self.assertEqual([f["analysisEngine"] for f in result], ["local", "anthropic", "local", "local", "local"])
+
+    def test_required_assessment_repairs_only_unverified_rows_and_keeps_their_original_ids(self):
+        _, criteria, pages = validate(sample())
+        findings = retrieve(pages, basic_plan(criteria))
+        initial = insufficient_assessments("q5", "q1", "q2", "q2", "q3")
+        initial["assessments"][4]["supporting"] = "malformed"
+        initial["assessments"][1]["answer"] = "Verified during the initial pass."
+        initial["assessments"][1]["status"] = "needs_review"
+        initial["assessments"][1]["supporting"] = [{"passage": "p1", "quote": findings[0]["candidates"][0]["quote"]}]
+        pdfs = [{"title": "Questionnaire", "role": "source", "documentId": "source", "pages": [1], "data": "JVBERg=="}]
+        repair = insufficient_assessments("q4", "q2", "q3")
+        with patch.object(model, "invoke_tool", side_effect=[initial, repair]) as invoke:
+            result, notice = model.assess_findings(findings, pages, "test-key", 100,
+                                                  attachments=pdfs, require_complete=True)
+        self.assertEqual([row["id"] for row in invoke.call_args.args[2]], ["q2", "q3", "q4"])
+        self.assertTrue(all(call.kwargs["attachments"] == pdfs and call.args[4] == 100
+                            for call in invoke.call_args_list))
+        self.assertEqual(notice, "")
+        self.assertEqual([row["id"] for row in result], [row["id"] for row in findings])
+        self.assertTrue(all(row["analysisEngine"] == "anthropic" for row in result))
+        self.assertEqual(result[0]["answer"], "Verified during the initial pass.")
+        self.assertEqual(result[0]["supporting"], [findings[0]["candidates"][0]])
+
+    def test_required_singleton_assessment_retries_a_missing_tool_or_malformed_payload_once(self):
+        _, criteria, pages = validate(sample(questions=["Who records the inspections?"]))
+        finding = retrieve(pages, basic_plan(criteria))
+        for invalid in (model.MissingToolCall, {"assessments": "invalid"}):
+            with self.subTest(invalid=invalid):
+                with patch.object(model, "invoke_tool", side_effect=[invalid, insufficient_assessments("q1")]) as invoke:
+                    rows, _ = model.assess_findings(finding, pages, "test-key", 100, require_complete=True)
+                self.assertEqual(invoke.call_count, 2)
+                self.assertEqual(rows[0]["analysisEngine"], "anthropic")
+                with patch.object(model, "invoke_tool", side_effect=[invalid, invalid]) as invoke, \
+                     self.assertRaisesRegex(model.ProviderUnavailable, "could not complete the assessment"):
+                    model.assess_findings(finding, pages, "test-key", 100, require_complete=True)
+                self.assertEqual(invoke.call_count, 2)
+
+    def test_cancelling_before_assessment_repair_prevents_a_second_provider_request(self):
+        _, criteria, pages = validate(sample(questions=["Who records the inspections?"]))
+        finding = retrieve(pages, basic_plan(criteria))
+        message = {"stop_reason": "tool_use", "content": [{"type": "tool_use", "name": "record_review",
+                                                           "input": {"assessments": []}}]}
+        with patch.object(model, "check_session", side_effect=[None, ReviewCancelled]), \
+             patch.object(model, "open_provider_request", return_value=io.BytesIO(json.dumps(message).encode())) as send, \
+             self.assertRaises(ReviewCancelled):
+            model.assess_findings(finding, pages, "test-key", time.monotonic() + 70, require_complete=True)
+        self.assertEqual(send.call_count, 1)

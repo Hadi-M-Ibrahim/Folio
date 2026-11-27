@@ -52,7 +52,7 @@ test('subdivision and retry measure validated questions against the same total',
   });
   const states = [];
   options.onProgress = state => states.push(state);
-  await assert.rejects(executeWholeReview(options), /incomplete questionnaire/);
+  await assert.rejects(executeWholeReview(options), /incomplete questionnaire.*3 of 6 questions completed/);
   assert.deepEqual(states.map(s => s.completed), [0, 0, 3, 3]);
   assert.ok(states.every(s => s.total === 6 && s.phase === 'questions'));
   states.length = 0;

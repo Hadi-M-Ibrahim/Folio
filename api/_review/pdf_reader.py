@@ -1,6 +1,7 @@
 """Read selected image-only PDF pages into the same page-indexed text used by search and citation checks."""
 
 from . import model
+from .pdf_context import SMALL_PACKET_PAGES, pdf_pages
 from .search import (
     MAX_CHARS,
     MAX_PAGE_CHARS,
@@ -34,6 +35,8 @@ TOOL = {
 
 def transcribe(mode, attachment, numbers, key, deadline):
     message = "Anthropic could not read the selected PDF pages completely. Try again."
+    if attachment["role"] == "policy" and len(attachment["pages"]) > SMALL_PACKET_PAGES:
+        attachment = pdf_pages(attachment, set(numbers))
     try:
         result = model.invoke_tool(SYSTEM, TOOL, {"role": attachment["role"], "mode": mode, "pages": numbers},
                                    key, deadline, max_tokens=16000, attachments=[attachment])

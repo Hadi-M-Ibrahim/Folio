@@ -76,9 +76,19 @@ def read_scan(data):
     return result
 
 
+def omit_once(rows, field, question):
+    # Simulate a valid tool envelope missing one of the later questionnaire rows.
+    if any(call.get("omitted") == question for call in transport.calls):
+        return rows
+    present = [row for row in rows if row[field] != question]
+    if len(present) != len(rows):
+        transport.calls[-1]["omitted"] = question
+    return present
+
+
 def search_plan(data):
     rows = []
-    for source in data["sources"]:
+    for source in omit_once(data["sources"], "text", "57. Who keeps inspection log 57?"):
         if source["required"]:
             row = {"sourceId": source["sourceId"], "searchTerms": ["inspection log"]}
             if data["mode"] == "guide":
@@ -116,7 +126,8 @@ def provider_reply(outgoing, *, timeout):
         result = search_plan(data)
     else:
         assert name == "record_review"
-        result = {"assessments": [assess(row) for row in data]}
+        rows = omit_once(data, "criterion", "64. Who keeps inspection log 64?")
+        result = {"assessments": [assess(row) for row in rows]}
     envelope = {"stop_reason": "tool_use", "content": [{"type": "tool_use", "name": name, "input": result}]}
     return io.BytesIO(json.dumps(envelope).encode())
 
