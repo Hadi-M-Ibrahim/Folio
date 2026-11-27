@@ -180,6 +180,18 @@ function captureReviewRequests(page) {
   return requests;
 }
 
+async function waitForBackgroundReview(page) {
+  const response = await page.waitForResponse('**/api/review');
+  expect(response.ok()).toBe(true);
+  await response.finished();
+}
+
+async function expectQuietReview(page) {
+  await expect(page.getByRole('progressbar', { name: 'Review progress' })).toHaveCount(0);
+  await expect(page.getByText('Review ready', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cancel review' })).toHaveCount(0);
+}
+
 async function clickReview(page, mode) {
   const guide = mode === 'guide';
   const submit = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
@@ -404,16 +416,20 @@ test('a guide waits for a policy file, then finishes in intake and opens once af
     mode: 'guide', documents: [{ title: 'Archive policy.pdf' }], allowModel: true, modelSharingConsent: true,
     pdfAttachments: [{ role: 'source', title: 'Archive guide.pdf' }, { role: 'policy', title: 'Archive policy.pdf' }],
   });
-  await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
+  await expectQuietReview(page);
   await clickReview(page, 'guide');
+  await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel review' })).toBeVisible();
   await steps.getByRole('button', { name: /Regulatory guide/ }).click();
   await page.getByRole('button', { name: 'Choose guide pages' }).click();
+  await expectQuietReview(page);
+  const finished = waitForBackgroundReview(page);
   release();
-  await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
+  await finished;
+  await expectQuietReview(page);
   await expect(page).toHaveURL(/\/new\/guide$/);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
-  await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
+  await expectQuietReview(page);
   await clickReview(page, 'guide');
   await expect(page.getByRole('heading', { name: duty, exact: true })).toBeVisible();
   expect(requests).toHaveLength(1);
@@ -442,11 +458,13 @@ test('a questionnaire PDF waits until its pasted policy is committed', async ({ 
   await expect(page.getByLabel('Policy text', { exact: true })).toHaveValue(policy);
   expect(requests).toHaveLength(0);
   const started = page.waitForRequest('**/api/review');
+  const finished = waitForBackgroundReview(page);
   await page.getByRole('button', { name: 'Add policy', exact: true }).click();
   expect((await started).postDataJSON()).toMatchObject({
     questions: [question], documents: [{ title: 'Registry', pages: [{ number: 1, text: policy }] }],
   });
-  await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
+  await finished;
+  await expectQuietReview(page);
   await expect(page).toHaveURL(/\/new\/questionnaire\/policies$/);
   await clickReview(page, 'questionnaire');
   await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
@@ -486,7 +504,7 @@ test('editing a running questionnaire aborts it and a fresh review can start ear
   const stopped = page.waitForResponse(response => response.url().endsWith('/api/review-session') &&
     response.request().postDataJSON().token === token);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
+  await expectQuietReview(page);
   await page.getByLabel('Questions', { exact: true }).fill(newQuestion);
   release();
   expect((await cancelled).failure().errorText).toContain('ABORTED');
@@ -495,7 +513,8 @@ test('editing a running questionnaire aborts it and a fresh review can start ear
   await addPolicy(page, 'Signatures.txt', 'The registrar signs the revised inspection log.');
   await page.getByRole('button', { name: 'Remove Inspection.md' }).click();
   await page.getByRole('button', { name: 'Preview Signatures.txt' }).click();
-  await expect(page.getByRole('progressbar', { name: 'Review progress' })).toHaveCount(0);
+  await expectQuietReview(page);
+  await expect(page.getByText(/Inputs changed/)).toHaveCount(0);
   expect(requests).toHaveLength(1);
   const revised = await submitReview(page, 'questionnaire');
   expect(revised.request().postDataJSON()).toMatchObject({
@@ -509,9 +528,11 @@ test('editing a running questionnaire aborts it and a fresh review can start ear
   await pasteSource(page, 'questionnaire', oldQuestion);
   await page.getByRole('button', { name: 'Continue to policies' }).click();
   const fresh = page.waitForRequest('**/api/review');
+  const finished = waitForBackgroundReview(page);
   await addPolicy(page, 'Records.txt', 'The office manager keeps the inspection log.');
   expect((await fresh).postDataJSON()).toMatchObject({ questions: [oldQuestion], documents: [{ title: 'Records.txt' }] });
-  await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
+  await finished;
+  await expectQuietReview(page);
   await expect(page).toHaveURL(/\/new\/questionnaire\/policies$/);
   expect(requests).toHaveLength(3);
 });
@@ -543,6 +564,7 @@ test('each selected PDF shows preparation, attachment, and a persistent policy e
     await expect(page.locator('.intake-file-feedback').filter({ hasText: name })).toContainText('Preparing PDF');
   }
   expect(requests).toHaveLength(0);
+  const finished = waitForBackgroundReview(page);
   await page.evaluate(() => window.releasePolicyReads());
   const policies = page.getByRole('list', { name: 'Added policies' });
   await expect(policies.getByRole('listitem')).toHaveCount(2);
@@ -551,7 +573,8 @@ test('each selected PDF shows preparation, attachment, and a persistent policy e
   await expect(page.locator('.intake-file-feedback')).toHaveCount(0);
   await expect(policies).toContainText('Clerk.pdf');
   await expect(policies).toContainText('Manager.pdf');
-  await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
+  await finished;
+  await expectQuietReview(page);
   expect(requests).toHaveLength(1);
 });
 
@@ -701,8 +724,10 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
   await expect(submit).toBeDisabled();
   const file = 'Safety.txt';
   const text = 'Personnel wear protective gloves.';
+  const finished = waitForBackgroundReview(page);
   await addPolicy(page, file, text);
-  await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
+  await finished;
+  await expectQuietReview(page);
   await page.getByRole('button', { name: 'Paste a policy' }).click();
   await page.getByLabel(/Policy title/).fill('Facilities policy');
   await page.getByLabel('Policy text', { exact: true }).fill(policy);
@@ -1319,9 +1344,11 @@ test('cancelling a paused multipart review keeps completed work for the next sub
   });
   await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
   const progress = page.getByRole('progressbar', { name: 'Review progress' });
+  await expect.poll(() => requests.length).toBe(2);
+  await expectQuietReview(page);
+  await page.getByRole('button', { name: 'Find evidence' }).click();
   await expect(progress).toHaveAttribute('aria-valuenow', '10');
   await expect(progress).toHaveAttribute('aria-valuemax', '25');
-  await page.getByRole('button', { name: 'Find evidence' }).click();
   nextPart.resolve();
   await expect(page.getByText(/Review paused at the submission limit/)).toBeVisible();
   await expect(progress).toHaveAttribute('aria-valuenow', '10');

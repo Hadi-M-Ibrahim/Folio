@@ -139,10 +139,9 @@ function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view,
           {disclosure}
         </p>}
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
-        {view.kind === 'ready' && <output className="intake-ready"><Check size={15} aria-hidden="true" />Review ready</output>}
         {view.kind === 'changed' && step === 2 && !needsUpload && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
       </div>
-      {view.kind === 'running' && view.foreground
+      {view.kind === 'running'
         ? <button key="cancel" type="button" className="intake-secondary" onClick={event => {
           event.preventDefault();
           onCancel();
@@ -155,10 +154,10 @@ function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view,
   );
 }
 
-function introText(mode: Mode, step: number, started: boolean, needsUpload: boolean) {
+function introText(mode: Mode, step: number, hasPolicies: boolean, needsUpload: boolean) {
   const copy = intakeCopy[mode];
   if (step === 1) return copy.sourceIntro;
-  if (!started) return copy.policyIntro;
+  if (!hasPolicies) return copy.policyIntro;
   if (mode === 'questionnaire') return 'Choose the policies to search for evidence.';
   return needsUpload ? guidePolicyRequired : 'Add any other policies that apply to this guide.';
 }
@@ -359,7 +358,7 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
             {step === 1 ? copy.sourceTitle : 'Add existing policies'}
           </h1>
           <p className="intake-intro" id="intake-intro">
-            {introText(mode, step, review.started, needsUpload)}
+            {introText(mode, step, documents.length > 0, needsUpload)}
           </p>
           <form onSubmit={submit}>
             <fieldset disabled={Boolean(busy)} className="intake-fields">
