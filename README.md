@@ -17,10 +17,7 @@ A Python function on Vercel receives each section at `POST /api/review`. It comp
 
 The analyst can open the source page and change the draft. Citations are mandatory for confirmed responses and optional for policy actions. [Drafts](api/_review/draft.py)
 
-## Research and evaluation
+## Research citations
 
-Tieu and colleagues adapt the workflow to each task. Folio uses fixed steps but lets the model select one more search per finding. [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774)
-
-Srinivasan and colleagues assign safety checks to one agent. Folio gives each assessment the same evidence rules. Python does the citation and status checks. [Aligning AI Teams](https://arxiv.org/abs/2611.17820)
-
-The evaluation compares reviews with and without the second search on seven synthetic cases. Each pair starts with the same passages. The evaluation records missed exceptions, incorrect reports of conflict, citation accuracy, token counts, and time. [Evaluation](scripts/evaluate_followup.py)
+- **Tieu et al. (2026).** ReActNet uses the task to decide which agents exchange information at each step. Folio keeps the review steps fixed but allows one follow-up search per finding. For example, the model can ask Python to find a section named in a policy passage. [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774)
+- **Srinivasan et al. (2026).** The authors found that shared safety rules and a designated safety lead helped agent teams catch errors. Folio gives each assessment the same evidence rules. Python checks quotations against their source pages and flags findings that fail the citation or scope checks. [Aligning AI Teams](https://arxiv.org/abs/2611.17820)
