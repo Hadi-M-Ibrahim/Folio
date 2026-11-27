@@ -1,0 +1,70 @@
+% Rebuild review-table.json with pdflatex review-table.tex in a scratch directory.
+% The browser uses the measured PDF-point layout to typeset private review text locally.
+\documentclass[10pt,letterpaper]{article}
+\usepackage{geometry,booktabs,longtable,array}
+\usepackage[table]{xcolor}
+\newlength{\inset}         \setlength{\inset}{44bp}
+\newlength{\topinset}      \setlength{\topinset}{44bp}
+\newlength{\bottominset}   \setlength{\bottominset}{48bp}
+\newlength{\gutter}        \setlength{\gutter}{16bp}
+\newlength{\rowspace}      \setlength{\rowspace}{8bp}
+\geometry{hmargin=\inset,top=\topinset,bottom=\bottominset}
+\newlength{\subjectwidth}  \setlength{\subjectwidth}{0.30\textwidth}
+\newlength{\answerwidth}   \setlength{\answerwidth}{0.39\textwidth}
+\newlength{\sourcewidth}   \setlength{\sourcewidth}{\dimexpr\textwidth-\subjectwidth-\answerwidth-2\gutter\relax}
+\setlength{\heavyrulewidth}{0.65bp}
+\setlength{\lightrulewidth}{0.35bp}
+\setlength{\tabcolsep}{0pt}
+\setlength{\LTleft}{0pt}
+\setlength{\parindent}{0pt}
+\definecolor{ink}{HTML}{191915}
+\definecolor{muted}{HTML}{645F58}
+\definecolor{rulegray}{HTML}{CDCAC4}
+\newcommand{\headingSize}{34}
+\newcommand{\bodySize}{10}
+\newcommand{\detailSize}{9}
+\newcommand{\labelSize}{8.5}
+% These defaults can be overridden before inputting this template into LaTeX.
+\providecommand{\ReviewHeading}{Questionnaire responses}
+\providecommand{\ReviewTitle}{}
+\providecommand{\SubjectLabel}{Question}
+\providecommand{\AnswerLabel}{Response}
+\providecommand{\ReviewRows}{}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\ReviewRow}[3]{#1 & #2 & #3 \\ \arrayrulecolor{rulegray}\midrule\arrayrulecolor{ink}}
+\ExplSyntaxOn
+\cs_new:Npn \pdfpoints #1 { \fp_eval:n { round(\dim_to_decimal_in_bp:n {#1}, 3) } }
+\cs_new_eq:NN \openbrace \c_left_brace_str
+\cs_new_eq:NN \closebrace \c_right_brace_str
+\ExplSyntaxOff
+\newwrite\layout
+\newcommand{\emitlayout}{%
+  \convertcolorspec{named}{ink}{HTML}\inkhex
+  \convertcolorspec{named}{muted}{HTML}\mutedhex
+  \convertcolorspec{named}{rulegray}{HTML}\rulehex
+  \immediate\openout\layout=review-table.json
+  \immediate\write\layout{\openbrace}
+  \immediate\write\layout{ "pageWidth": \pdfpoints{\paperwidth}, "pageHeight": \pdfpoints{\paperheight},}
+  \immediate\write\layout{ "inset": \pdfpoints{\inset}, "top": \pdfpoints{\topinset}, "bottom": \pdfpoints{\bottominset},}
+  \immediate\write\layout{ "columns": [\pdfpoints{\subjectwidth}, \pdfpoints{\answerwidth}, \pdfpoints{\sourcewidth}],}
+  \immediate\write\layout{ "gutter": \pdfpoints{\gutter}, "rowSpace": \pdfpoints{\rowspace},}
+  \immediate\write\layout{ "heavyRule": \pdfpoints{\heavyrulewidth}, "lightRule": \pdfpoints{\lightrulewidth},}
+  \immediate\write\layout{ "ink": "\inkhex", "muted": "\mutedhex", "rule": "\rulehex",}
+  \immediate\write\layout{ "heading": \headingSize, "body": \bodySize, "detail": \detailSize, "label": \labelSize}
+  \immediate\write\layout{\closebrace}
+  \immediate\closeout\layout}
+\begin{document}
+\emitlayout
+\color{ink}{\fontsize{\headingSize bp}{38bp}\selectfont\ReviewHeading\par}
+\medskip{\sffamily\color{muted}\ReviewTitle\par}\bigskip
+\sffamily\fontsize{\bodySize bp}{13bp}\selectfont
+\setlength{\aboverulesep}{\rowspace}
+\setlength{\belowrulesep}{\rowspace}
+\begin{longtable}{@{}L{\subjectwidth}@{\hspace{\gutter}}L{\answerwidth}@{\hspace{\gutter}}L{\sourcewidth}@{}}
+\toprule
+\SubjectLabel & \AnswerLabel & Citations \\
+\midrule\endhead
+\bottomrule\endlastfoot
+\ReviewRows
+\end{longtable}
+\end{document}

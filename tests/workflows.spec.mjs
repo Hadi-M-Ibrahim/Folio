@@ -162,7 +162,7 @@ async function outputPdfText(page, tabName) {
   return (await pdfPageTexts(await download)).join(' ');
 }
 
-async function pdfPageTexts(download) {
+async function pdfPageTexts(download, columnNames = []) {
   const bytes = await readFile(await download.path());
   const task = getDocument({ data: Uint8Array.from(bytes) });
   try {
@@ -171,6 +171,13 @@ async function pdfPageTexts(download) {
     for (let number = 1; number <= document.numPages; number++) {
       const sheet = await document.getPage(number);
       const content = await sheet.getTextContent();
+      // Column labels must repeat on the same baseline, including in the middle of a long entry.
+      const headers = columnNames.map(name => content.items.find(item => item.str === name));
+      for (const [column, header] of headers.entries()) {
+        expect(header, columnNames[column] + ' on page ' + number).toBeDefined();
+        expect(header.transform[5]).toBeCloseTo(headers[0].transform[5], 1);
+        if (column) expect(header.transform[4] - headers[column - 1].transform[4]).toBeGreaterThan(80);
+      }
       pages.push(content.items.map(item => item.str).join(' ').replace(/\s+/gu, ' ').trim());
     }
     return pages;
@@ -1576,7 +1583,7 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
   await downloadPdf.click();
   const download = await pending;
   expect(download.suggestedFilename()).toBe('folio-questionnaire-responses.pdf');
-  const pages = await pdfPageTexts(download);
+  const pages = await pdfPageTexts(download, ['Question', 'Response', 'Citations']);
   const text = pages.join(' ');
   expect(text).not.toContain(questions[0]);
   expect(text).not.toContain(suggestedQuote);
@@ -2008,7 +2015,7 @@ test('the guide queue tracks resolution independently and exports the action lis
   await pdf.click();
   const download = await pending;
   expect(download.suggestedFilename()).toBe('folio-policy-action-list.pdf');
-  const text = (await pdfPageTexts(download)).join(' ');
+  const text = (await pdfPageTexts(download, ['Obligation', 'Action', 'Citations'])).join(' ');
   await expect(list.getByRole('alert')).toHaveCount(0);
   expect(text).toContain('Policy action list');
   expect(text).not.toContain(duties[0]);
