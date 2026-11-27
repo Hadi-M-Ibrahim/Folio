@@ -385,6 +385,9 @@ test('an uploaded guide finishes in intake and opens once after explicit submiss
   const requests = captureReviewRequests(page);
   const release = await holdNextReview(page);
   await page.goto('/#/new/guide');
+  const steps = page.getByRole('navigation', { name: 'Review steps' });
+  const policies = steps.getByRole('button', { name: /Existing policies.*Optional/ });
+  await expect(policies).toBeDisabled();
   const upload = page.getByLabel('Upload regulatory guide');
   await expect(upload).toHaveAccessibleDescription(/Anthropic/i);
   const started = page.waitForRequest('**/api/review');
@@ -394,9 +397,12 @@ test('an uploaded guide finishes in intake and opens once after explicit submiss
   await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
   await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive guide.pdf', 1);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await policies.getByText('Optional').click();
+  await expect(policies).toHaveAttribute('aria-current', 'step');
   await page.getByRole('button', { name: 'Paste a policy' }).click();
-  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await clickReview(page, 'guide');
+  await expect(page.getByRole('button', { name: 'Cancel review' })).toBeVisible();
+  await steps.getByRole('button', { name: /Regulatory guide/ }).click();
   await page.getByRole('button', { name: 'Choose guide pages' }).click();
   release();
   await expect(page.getByText('Review ready', { exact: true })).toBeVisible();
@@ -414,11 +420,21 @@ test('a questionnaire PDF waits until its pasted policy is committed', async ({ 
   const form = await printPdf(context, [question]);
   const requests = captureReviewRequests(page);
   await page.goto('/#/new/questionnaire');
+  const steps = page.getByRole('navigation', { name: 'Review steps' });
+  const policies = steps.getByRole('button', { name: /Existing policies.*Required/ });
+  await expect(policies).toBeDisabled();
   await uploadPdf(page, 'Upload questionnaire', 'Form.pdf', form);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await expect(policies).toBeEnabled();
+  await policies.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeFocused();
   await page.getByRole('button', { name: 'Paste a policy' }).click();
   await page.getByLabel(/Policy title/).fill('Registry');
   await page.getByLabel('Policy text', { exact: true }).fill(policy);
+  await steps.getByRole('button', { name: /State questions/ }).click();
+  await expect(page.getByRole('button', { name: 'Remove file' })).toBeVisible();
+  await policies.getByText('Required').click();
+  await expect(page.getByLabel('Policy text', { exact: true })).toHaveValue(policy);
   expect(requests).toHaveLength(0);
   const started = page.waitForRequest('**/api/review');
   await page.getByRole('button', { name: 'Add policy', exact: true }).click();
@@ -430,6 +446,22 @@ test('a questionnaire PDF waits until its pasted policy is committed', async ({ 
   await clickReview(page, 'questionnaire');
   await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
   expect(requests).toHaveLength(1);
+});
+
+test('removing the source locks the policies step until another valid source is supplied', async ({ page }) => {
+  await page.goto('/#/new/questionnaire/policies');
+  await expect(page).toHaveURL(/\/new\/questionnaire$/);
+  const policies = page.getByRole('navigation', { name: 'Review steps' }).getByRole('button', { name: /Existing policies/ });
+  const question = 'Who signs the register?';
+  await page.getByLabel('Upload questionnaire').setInputFiles({
+    name: 'Register.txt', mimeType: 'text/plain', buffer: Buffer.from(question),
+  });
+  await expect(policies).toBeEnabled();
+  await page.getByRole('button', { name: 'Remove file' }).click();
+  await expect(policies).toBeDisabled();
+  await page.getByLabel('Questions', { exact: true }).fill(question);
+  await policies.click();
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeFocused();
 });
 
 test('editing a running questionnaire aborts it and a fresh review can start early again', async ({ page }) => {

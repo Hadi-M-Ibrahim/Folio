@@ -29,23 +29,32 @@
   padding: 0;
   list-style: none;
 }
-.intake-steps li {
-  position: relative;
+.intake-steps li { position: relative; }
+.intake-step-control {
   display: flex;
+  width: 100%;
+  min-height: 44px;
   align-items: baseline;
   gap: 11px;
   color: var(--muted);
   font-size: 14px;
   line-height: 1.5;
+  text-align: left;
 }
-.intake-steps li + li { margin-top: 28px; }
+.intake-step-control:enabled:not([aria-current]):hover .intake-step-text {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.intake-steps li + li { margin-top: 12px; }
 .intake-steps li:first-child::after {
   content: '';
   position: absolute;
   top: 29px;
-  bottom: -23px;
+  bottom: -7px;
   left: 12px;
   width: 1px;
+  pointer-events: none;
   background: var(--line);
 }
 .intake-step-number {
@@ -58,8 +67,8 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.intake-steps li[aria-current='step'] { color: var(--ink); font-weight: 600; }
-.intake-steps li[aria-current='step'] .intake-step-number {
+.intake-step-control[aria-current] { color: var(--ink); font-weight: 600; cursor: default; }
+.intake-step-control[aria-current] .intake-step-number {
   border-color: var(--ink);
   color: white;
   background: var(--ink);
@@ -288,14 +297,15 @@
   .intake { max-width: 680px; }
   .intake-layout { display: block; margin-top: 19px; }
   .intake-steps { display: flex; gap: 12px; margin: 0 0 29px; }
-  .intake-steps li {
+  .intake-steps li { flex: 1; min-width: 0; }
+  .intake-step-control {
     align-items: center;
-    flex: 1;
+    height: 100%;
     gap: 8px;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--line);
   }
-  .intake-steps li[aria-current='step'] { border-color: var(--ink); }
+  .intake-step-control[aria-current] { border-color: var(--ink); }
   .intake-steps li + li { margin: 0; }
   .intake-steps li:first-child::after { display: none; }
   .intake-steps li:first-child small { display: none; }
@@ -305,7 +315,7 @@
   .intake { padding-top: 15px; }
   .intake-layout { margin-top: 11px; }
   .intake-steps { gap: 8px; }
-  .intake-steps li { align-items: baseline; font-size: 13px; }
+  .intake-step-control { align-items: baseline; font-size: 13px; }
   .intake-steps li:last-child small { display: block; margin: 1px 0 0; }
   .intake-intro { margin-bottom: 23px; }
   .intake-file { grid-template-columns: 38px minmax(0, 1fr); min-height: 0; gap: 11px 14px; padding: 19px 16px; }
