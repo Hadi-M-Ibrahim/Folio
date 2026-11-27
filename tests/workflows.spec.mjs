@@ -148,9 +148,16 @@ async function expectAttachedSheets(attachment, numbers, portraitPages = []) {
   };
 }
 
+async function reviewResult(response) {
+  if (!response.headers()['content-type']?.includes('application/x-ndjson')) return response.json();
+  const terminal = JSON.parse((await response.text()).trimEnd().split('\n').at(-1));
+  expect(terminal.status).toBe(200);
+  return terminal.body;
+}
+
 async function providerCalls(response) {
   expect(response.status()).toBe(200);
-  return JSON.parse(await response.headerValue('x-test-provider-calls'));
+  return (await reviewResult(response)).testTrace?.calls ?? JSON.parse(await response.headerValue('x-test-provider-calls'));
 }
 
 async function outputPdfText(page, tabName) {
@@ -984,7 +991,7 @@ test('guide actions saved by the original editor reopen with their disposition a
   const response = await submitReview(page, 'guide', assessment);
   await expect(page.getByRole('heading', { name: duty, exact: true })).toBeVisible();
   const reviewKey = new URL(page.url()).hash.slice('#/review/'.length);
-  const findingId = (await response.json()).findings[0].id;
+  const findingId = (await reviewResult(response)).findings[0].id;
   await page.evaluate(({ reviewKey, findingId, note }) => new Promise((resolve, reject) => {
     const open = indexedDB.open('folio-local-reviews');
     open.onerror = () => reject(open.error);
@@ -1087,7 +1094,7 @@ test('deleting an active review in another tab prevents its late result from res
   // The provider has finished, but the page is still waiting for delivery.
   const assessment = await route.fetch();
   expect(assessment.ok()).toBe(true);
-  expect((await assessment.json()).findings[0].question).toBe(obligation);
+  expect((await reviewResult(assessment)).findings[0].question).toBe(obligation);
   const manager = await context.newPage();
   const observer = await context.newPage();
   const links = manager.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
@@ -1407,7 +1414,7 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   expect(await providerCalls(response)).toEqual([
     { tool: 'record_search_plan', documents: [] }, { tool: 'record_review', documents: [] },
   ]);
-  expect((await response.json()).findings[0]).toMatchObject({
+  expect((await reviewResult(response)).findings[0]).toMatchObject({
     analysisEngine: 'anthropic', supporting: [{ title: 'Facilities.txt', page: 1, quote: policy }],
   });
   await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
@@ -1963,7 +1970,7 @@ test('a guide compared with an uploaded policy produces an action list with a tr
   await page.getByRole('button', { name: 'Apply range' }).click();
   const response = await submitReview(page, 'guide');
   expect(response.request().postDataJSON()).toMatchObject({ guide: obligation, documents: [{ title: 'Handover policy.md' }] });
-  expect((await response.json()).planningEngine).toBe('anthropic');
+  expect((await reviewResult(response)).planningEngine).toBe('anthropic');
   await expect(page.getByRole('group', { name: 'Policy action', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Search trail' })).toBeVisible();
   await page.getByRole('button', { name: /Handover.txt.*p\. 2/ }).click();
@@ -2347,7 +2354,7 @@ test('questionnaire items send the physical PDF pages they span and the selected
     { tool: 'record_search_plan', documents: [sourceBlock] },
     { tool: 'record_review', documents: [sourceBlock, policyBlock] },
   ]);
-  const result = await response.json();
+  const result = await reviewResult(response);
   expect(result.findings.map(finding => finding.question)).toEqual([first, last]);
   expect(result.findings[0].supporting).toMatchObject([{ title: 'Facility.pdf', page: 2, quote }]);
   await page.getByRole('button', { name: /Facility\.pdf.*p\. 2/ }).first().click();
@@ -2460,7 +2467,7 @@ for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]
       { tool: 'record_pdf_pages', documents: [source] }, { tool: 'record_pdf_pages', documents: [policyBlock] },
     ]));
     expect(calls.at(-1)).toEqual({ tool: 'record_review', documents: [source, policyBlock] });
-    const result = await response.json();
+    const result = await reviewResult(response);
     expect(result.findings[0]).toMatchObject({
       question: 'Who keeps inspection log 2?',
       supporting: [{ title: 'Scanned policy.pdf', page: 1, quote: 'The registrar keeps inspection log 1.' }],
@@ -2482,8 +2489,9 @@ async function finishDocumentReview(page, mode, requests = captureReviewRequests
     const response = await request.response();
     const input = request.postDataJSON();
     expect(input).toMatchObject({ mode, allowModel: true, modelSharingConsent: true });
-    parts.push({ input, result: await response.json(), calls: await providerCalls(response),
-      assessed: JSON.parse(await response.headerValue('x-test-assessed-criteria')) });
+    const result = await reviewResult(response);
+    parts.push({ input, result, calls: await providerCalls(response),
+      assessed: result.testTrace?.assessed ?? JSON.parse(await response.headerValue('x-test-assessed-criteria')) });
   }
   return parts;
 }

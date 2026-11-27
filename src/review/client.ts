@@ -1,3 +1,5 @@
+import { guideStreamType, readGuideStream } from './guideProgress';
+import type { ReviewProgressState } from './reviewProgress';
 import { sessionHeaders } from './reviewSession';
 import {
   MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
@@ -91,13 +93,13 @@ function waitForQuota(seconds: number, signal: AbortSignal) {
   });
 }
 
-type RequestOptions = { onRateLimit?: (seconds: number) => void; onResume?: () => void; mayWaitForQuota?: () => boolean };
+type RequestOptions = { onGuideProgress?: (progress: ReviewProgressState) => void; onRateLimit?: (seconds: number) => void; onResume?: () => void; mayWaitForQuota?: () => boolean };
 
 async function postReview(url: string, body: string, signal: AbortSignal, options?: RequestOptions) {
   for (;;) {
     signal.throwIfAborted();
     const response = await fetch(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...sessionHeaders(signal) }, body, signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(options?.onGuideProgress && { Accept: guideStreamType }), ...sessionHeaders(signal) }, body, signal,
     });
     if (response.status !== 429) return response;
     // The edge firewall and API can both throttle the shared network.
@@ -131,14 +133,16 @@ export async function requestReview(input: ReviewInput, signal: AbortSignal, opt
   checkInput(input);
   checkAttachments(input);
   const response = await postReview('/api/review', encodeRequest(input), signal, options);
-  const body = await response.json().catch(() => null);
-  if (response.status === 413 || (response.status === 422 && body?.code === 'review_part_too_large')) {
+  const { status, body } = options?.onGuideProgress && response.headers.get('Content-Type')?.split(';')[0] === guideStreamType
+    ? await readGuideStream(response, options.onGuideProgress)
+    : { status: response.status, body: await response.json().catch(() => null) };
+  if (status === 413 || (status === 422 && body?.code === 'review_part_too_large')) {
     throw new ReviewSizeError(body?.error || 'This part exceeds the review service transfer limit.');
   }
-  if (!response.ok || !body)
+  if (status !== 200 || !body)
     throw Error(
       body?.error ||
-        `The review service could not complete this request (HTTP ${response.status}). Try again.`,
+        `The review service could not complete this request (HTTP ${status}). Try again.`,
     );
   if (!Array.isArray(body.findings) || !['anthropic', 'local'].includes(body.engine))
     throw Error('The review service returned an unexpected response. Try again.');

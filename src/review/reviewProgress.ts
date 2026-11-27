@@ -1,4 +1,4 @@
-export type ReviewPhase = 'preparing' | 'transcribing' | 'scan' | 'questions' | 'guide';
+export type ReviewPhase = 'preparing' | 'transcribing' | 'scan' | 'questions' | 'guide' | 'obligations';
 
 export type ReviewProgressState = {
   phase: ReviewPhase;
@@ -11,6 +11,8 @@ export type ReviewProgressState = {
 export function completedWork(progress: ReviewProgressState): string {
   const { phase, completed, total } = progress;
   if (completed === undefined || !total) return '';
+  if (phase === 'obligations') return completed + ' of ' + total + (total === 1 ? ' obligation checked' : ' obligations checked');
+  if (phase === 'guide' && completed === 0) return '';
   if (phase === 'guide') return Math.floor(100 * completed / total) + '% of guide text reviewed';
   const unit = phase === 'questions' ? 'question' : 'page';
   return completed.toLocaleString() + ' of ' + total.toLocaleString() + ' ' + unit +
