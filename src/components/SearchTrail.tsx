@@ -127,10 +127,10 @@ export function SearchTrail({ finding, documents, open, onToggle, ...controls }:
       <div id="search-results" hidden={!open}>
         {open && <>
           <fieldset className="trail-sections" aria-label="Search trail sections">
-            {sections.map(({ label, count }) => <button key={label} type="button" aria-label={label}
-              aria-description={count === undefined ? undefined : countLabel(count, label === 'Search terms' ? 'term' : 'passage')}
+            {sections.map(({ label, count }, index) => <button key={label} type="button" aria-label={label}
+              aria-describedby={count === undefined ? undefined : 'trail-count-' + index}
               aria-pressed={section === label} onClick={() => setSection(label)}>
-              {label}{count !== undefined && <small>{count.toLocaleString()}</small>}
+              {label}{count !== undefined && <small id={'trail-count-' + index}>{count.toLocaleString()}</small>}
             </button>)}
           </fieldset>
           {section === 'Ranked passages' && <RankedPassages finding={finding} {...controls} />}
