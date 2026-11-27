@@ -3,6 +3,7 @@ import { samePassage, type Evidence } from '../review/model';
 
 export type EvidenceControls = {
   citations: Evidence[];
+  citeLabel: string;
   onOpen: (evidence: Evidence, term?: boolean) => void;
   onCite?: (evidence: Evidence) => void;
 };
@@ -14,7 +15,7 @@ const passageLabels = {
   followup: 'New passage from follow-up',
 };
 
-export function PassageContent({ evidence, compact = false, citations, onOpen, onCite }: EvidenceControls & {
+export function PassageContent({ evidence, compact = false, citations, citeLabel, onOpen, onCite }: EvidenceControls & {
   evidence: Evidence; compact?: boolean;
 }) {
   const cited = citations.some((citation) => samePassage(citation, evidence));
@@ -30,7 +31,7 @@ export function PassageContent({ evidence, compact = false, citations, onOpen, o
         {onCite && (
           <button type="button" className="text-link cite-response" onClick={() => onCite(evidence)}>
             {cited ? <Check size={13} /> : <Plus size={13} />}
-            {cited ? 'Remove citation' : 'Cite in response'}
+            {cited ? 'Remove citation' : citeLabel}
           </button>
         )}
       </div>

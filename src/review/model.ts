@@ -136,6 +136,17 @@ export const responseLabels: Record<NonNullable<Decision['value']>, string> = {
   flagged: 'Flagged for follow-up',
 };
 
+export function decisionStatusLabel(decision: Decision, mode: Mode): string {
+  if (!decision.value) return 'Draft';
+  if (mode === 'guide' && decision.value === 'confirmed') return 'Saved';
+  return responseLabels[decision.value];
+}
+
+export function decisionLabel(decision: Decision, mode: Mode): string {
+  const status = decisionStatusLabel(decision, mode);
+  return mode === 'guide' && decision.action ? status + ' · ' + policyActionLabels[decision.action] : status;
+}
+
 export type ReviewRow = {
   finding: Finding;
   index: number;

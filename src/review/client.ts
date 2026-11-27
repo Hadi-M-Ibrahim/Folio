@@ -2,7 +2,7 @@ import { sessionHeaders } from './reviewSession';
 import {
   MAX_POLICY_CHARACTERS, MAX_POLICY_DOCUMENTS, MAX_POLICY_PAGE_CHARACTERS,
   MAX_PDF_ATTACHMENT_PAGES, MAX_POLICY_PAGES, MAX_REQUEST_BYTES, ReviewSizeError,
-  type Evidence, type Finding, type Policy, type Result, type ReviewInput,
+  type Evidence, type Finding, type Policy, type PolicyAction, type Result, type ReviewInput,
 } from './model';
 
 export const isLoopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(window.location.hostname);
@@ -149,12 +149,27 @@ export async function requestReview(input: ReviewInput, signal: AbortSignal, opt
 
 export type DraftAction = 'draft' | 'shorten' | 'simplify' | 'expand';
 
-export async function writeResponse(action: DraftAction, finding: Finding, answer: string, citations: Evidence[], signal: AbortSignal) {
-  const body = JSON.stringify({ action, question: finding.question, status: finding.status, assessment: finding.answer, answer, citations });
-  const response = await postReview('/api/review?operation=draft', body, signal);
+async function requestDraft(payload: object, field: 'answer' | 'actionText', signal: AbortSignal) {
+  const response = await postReview('/api/review?operation=draft', JSON.stringify(payload), signal);
   const result = await response.json().catch(() => null);
-  if (!response.ok || typeof result?.answer !== 'string' || !result.answer.trim()) {
-    throw Error(result?.error || 'The response could not be drafted. Try again.');
+  const text = result?.[field];
+  if (!response.ok || typeof text !== 'string' || !text.trim()) {
+    const subject = field === 'actionText' ? 'policy action' : 'response';
+    throw Error(result?.error || 'The ' + subject + ' could not be drafted. Try again.');
   }
-  return result.answer.trim() as string;
+  return text.trim();
+}
+
+export function writeResponse(action: DraftAction, finding: Finding, answer: string, citations: Evidence[], signal: AbortSignal) {
+  return requestDraft({ action, question: finding.question, status: finding.status, assessment: finding.answer, answer, citations }, 'answer', signal);
+}
+
+export function writePolicyAction(
+  action: DraftAction, finding: Finding, disposition: PolicyAction, actionText: string, citations: Evidence[], signal: AbortSignal,
+) {
+  return requestDraft({
+    mode: 'guide', action, disposition, obligation: finding.question, guidePassage: finding.criterionSource ?? '',
+    status: finding.status, assessment: finding.answer, actionText, citations, supporting: finding.supporting, counter: finding.counter,
+    candidates: [...finding.candidates, ...(finding.followup?.passages ?? [])],
+  }, 'actionText', signal);
 }

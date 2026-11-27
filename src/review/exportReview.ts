@@ -2,12 +2,12 @@ import { downloadFile } from './downloadFile';
 import { guideCitation } from './guideSource';
 import {
   assessmentLabel,
+  decisionStatusLabel,
   policyActionLabels,
   responseLabels,
   statusLabels,
   type Decision,
   type Evidence,
-  type PolicyAction,
   type Review,
   type ReviewRow,
 } from './model';
@@ -45,18 +45,24 @@ function responseStatus(decision?: Decision): string {
 }
 
 function appendPolicyActions(lines: string[], review: Review, rows: readonly ReviewRow[]) {
-  const groups: (PolicyAction | undefined)[] = ['write', 'update', 'no_change', undefined];
-  for (const action of groups) {
-    const obligations = rows.filter((row) => row.decision?.action === action);
+  const groups = { ...policyActionLabels, text: 'Written actions', pending: 'Action pending' };
+  for (const [action, heading] of Object.entries(groups)) {
+    const obligations = rows.filter(({ decision }) =>
+      (decision?.action ?? (decision?.answer?.trim() ? 'text' : 'pending')) === action);
     if (!obligations.length) continue;
-    lines.push('## ' + (action ? policyActionLabels[action] : 'Action pending'), '');
+    lines.push('## ' + heading, '');
     for (const { finding, index, decision } of obligations) {
       lines.push(`### Obligation ${index + 1}`, '', inlineText(guideCitation(review, finding)), '');
       if (finding.criterionSource) lines.push(...quoted(finding.criterionSource), '');
       if (finding.criterionSource !== finding.question) {
         lines.push('Review criterion — ' + markdownText(finding.question), '');
       }
+      if (decision) {
+        lines.push('Action status — ' + decisionStatusLabel(decision, 'guide'), '');
+        if (decision.answer?.trim()) lines.push('Action text — ' + markdownText(decision.answer.trim()), '');
+      }
       lines.push('Action note — ' + markdownText(decision?.note?.trim() || 'None recorded.'), '');
+      if (decision?.citations?.length) lines.push(...passages('Reviewer-selected citations', decision.citations));
       if (decision) lines.push('Last edited — ' + decision.at, '');
     }
   }

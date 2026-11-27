@@ -5,7 +5,7 @@ import {
 import { exportReview } from '../review/exportReview';
 import { guideCitation, guideLocation, submittedSource, type SourceLocation } from '../review/guideSource';
 import {
-  modeLabels, policyActionLabels, responseLabels, type FindingState,
+  modeLabels, decisionLabel, type FindingState,
   type Evidence, type Review, type ReviewRow, type SavedResponse,
 } from '../review/model';
 import { FindingQueue, ResolutionButton, type QueueOptions } from './FindingQueue';
@@ -39,7 +39,7 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
   const { mode, documents } = review.input;
   const findings = review.result.findings;
   const isGuide = mode === 'guide';
-  const resolveQuestion = isGuide ? undefined : changeResolution;
+  const item = isGuide ? 'obligation' : 'question';
   const hasPolicies = documents.length > 0;
   const groupLabel = isGuide ? 'Obligations' : 'Questions';
   const outputLabel = isGuide ? 'Action list' : 'Responses';
@@ -60,7 +60,7 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
   const previous = visible[position - 1];
   const next = visible[position + 1];
   const entries = rows.flatMap(({ finding, index, decision }) => decision ? [{ finding, index, decision }] : []);
-  const reviewed = rows.filter(row => isGuide ? row.decision?.action : row.resolved).length;
+  const reviewed = rows.filter(row => row.resolved).length;
   const downloadReview = () => exportReview(review, rows);
 
   function changeResolution(index: number, resolved: boolean) {
@@ -107,10 +107,10 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
         <>
           {(notice || scopeNote) && <output className="run-notice">{[notice, scopeNote].filter(Boolean).join(' ')}</output>}
           <div className="work-grid">
-            {findings.length > 1 && <FindingQueue rows={visible} currentIndex={current?.index} label={groupLabel}
+            {findings.length > 1 && <FindingQueue rows={visible} currentIndex={current?.index} item={item}
               total={findings.length} hasPolicies={hasPolicies}
               options={queue} onChange={updateQueue} onSelect={selectFinding}
-              onResolve={resolveQuestion} />}
+              onResolve={changeResolution} />}
             <div ref={detailRef} className="detail-wrap">
               {current ? (
                 <>
@@ -127,7 +127,7 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
                   />
                   <FindingNavigation guide={isGuide} previous={previous} next={next}
                     onSelect={index => selectFinding(index, true)} onOutput={openOutput}>
-                    {findings.length === 1 && resolveQuestion && <ResolutionButton row={current} onResolve={resolveQuestion} showLabel />}
+                    {findings.length === 1 && <ResolutionButton row={current} item={item} onResolve={changeResolution} showLabel />}
                   </FindingNavigation>
                 </>
               ) : (
@@ -180,7 +180,7 @@ function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
     review.sourceDocument?.title,
     review.sourceSelection,
     isGuide && !review.input.documents.length ? 'Guide only' : undefined,
-    reviewed + ' of ' + review.result.findings.length + (isGuide ? ' reviewed' : ' resolved'),
+    reviewed + ' of ' + review.result.findings.length + ' resolved',
   ];
   return (
     <header className="page-heading">
@@ -190,8 +190,8 @@ function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
           <h1 tabIndex={-1}>{isGuide ? 'Policy guide review' : 'Questionnaire review'}</h1>
           <p>{summary.filter(Boolean).join(' · ')}</p>
         </div>
-        {(isGuide || !showingOutput) && <button className="report-link" onClick={onDownload}>
-          <Download size={16} /> {isGuide ? 'Download action list' : 'Download responses'}
+        {!showingOutput && <button className="report-link" onClick={onDownload}>
+          <Download size={16} /> {isGuide ? 'Download guide review (.md)' : 'Download responses'}
         </button>}
       </div>
     </header>
@@ -242,15 +242,16 @@ function loadPdfExporter() {
   return pdfExporter;
 }
 
-function ResponseDownloads({ title, entries }: {
-  title: string; entries: SavedResponse[];
+function PdfDownload({ review, entries }: {
+  review: Review; entries: SavedResponse[];
 }) {
   const [state, setState] = useState<'idle' | 'preparing' | 'error'>('idle');
   async function download() {
     setState('preparing');
     try {
       const pdf = await loadPdfExporter();
-      await pdf.exportResponsePdf(title, entries);
+      if (review.input.mode === 'guide') await pdf.exportActionListPdf(review, entries);
+      else await pdf.exportResponsePdf(review.title, entries);
       setState('idle');
     } catch {
       setState('error');
@@ -277,10 +278,10 @@ function ReviewDecisions({ entries, review, onSelect, onReturn }: {
   const isGuide = review.input.mode === 'guide';
   return (
     <section className="library" id="review-output" tabIndex={-1} aria-label={isGuide ? 'Action list' : 'Responses'}>
-      {!isGuide && <ResponseDownloads title={review.title} entries={entries} />}
+      <PdfDownload review={review} entries={entries} />
       {entries.map(({ finding, decision, index }) => {
-        const label = decision.action ? policyActionLabels[decision.action] : decision.value ? responseLabels[decision.value] : 'Draft';
-        const text = decision.note || decision.answer;
+        const label = decisionLabel(decision, review.input.mode);
+        const text = decision.answer || decision.note;
         return (
           <button key={finding.id} className="library-row decision-entry" onClick={() => onSelect(index)}>
             <span>
@@ -293,7 +294,7 @@ function ReviewDecisions({ entries, review, onSelect, onReturn }: {
         );
       })}
       {!entries.length && <div className="empty-decisions">
-        <p>{isGuide ? 'Choose an action for an obligation to start your list.' : 'Draft or flag a response to add it here.'}</p>
+        <p>{isGuide ? 'Draft a policy action or flag an obligation to add it here.' : 'Draft or flag a response to add it here.'}</p>
         <button className="text-link" onClick={onReturn}>{isGuide ? 'Review obligations' : 'Review questions'} <ArrowRight size={14} /></button>
       </div>}
     </section>
