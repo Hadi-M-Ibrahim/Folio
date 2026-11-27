@@ -9,7 +9,7 @@ Open [Folio](https://folio-policy-review.vercel.app).
 - **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open the cited page to check the suggested answer. Use a supported suggestion as a draft or write your own response. Confirm it with a citation or flag it for follow-up, then download your responses.
 - **Review a new policy guide.** Upload or paste the guide, then upload at least one existing policy file (PDF, TXT, or Markdown). Compare each obligation with the policies, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
-Folio can start an Anthropic review once both the source and the first policy are ready. The final button opens the results or joins the review already in progress. Adding a file, editing text, or changing a range cancels that version. Click the final button to review your changes. A new review starts automatically on its first eligible upload.
+Folio can start an Anthropic review in the background once both the source and the first policy are ready. Click **Find evidence** or **Review obligations** to see the current progress. If the review has finished, the button opens the results immediately. Adding a file, editing text, or changing a range cancels that version. Click the review button to review your changes.
 
 Keep the tab open while Folio reviews a long document. The progress bar tracks completed work, and the findings appear in document order. Use the range controls to choose questions or physical pages. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment. Changing the selection cannot recall pages already sent to Anthropic.
 

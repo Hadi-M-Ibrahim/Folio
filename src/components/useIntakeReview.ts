@@ -6,27 +6,27 @@ import { openReviewSession } from '../review/reviewSession';
 export type RunReview = (signal: AbortSignal, onProgress: (progress: ReviewProgressState) => void,
   mayWaitForQuota: () => boolean) => Promise<Review>;
 
-type Run = { controller: AbortController; foreground: boolean; result?: Review };
-type View = { kind: 'fresh' | 'idle' | 'ready' | 'changed' } | { kind: 'running'; progress: ReviewProgressState; foreground: boolean };
+type Run = { controller: AbortController; foreground: boolean; progress: ReviewProgressState; result?: Review };
+type View = { kind: 'idle' | 'changed' } | { kind: 'running'; progress: ReviewProgressState };
 
 export function useIntakeReview(policyStep: boolean, onDone: (review: Review) => void, onError: (error: unknown) => void) {
   const current = useRef<Run | null>(null);
   const task = useRef<RunReview | null>(null);
-  const started = useRef(false);
-  const [view, setView] = useState<View>({ kind: 'fresh' });
+  const started = useRef<'early' | 'submitted' | null>(null);
+  const [view, setView] = useState<View>({ kind: 'idle' });
 
   const cancel = useCallback(() => {
     const run = current.current;
     current.current = null;
     run?.controller.abort();
-    setView({ kind: started.current ? 'idle' : 'fresh' });
+    setView({ kind: 'idle' });
   }, []);
   useLayoutEffect(() => {
     const run = current.current;
     if (!policyStep && run?.foreground) {
       // Returning to the source keeps the review available without opening its results over the form.
       run.foreground = false;
-      setView(state => state.kind === 'running' ? { ...state, foreground: false } : state);
+      setView({ kind: 'idle' });
     }
   }, [policyStep]);
   useEffect(() => {
@@ -42,7 +42,7 @@ export function useIntakeReview(policyStep: boolean, onDone: (review: Review) =>
   function edit() {
     task.current = null;
     if (current.current) cancel();
-    if (started.current) setView({ kind: 'changed' });
+    if (started.current === 'submitted') setView({ kind: 'changed' });
   }
 
   async function execute(run: Run, work: RunReview) {
@@ -57,17 +57,20 @@ export function useIntakeReview(policyStep: boolean, onDone: (review: Review) =>
       }
       signal.throwIfAborted();
       const result = await work(signal, progress => {
-        if (current.current === run) setView({ kind: 'running', foreground: run.foreground, progress });
+        if (current.current !== run) return;
+        run.progress = progress;
+        if (run.foreground) setView({ kind: 'running', progress });
       }, () => run.foreground);
       if (current.current !== run) return;
       run.result = result;
       if (run.foreground) onDone(result);
-      else setView({ kind: 'ready' });
     } catch (cause) {
       if (current.current !== run) return;
       current.current = null;
-      setView({ kind: 'idle' });
-      if (run.foreground) onError(cause);
+      if (run.foreground) {
+        setView({ kind: 'idle' });
+        onError(cause);
+      }
     } finally {
       release?.();
     }
@@ -79,10 +82,9 @@ export function useIntakeReview(policyStep: boolean, onDone: (review: Review) =>
     if (run) {
       if (run.foreground) return;
       run.foreground = true;
+      started.current = 'submitted';
       if (run.result) onDone(run.result);
-      else {
-        setView(state => state.kind === 'running' ? { ...state, foreground: true } : state);
-      }
+      else setView({ kind: 'running', progress: run.progress });
       return;
     }
     try {
@@ -91,12 +93,16 @@ export function useIntakeReview(policyStep: boolean, onDone: (review: Review) =>
       if (!early) onError(cause);
       return;
     }
-    started.current = true;
-    const next = { controller: new AbortController(), foreground: !early };
+    started.current = early ? 'early' : 'submitted';
+    const next: Run = {
+      controller: new AbortController(),
+      foreground: !early,
+      progress: { phase: 'preparing', message: 'Preparing review…' },
+    };
     current.current = next;
-    setView({ kind: 'running', foreground: !early, progress: { phase: 'preparing', message: 'Preparing review…' } });
+    if (next.foreground) setView({ kind: 'running', progress: next.progress });
     void execute(next, task.current);
   }
 
-  return { view, start, edit, cancel, started: view.kind !== 'fresh' };
+  return { view, start, edit, cancel };
 }
