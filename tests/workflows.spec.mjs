@@ -195,7 +195,7 @@ async function expectQuietReview(page) {
 async function clickReview(page, mode) {
   const guide = mode === 'guide';
   const submit = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
-  await expect(submit).toHaveAccessibleDescription(/Anthropic/i);
+  await expect(submit).toHaveAccessibleDescription(guide ? /Anthropic/i : '');
   await expect(page.getByRole('checkbox')).toHaveCount(0);
   await submit.click();
 }

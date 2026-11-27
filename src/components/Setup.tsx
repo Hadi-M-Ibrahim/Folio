@@ -90,15 +90,11 @@ function selectedPolicies(originals: Policy[], ranges: PolicyRanges): Policy[] {
   return originals.map((doc) => Object.hasOwn(ranges, doc.id) ? { ...doc, pages: ranges[doc.id] } : doc);
 }
 
-function sharingDisclosure(mode: Mode, source: IntakeSource, documents: Policy[]) {
-  const subject = mode === 'guide' ? 'guide' : 'questions';
+function guideSharingDisclosure(source: IntakeSource, documents: Policy[]) {
   if (source.document?.pdfFile || documents.some((doc) => doc.pdfFile)) {
-    const focus = source.document?.pdfFile && source.range?.unit === 'question' && source.selection
-      ? ' Folio reviews only the selected questions.' : '';
-    return 'Folio shares the included PDFs or selected pages with Anthropic, along with text from your ' +
-      subject + ' and relevant policy passages.' + focus;
+    return 'Folio shares the included PDFs or selected pages with Anthropic, along with text from your guide and relevant policy passages.';
   }
-  return 'This review shares your ' + subject + ' and relevant policy text with Anthropic.';
+  return 'This review shares your guide and relevant policy text with Anthropic.';
 }
 
 function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnlocked, onSelect }: {
@@ -129,13 +125,13 @@ function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnloc
 }
 
 function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view, onCancel }: {
-  step: number; busy: string; needsUpload: boolean; disclosure: string; submitLabel: string;
+  step: number; busy: string; needsUpload: boolean; disclosure?: string; submitLabel: string;
   view: ReturnType<typeof useIntakeReview>['view']; onCancel: () => void;
 }) {
   return (
     <div className="intake-actions">
       <div className="intake-review-status">
-        {step === 2 && <p className="intake-disclosure" id="intake-sharing">
+        {disclosure && <p className="intake-disclosure" id="intake-sharing">
           {disclosure}
         </p>}
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
@@ -146,7 +142,7 @@ function IntakeActions({ step, busy, needsUpload, disclosure, submitLabel, view,
           event.preventDefault();
           onCancel();
         }}>Cancel review</button>
-        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || needsUpload} aria-describedby={step === 2 ? 'intake-sharing' : undefined}>
+        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || needsUpload} aria-describedby={disclosure ? 'intake-sharing' : undefined}>
           <span>{busy || (step === 1 ? 'Continue to policies' : submitLabel)}</span>
           {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
         </button>}
@@ -396,7 +392,8 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
               )}
             </fieldset>
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
-            <IntakeActions step={step} busy={busy} needsUpload={step === 2 && needsUpload} disclosure={sharingDisclosure(mode, source, documents)}
+            <IntakeActions step={step} busy={busy} needsUpload={step === 2 && needsUpload}
+              disclosure={isGuide && step === 2 ? guideSharingDisclosure(source, documents) : undefined}
               submitLabel={copy.submit} view={review.view} onCancel={review.cancel} />
             {busy && <output className="intake-sr-only">{busy}</output>}
           </form>
