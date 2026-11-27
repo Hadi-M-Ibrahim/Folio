@@ -616,11 +616,28 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await page.getByRole('button', { name: /Facilities.txt.*p\. 1/ }).first().click();
   await expect(page.locator('dialog mark')).toHaveText(policy);
   await page.keyboard.press('Escape');
-  await expect(page.getByLabel('Response for submission')).toBeEmpty();
-  await page.getByRole('button', { name: 'Use suggested answer' }).click();
-  await expect(page.getByLabel('Response for submission')).toHaveValue(policy);
+  const editor = page.getByLabel('Response for submission');
+  const tools = page.getByRole('group', { name: 'Response writing tools' });
+  await expect(editor).toBeEmpty();
+  await expect(tools.getByRole('button')).toHaveText(['Draft response']);
+  const writing = page.waitForResponse('**/api/review?operation=draft');
+  await tools.getByRole('button', { name: 'Draft response' }).click();
+  const written = await writing;
+  expect(written.request().postDataJSON()).toMatchObject({ action: 'draft', question, answer: '', citations: [{ quote: policy }] });
+  expect(await providerCalls(written)).toEqual([{ tool: 'record_response_draft', documents: [] }]);
+  await expect(editor).toHaveValue(policy);
+  await expect(tools.getByRole('button')).toHaveText(['Shorten', 'Simplify', 'Add detail']);
+  await tools.getByRole('button', { name: 'Shorten' }).click();
+  await expect(editor).toHaveValue('The facilities coordinator.');
+  await tools.getByRole('button', { name: 'Add detail' }).click();
+  await expect(editor).toHaveValue('The facilities coordinator. ' + policy);
+  await tools.getByRole('button', { name: 'Undo' }).click();
+  await expect(editor).toHaveValue('The facilities coordinator.');
+  await tools.getByRole('button', { name: 'Simplify' }).click();
+  await expect(editor).toHaveValue('The coordinator records the date.');
   const draft = await report(page, 'Download responses');
   expect(draft).toContain('Response status — Draft');
+  expect(draft).toContain('The coordinator records the date.');
   expect(draft).toContain('Facilities.txt, p. 1');
   await page.getByRole('button', { name: 'Remove response citation 1' }).click();
   await page.getByLabel('Response for submission').fill('The facilities coordinator.');
@@ -637,6 +654,46 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toBeVisible();
   await page.locator('.session-review').click();
   await expect(page.getByLabel('Response for submission')).toHaveValue('The facilities coordinator.');
+});
+
+test('a failed or superseded rewrite preserves the analyst’s text', async ({ page }) => {
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?\nWho signs it?');
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log and signs it.');
+  await clickReview(page, 'questionnaire');
+  const editor = page.getByLabel('Response for submission');
+  await editor.fill('The registrar maintains the log.');
+  const action = page.getByRole('button', { name: 'Shorten', exact: true });
+  const endpoint = '**/api/review?operation=draft';
+  await page.route(endpoint, route => route.fulfill({ status: 503, json: { error: 'Anthropic is temporarily unavailable.' } }), { times: 1 });
+  await action.click();
+  await expect(page.getByRole('alert')).toHaveText('Anthropic is temporarily unavailable.');
+  await expect(editor).toHaveValue('The registrar maintains the log.');
+
+  for (const navigate of [false, true]) {
+    const release = Promise.withResolvers();
+    await page.route(endpoint, async route => {
+      await release.promise;
+      await route.fulfill({ json: { answer: 'Obsolete wording.' } });
+    }, { times: 1 });
+    const sent = page.waitForRequest(endpoint);
+    await action.click();
+    const request = await sent;
+    const aborted = page.waitForEvent('requestfailed', failed => failed === request);
+    if (navigate) {
+      await page.getByRole('button', { name: 'Next question' }).click();
+    } else {
+      await editor.fill('The records office maintains the log.');
+    }
+    release.resolve();
+    await aborted;
+    if (navigate) {
+      await expect(editor).toBeEmpty();
+      await page.getByRole('button', { name: 'Previous question' }).click();
+    }
+    await expect(editor).toHaveValue('The records office maintains the log.');
+  }
 });
 
 for (const hasAppendix of [true, false]) {
@@ -673,7 +730,9 @@ for (const hasAppendix of [true, false]) {
       await expect(page.locator('dialog mark')).toHaveText(appendixQuote);
     } else {
       await expect(followup).toContainText('This search found no new passages.');
-      await expect(page.getByRole('button', { name: 'Use suggested answer' })).toHaveCount(0);
+      await page.getByRole('button', { name: 'Draft response' }).click();
+      await expect(page.getByLabel('Response for submission')).toHaveValue('The available policy does not establish the answer.');
+      await expect(page.getByRole('button', { name: 'Confirm response' })).toBeDisabled();
     }
   });
 }
@@ -1142,7 +1201,7 @@ test('one submission recovers late incomplete batches and exports all 65 questio
   await page.getByRole('button', { name: /Records\.pdf.*p\. 145/ }).first().click();
   await expectPdfCanvas(page.getByRole('dialog'), 'Records.pdf', 145);
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'Use suggested answer' }).click();
+  await page.getByRole('button', { name: 'Draft response' }).click();
   await page.getByRole('button', { name: 'Confirm response' }).click();
   const output = await report(page, 'Download responses');
   expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) =>

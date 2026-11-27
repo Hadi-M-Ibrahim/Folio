@@ -1,6 +1,6 @@
 import { Check, Flag, X } from 'lucide-react';
-import { useRef } from 'react';
-import { policyActionLabels, responseLabels, samePassage, type Decision, type Evidence, type Finding } from '../review/model';
+import { policyActionLabels, responseLabels, type Decision, type Evidence, type Finding } from '../review/model';
+import { ResponseComposer } from './ResponseComposer';
 
 type EditorProps = {
   decision?: Decision;
@@ -44,16 +44,6 @@ export function ResponseEditor({ finding, decision, onChange, onOpen, onRemoveCi
   const confirmed = decision?.value === 'confirmed';
   const flagged = decision?.value === 'flagged';
   const hasAnswer = !!decision?.answer?.trim();
-  const input = useRef<HTMLTextAreaElement>(null);
-  const verified = [...finding.supporting, ...finding.counter];
-  const canUseAnswer = !hasAnswer && finding.analysisEngine === 'anthropic' && verified.length > 0 &&
-    ['supported', 'mixed', 'contradicted'].includes(finding.status);
-
-  function useSuggestion() {
-    const additional = verified.filter(passage => !citations.some(citation => samePassage(citation, passage)));
-    onChange({ answer: finding.answer, citations: [...citations, ...additional] });
-    input.current?.focus();
-  }
 
   function toggleDisposition(value: NonNullable<Decision['value']>) {
     onChange({ value: decision?.value === value ? undefined : value });
@@ -61,20 +51,7 @@ export function ResponseEditor({ finding, decision, onChange, onOpen, onRemoveCi
 
   return (
     <>
-      <div className="decision-field">
-        <div className="response-label">
-          <label htmlFor="response-text">Response for submission</label>
-          {canUseAnswer && <button className="text-link" onClick={useSuggestion}>Use suggested answer</button>}
-        </div>
-        <textarea
-          id="response-text"
-          ref={input}
-          rows={3}
-          placeholder="Write your response to this question."
-          value={decision?.answer || ''}
-          onChange={(event) => onChange({ answer: event.target.value })}
-        />
-      </div>
+      <ResponseComposer finding={finding} decision={decision} onChange={onChange} />
       {citations.length > 0 && (
         <div className="response-citations">
           <h3>Response citations</h3>
