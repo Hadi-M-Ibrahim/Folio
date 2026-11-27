@@ -195,7 +195,7 @@ async function expectQuietReview(page) {
 async function clickReview(page, mode) {
   const guide = mode === 'guide';
   const submit = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
-  await expect(submit).toHaveAccessibleDescription(/Anthropic/i);
+  await expect(submit).toHaveAccessibleDescription(guide ? /Anthropic/i : '');
   await expect(page.getByRole('checkbox')).toHaveCount(0);
   await submit.click();
 }
@@ -644,6 +644,13 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(page.getByRole('button', { name: 'Confirm response', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
   await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
+  const reopen = page.getByRole('button', { name: 'Edit response', exact: true });
+  await expect(reopen).toBeFocused();
+  await expect(reopen).toHaveAccessibleDescription('Response confirmed');
+  await expect(reopen).toHaveAttribute('aria-expanded', 'false');
+  await expect(editor).toBeHidden();
+  await expect(tools).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Response citations' })).toBeHidden();
   const output = await report(page, 'Download responses');
   expect(output).toContain('The facilities coordinator.');
   expect(output).toContain('Confirmed');
@@ -653,7 +660,21 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(options).toBeInViewport();
   await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toBeVisible();
   await page.locator('.session-review').click();
-  await expect(page.getByLabel('Response for submission')).toHaveValue('The facilities coordinator.');
+  await expect(editor).toBeHidden();
+  await reopen.click();
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue('The facilities coordinator.');
+  await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
+  await page.getByRole('button', { name: 'Flag for follow-up', exact: true }).click();
+  await expect(reopen).toHaveAccessibleDescription('Flagged for follow-up');
+  await expect(editor).toBeHidden();
+  expect(await report(page, 'Download responses')).toContain('Response status — Flagged for follow-up');
+  await reopen.click();
+  await expect(editor).toHaveValue('The facilities coordinator.');
+  await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
+  await page.getByRole('button', { name: 'Remove flag', exact: true }).click();
+  await expect(editor).toBeVisible();
+  await expect(reopen).toHaveCount(0);
 });
 
 test('a failed or superseded rewrite preserves the analyst’s text', async ({ page }) => {

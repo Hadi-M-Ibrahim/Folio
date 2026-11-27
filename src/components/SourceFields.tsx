@@ -147,9 +147,6 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles, on
           requestAnimationFrame(() => document.getElementById('intake-source')?.focus());
         }}><X size={16} aria-hidden="true" /> Remove file</button>}
       </div>
-      {pdf && source.selection && source.range?.unit === 'question' && <p className="intake-help">
-        Other questions printed on {pageNumbers.length === 1 ? 'this page are' : 'these pages are'} visible to Anthropic.
-      </p>}
       {pdf && <div id="source-pdf-preview" hidden={!previewOpen}>
         {previewOpen && <PdfViewer file={pdf} pages={pageNumbers} />}
       </div>}
