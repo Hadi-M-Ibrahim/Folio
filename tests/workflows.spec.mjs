@@ -784,7 +784,7 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
   const answer = page.getByLabel('Response for submission');
   await next.click();
   await page.getByRole('button', { name: 'Search trail', exact: true }).click();
-  const matches = page.getByRole('region', { name: 'Ranked passages' });
+  const matches = page.getByRole('region', { name: 'Relevant passages' });
   const chosen = matches.getByRole('article').filter({ hasText: 'p. 3' });
   const cite = chosen.getByRole('button', { name: 'Cite in response' });
   if (!await cite.isVisible()) await chosen.locator('summary').click();
@@ -879,8 +879,8 @@ test('the guide search trail opens ranked sources and filters page proof by lite
   await clickReview(page, 'guide');
 
   const trail = page.getByRole('button', { name: 'Search trail', exact: true });
-  const ranked = page.getByRole('button', { name: 'Ranked passages', exact: true });
-  const rankedPassages = page.getByRole('region', { name: 'Ranked passages', exact: true });
+  const ranked = page.getByRole('button', { name: 'Relevant passages', exact: true });
+  const rankedPassages = page.getByRole('region', { name: 'Relevant passages', exact: true });
   const terms = page.getByRole('button', { name: 'Search terms', exact: true });
   const term = page.getByRole('combobox', { name: 'Search term', exact: true });
   await trail.click();
@@ -952,14 +952,14 @@ for (const hasAppendix of [true, false]) {
     const toggle = page.getByRole('button', { name: 'Search trail' });
     const followup = page.getByRole('region', { name: 'Follow-up search' });
     const showFollowup = page.getByRole('button', { name: 'Follow-up search', exact: true });
-    const ranked = page.getByRole('button', { name: 'Ranked passages', exact: true });
+    const ranked = page.getByRole('button', { name: 'Relevant passages', exact: true });
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(followup).toBeHidden();
     await toggle.click();
     await expect(ranked).toHaveAttribute('aria-pressed', 'true');
     await expect(showFollowup).toHaveAttribute('aria-pressed', 'false');
     await expect(followup).toBeHidden();
-    const candidate = page.getByRole('region', { name: 'Ranked passages', exact: true }).getByRole('article');
+    const candidate = page.getByRole('region', { name: 'Relevant passages', exact: true }).getByRole('article');
     await expect(candidate).toHaveCount(1);
     await expect(candidate.getByRole('blockquote')).toContainText(sourceQuote);
     await candidate.getByRole('button', { name: 'Cite in response', exact: true }).click();
