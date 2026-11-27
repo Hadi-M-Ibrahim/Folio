@@ -13,8 +13,8 @@ before(async () => {
     plugins: [{
       name: 'test-pdf-attachment',
       load(id) {
-        if (id.endsWith('/src/review/pdf.ts')) return `export async function makePdfAttachment(doc, role, pages) {
-          return { role, documentId: doc.id, title: doc.title, pages, data: 'AA==' };
+        if (id.endsWith('/src/review/pdf.ts')) return `export function createPdfAttachmentReader(doc, role) {
+          return { attachment: async pages => ({ role, documentId: doc.id, title: doc.title, pages, data: 'AA==' }), close() {} };
         }`;
       },
     }],

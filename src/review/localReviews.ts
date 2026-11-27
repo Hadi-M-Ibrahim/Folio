@@ -15,35 +15,45 @@ type PackedValue = { data: unknown; files: FileInfo[] };
 
 // WebKit's ephemeral storage can persist bytes even when its native IndexedDB File writes fail.
 async function packFiles(data: unknown): Promise<PackedValue> {
-  const root = { data: structuredClone(data) };
+  const original = { data };
+  const root = structuredClone(original);
   const files: FileInfo[] = [];
+  // A selected page range and its original can refer to the same PDF.
+  const buffers = new Map<File, Promise<ArrayBuffer>>();
   const pending: Promise<void>[] = [];
   const seen = new WeakSet<object>();
-  function visit(container: Record<string, unknown>, path: string[]) {
+  function visit(container: Record<string, unknown>, source: Record<string, unknown>, path: string[]) {
     if (seen.has(container)) return;
     seen.add(container);
-    for (const [key, value] of Object.entries(container)) {
+    // WebKit may clone the same File into separate JS objects. Use the source for identity.
+    for (const [key, value] of Object.entries(source)) {
       if (value instanceof File) {
         const { name, type, lastModified } = value;
         files.push({ path: [...path, key], name, type, lastModified });
-        pending.push(value.arrayBuffer().then(bytes => { container[key] = bytes; }));
+        const buffer = buffers.get(value) ?? value.arrayBuffer();
+        buffers.set(value, buffer);
+        pending.push(buffer.then(bytes => { container[key] = bytes; }));
       } else if (value && typeof value === 'object' && (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype)) {
-        visit(value as Record<string, unknown>, [...path, key]);
+        visit(container[key] as Record<string, unknown>, value as Record<string, unknown>, [...path, key]);
       }
     }
   }
-  visit(root, []);
+  visit(root, original, []);
   await Promise.all(pending);
   return { data: root.data, files };
 }
 
 function unpackFiles<T>(packed: PackedValue): T {
   const root: Record<string, unknown> = { data: packed.data };
+  const originals = new Map<ArrayBuffer, File>();
   for (const { path, name, type, lastModified } of packed.files) {
     let container = root;
     for (const key of path.slice(0, -1)) container = container[key] as Record<string, unknown>;
     const key = path[path.length - 1];
-    container[key] = new File([container[key] as ArrayBuffer], name, { type, lastModified });
+    const bytes = container[key] as ArrayBuffer;
+    const file = originals.get(bytes) ?? new File([bytes], name, { type, lastModified });
+    originals.set(bytes, file);
+    container[key] = file;
   }
   return root.data as T;
 }

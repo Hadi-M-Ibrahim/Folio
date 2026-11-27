@@ -27,7 +27,7 @@ function Home({ reviews, reviewActions }: { reviews: ReviewSummary[]; reviewActi
         <p><output>Opening review…</output></p>
       </div>
       <section className="opening" aria-labelledby="opening-title">
-        <img className="opening-landscape" src="/paper-landscape.webp" alt="" width="1672" height="941" fetchPriority="high" />
+        <img className="opening-landscape" src="/paper-landscape.webp" alt="" width="1672" height="941" loading="lazy" fetchPriority="high" />
         <div className="opening-copy">
           <h1 id="opening-title" tabIndex={-1}>Policy review</h1>
           <p>Answer state inquiries and review new guidance against your existing policies.</p>
