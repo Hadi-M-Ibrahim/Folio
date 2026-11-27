@@ -164,10 +164,6 @@ export function samePassage(left: Evidence, right: Evidence): boolean {
   return left.documentId === right.documentId && left.page === right.page && left.quote === right.quote;
 }
 
-export function assessmentLabel(finding: Finding): string {
-  return finding.analysisEngine === 'anthropic' ? 'Model assessment' : 'Keyword search';
-}
-
 export function guideSourceLabel(finding: Finding): string {
   const { criterionStart, criterionEnd } = finding;
   return criterionStart != null && criterionEnd != null && criterionEnd > criterionStart

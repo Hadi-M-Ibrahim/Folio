@@ -2,7 +2,6 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, ArrowRight, BookOpen, ChevronRight, Download, FileText,
 } from 'lucide-react';
-import { exportReview } from '../review/exportReview';
 import { guideCitation, guideLocation, submittedSource, type SourceLocation } from '../review/guideSource';
 import {
   modeLabels, decisionLabel, type FindingState,
@@ -61,7 +60,6 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
   const next = visible[position + 1];
   const entries = rows.flatMap(({ finding, index, decision }) => decision ? [{ finding, index, decision }] : []);
   const reviewed = rows.filter(row => row.resolved).length;
-  const downloadReview = () => exportReview(review, rows);
 
   function changeResolution(index: number, resolved: boolean) {
     onUpdateFinding(rows[index].key, { resolved });
@@ -95,7 +93,7 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
 
   return (
     <section className="workspace" data-single-item={findings.length <= 1}>
-      <ReviewHeading review={review} reviewed={reviewed} showingOutput={nav === 'decisions'} onDownload={downloadReview} />
+      <ReviewHeading review={review} reviewed={reviewed} />
       <div className="review-toolbar">
         <nav className="mode-tabs" aria-label="This review">
           <button aria-pressed={nav === 'findings'} onClick={() => setNav('findings')}>Review {groupLabel.toLowerCase()}</button>
@@ -172,9 +170,7 @@ function FindingNavigation({ guide, previous, next, onSelect, onOutput, children
   );
 }
 
-function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
-  review: Review; reviewed: number; showingOutput: boolean; onDownload: () => void;
-}) {
+function ReviewHeading({ review, reviewed }: { review: Review; reviewed: number }) {
   const isGuide = review.input.mode === 'guide';
   const summary = [
     review.sourceDocument?.title,
@@ -185,15 +181,8 @@ function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
   return (
     <header className="page-heading">
       <a className="back-link" href="#review-options"><ArrowLeft size={15} /> All reviews</a>
-      <div className="workspace-heading">
-        <div>
-          <h1 tabIndex={-1}>{isGuide ? 'Policy guide review' : 'Questionnaire review'}</h1>
-          <p>{summary.filter(Boolean).join(' · ')}</p>
-        </div>
-        {!showingOutput && <button className="report-link" onClick={onDownload}>
-          <Download size={16} /> {isGuide ? 'Download guide review (.md)' : 'Download responses'}
-        </button>}
-      </div>
+      <h1 tabIndex={-1}>{isGuide ? 'Policy guide review' : 'Questionnaire review'}</h1>
+      <p>{summary.filter(Boolean).join(' · ')}</p>
     </header>
   );
 }

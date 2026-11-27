@@ -153,10 +153,13 @@ async function providerCalls(response) {
   return JSON.parse(await response.headerValue('x-test-provider-calls'));
 }
 
-async function report(page, name) {
+async function outputPdfText(page, tabName) {
+  const header = page.locator('.workspace > header');
+  await expect(header.getByRole('button', { name: /download/i })).toHaveCount(0);
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: tabName, exact: true }).click();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name }).click();
-  return readFile(await (await download).path(), 'utf8');
+  await page.getByRole('region', { name: tabName, exact: true }).getByRole('button', { name: 'Download PDF' }).click();
+  return (await pdfPageTexts(await download)).join(' ');
 }
 
 async function pdfPageTexts(download) {
@@ -679,9 +682,9 @@ test('a browser that denies IndexedDB warns the analyst and keeps the current re
   await page.getByLabel('Response for submission').fill(answer);
   await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
   await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
-  const output = await report(page, 'Download responses');
+  const output = await outputPdfText(page, 'Responses');
   expect(output).toContain(answer);
-  expect(output).toContain('Response status — Confirmed');
+  expect(output).toContain('Question 1 · Confirmed');
   await expect(warning).toBeVisible();
 });
 
@@ -729,8 +732,8 @@ test('a completed guide keeps its saved action and original cited PDFs when reop
     await expect(dialog.locator('.pdf-text-layer mark').first()).toBeVisible();
     await reopened.keyboard.press('Escape');
   }
-  const markdown = await report(reopened, 'Download guide review (.md)');
-  for (const value of ['Action status — Saved', note, actionText, 'Reviewer-selected citations']) expect(markdown).toContain(value);
+  const pdf = await outputPdfText(reopened, 'Action list');
+  for (const value of ['Obligation 1 · Saved', note, actionText, 'Closing policy.pdf · p. 1', passage]) expect(pdf).toContain(value);
   expect(requests).toHaveLength(0);
 });
 
@@ -1189,10 +1192,11 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(editor).toHaveValue('The facilities coordinator.');
   await tools.getByRole('button', { name: 'Simplify' }).click();
   await expect(editor).toHaveValue('The coordinator records the date.');
-  const draft = await report(page, 'Download responses');
-  expect(draft).toContain('Response status — Draft');
+  const draft = await outputPdfText(page, 'Responses');
+  expect(draft).toContain('Question 1 · Draft');
   expect(draft).toContain('The coordinator records the date.');
-  expect(draft).toContain('Facilities.txt, p. 1');
+  expect(draft).toContain('Facilities.txt · p. 1');
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review questions' }).click();
   await page.getByRole('button', { name: 'Remove response citation 1' }).click();
   await page.getByLabel('Response for submission').fill('The facilities coordinator.');
   const confirm = page.getByRole('button', { name: 'Confirm response', exact: true });
@@ -1209,10 +1213,10 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(editor).toBeHidden();
   await expect(tools).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Response citations' })).toBeHidden();
-  const output = await report(page, 'Download responses');
+  const output = await outputPdfText(page, 'Responses');
   expect(output).toContain('The facilities coordinator.');
   expect(output).toContain('Confirmed');
-  expect(output).toContain('Facilities.txt, p. 1');
+  expect(output).toContain('Facilities.txt · p. 1');
   expect(output).toContain(policy);
   await page.getByRole('link', { name: 'All reviews' }).click();
   await expect(options).toBeInViewport();
@@ -1228,7 +1232,8 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await page.getByRole('button', { name: 'Flag for follow-up', exact: true }).click();
   await expect(reopen).toHaveAccessibleDescription('Flagged for follow-up');
   await expect(editor).toBeHidden();
-  expect(await report(page, 'Download responses')).toContain('Response status — Flagged for follow-up');
+  expect(await outputPdfText(page, 'Responses')).toContain('Question 1 · Flagged for follow-up');
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review questions' }).click();
   await reopen.click();
   await expect(editor).toHaveValue('The facilities coordinator.');
   await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
@@ -1716,16 +1721,13 @@ test('a guide compared with an uploaded policy produces an action list with a tr
   await page.keyboard.press('Escape');
   await page.getByRole('radio', { name: 'Write new policy', exact: true }).check();
   await page.getByLabel('Action note').fill('Add an inspection record to the handover procedure.');
-  const output = await report(page, 'Download guide review (.md)');
+  const output = await outputPdfText(page, 'Action list');
   expect(output).toContain('Write new policy');
   expect(output).toContain('Guide pages 2');
   expect(output).toContain('Handover.txt · p. 2');
   expect(output).toContain(obligation);
   expect(output).toContain('Add an inspection record to the handover procedure.');
-  await page.getByRole('button', { name: 'Action list', exact: true }).click();
   await expect(page.getByRole('button', { name: /Write new policy/ })).toContainText(obligation);
-  await expect(page.getByRole('region', { name: 'Action list' }).getByRole('button', { name: 'Download PDF' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Download guide review (.md)' })).toHaveCount(0);
 });
 
 test('an unrelated obligation edit in another tab preserves an in-flight action rewrite', async ({ page, context }) => {
@@ -1822,7 +1824,7 @@ test('the guide queue tracks resolution independently and exports the action lis
   await expect(entries.nth(0)).toContainText(action);
   await expect(entries.nth(1)).toContainText('Flagged for follow-up');
   await expect(entries.nth(2)).toContainText(unfinished);
-  await expect(page.getByRole('button', { name: 'Download guide review (.md)' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /download/i })).toHaveCount(1);
   await page.route('**/downloads/responses-v1.js', route => route.abort(), { times: 1 });
   await pdf.click();
   await expect(list.getByRole('alert')).toContainText('The PDF could not be downloaded');
@@ -1896,10 +1898,8 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
   const list = page.getByRole('region', { name: 'Action list', exact: true });
   await expect(list.getByRole('button', { name: /No change/ })).toContainText(first);
   await expect(list.getByRole('button', { name: /Write new policy/ })).toContainText(second);
-  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review obligations' }).click();
-  const output = await report(page, 'Download guide review (.md)');
-  expect(output).toContain('## No change');
-  expect(output).toContain('Facilities policy, p. 1');
+  const output = await outputPdfText(page, 'Action list');
+  for (const value of [first, second, 'No change', 'Write new policy']) expect(output).toContain(value);
 });
 
 test('editing a selected question batch clears its previous source attribution', async ({ page }) => {
@@ -1916,7 +1916,7 @@ test('editing a selected question batch clears its previous source attribution',
   await expect(page.getByRole('button', { name: 'Apply range' })).toHaveCount(0);
 });
 
-test('Markdown exports keep document markup and multiline notes literal', async ({ page }) => {
+test('the action-list PDF keeps document markup and multiline notes literal', async ({ page }) => {
   const obligation = 'Teams must label each record with <unit> and [owner].';
   await page.goto('/#/new/guide');
   await addPolicy(page, 'Labelling.md', 'Records are labelled by unit and owner.');
@@ -1927,12 +1927,12 @@ test('Markdown exports keep document markup and multiline notes literal', async 
   });
   await submitReview(page, 'guide', pending);
   await page.getByLabel('Action note').fill('Retain ![diagram](diagram.png).\n## Example heading');
-  const output = await report(page, 'Download guide review (.md)');
-  expect(output).toContain('Guide &#91;draft&#93;');
-  expect(output).toContain('&#60;unit&#62; and &#91;owner&#93;');
-  expect(output).toContain('&#33;&#91;diagram&#93;(diagram.png)');
-  expect(output).toContain('&#35;&#35; Example heading');
-  expect(output).toContain('## Action pending');
+  const output = await outputPdfText(page, 'Action list');
+  expect(output).toContain('Guide [draft]');
+  expect(output).toContain('<unit> and [owner]');
+  expect(output).toContain('![diagram](diagram.png)');
+  expect(output).toContain('## Example heading');
+  expect(output).toContain('Action pending');
 });
 
 test('intake checks page limits and can read a PDF after rejecting a file', async ({ page, context }) => {
@@ -2039,7 +2039,7 @@ test('Find evidence stays in reach on a short screen with a long PDF filename', 
   await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), name, 1);
   await expect(submit).toBeInViewport({ ratio: 1 });
   await submit.click();
-  await expect(page.getByRole('button', { name: 'Download responses' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '1. Who records the inspection?', exact: true })).toBeVisible();
 });
 
 test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
@@ -2205,13 +2205,12 @@ for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]
 }
 
 async function finishDocumentReview(page, mode, requests = captureReviewRequests(page)) {
-  const guide = mode === 'guide';
   await clickReview(page, mode);
-  const download = page.getByRole('button', { name: guide ? 'Download guide review (.md)' : 'Download responses' });
+  const navigation = page.getByRole('navigation', { name: 'This review' });
   const alert = page.getByRole('alert');
-  await expect(download.or(alert).first()).toBeVisible({ timeout: 60_000 });
+  await expect(navigation.or(alert).first()).toBeVisible({ timeout: 60_000 });
   await expect(alert).toHaveCount(0);
-  await expect(download).toBeVisible();
+  await expect(navigation).toBeVisible();
   const parts = [];
   for (const request of requests) {
     const response = await request.response();
@@ -2232,7 +2231,7 @@ async function selectLastFinding(page, questions) {
   await expect(page.getByRole('heading', { name: questions.at(-1), exact: true })).toBeVisible();
 }
 
-test('one submission recovers late incomplete batches and exports all 65 questions against a full policy PDF', async ({ page, context }) => {
+test('one submission reviews all 65 questions against a full policy PDF and exports the final confirmed response', async ({ page, context }) => {
   test.setTimeout(120_000);
   const questions = Array.from({ length: 65 }, (_, i) => `${i + 1}. Who keeps inspection log ${i + 1}?`);
   questions[32] = '33. Who keeps the inspection log covering ' + 'archived inspection entries and '.repeat(73) + 'the final register?';
@@ -2298,15 +2297,12 @@ test('one submission recovers late incomplete batches and exports all 65 questio
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Generate response' }).click();
   await page.getByRole('button', { name: 'Confirm response' }).click();
-  const output = await report(page, 'Download responses');
-  expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) =>
-    `## Question ${i + 1}. ${question.replace(/^([0-9]+)\./, '$1&#46;')}`));
-  expect(output.match(/^Response status — Confirmed$/gm)).toHaveLength(1);
-  expect(output.match(/^Response status — Pending$/gm)).toHaveLength(64);
-  const finalResponse = output.slice(output.indexOf('## Question 65.'), output.indexOf('## Evidence and search record'));
-  expect(finalResponse).toContain('Response status — Confirmed');
-  expect(finalResponse).toContain('Records.pdf, p. 145');
-  expect(finalResponse).toContain(policyQuote);
+  const output = await outputPdfText(page, 'Responses');
+  expect(output.match(/\bQuestion \d+\b/g)).toEqual(['Question 65']);
+  expect(output).toContain('Question 65 · Confirmed');
+  expect(output).toContain(questions.at(-1));
+  expect(output).toContain('Records.pdf · p. 145');
+  expect(output).toContain(policyQuote);
 });
 
 test('a full native guide preserves repeated Unicode-positioned duties across empty and populated parts', async ({ page, context }) => {
@@ -2366,6 +2362,8 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   }
   expect(cursor).toBe(expectedGuide.length);
 
+  await expect(page.getByRole('heading', { name: repeated, exact: true })).toBeVisible();
+  await page.getByLabel('Action note').fill('Check the opening register.');
   await selectLastFinding(page, questions);
   await page.getByRole('button', { name: /Archive\.pdf.*p\. 30/ }).click();
   const citation = page.getByRole('dialog');
@@ -2373,14 +2371,15 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   await expect(citation.getByRole('complementary', { name: 'Cited passage' })).toContainText(repeated);
   await expect(citation.locator('.pdf-text-layer mark').first()).toBeVisible();
   await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Cite in action' }).first().click();
+  await page.getByRole('radio', { name: 'No change', exact: true }).check();
   await page.getByLabel('Action note').fill('Verify the final register.');
-  const output = await report(page, 'Download guide review (.md)');
-  const [actions, evidence] = output.split('## Evidence and search record');
-  expect(actions.match(/^### Obligation \d+$/gm)).toEqual(questions.map((_, i) => `### Obligation ${i + 1}`));
-  expect(actions.match(/^> .+$/gm)).toEqual(questions.map(question => '> ' + question));
-  expect(actions.slice(actions.indexOf('### Obligation 38'))).toContain('Archive.pdf · p. 30');
-  expect(actions).toContain('Verify the final register.');
-  expect(evidence).toContain('Archive policy.txt, p. 1');
+  await page.getByRole('button', { name: 'Save action', exact: true }).click();
+  const output = await outputPdfText(page, 'Action list');
+  expect(output.match(/\bObligation \d+\b/g)).toEqual(['Obligation 1', 'Obligation 38']);
+  const [first, last] = output.split('Obligation 38 · Saved');
+  for (const value of ['Obligation 1 · Draft', repeated, 'Archive.pdf · p. 1', 'Check the opening register.']) expect(first).toContain(value);
+  for (const value of [repeated, 'Archive.pdf · p. 30', 'No change', 'Verify the final register.', 'Archive policy.txt · p. 1']) expect(last).toContain(value);
 });
 
 test('a guide planning timeout splits at complete duties and retry resumes at the failed page', async ({ page, context }) => {
@@ -2406,11 +2405,12 @@ test('a guide planning timeout splits at complete duties and retry resumes at th
   const parts = duties.map((text, i) => ({ text, pages: [i + 1] }));
   expect(sent).toEqual([{ text: duties.join(' '), pages: [1, 2] }, ...parts]);
   await submit.click();
-  await expect(page.getByRole('button', { name: 'Download guide review (.md)' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: duties[0], exact: true })).toBeVisible();
   expect(sent.slice(3)).toEqual([parts[1]]);
-  const output = await report(page, 'Download guide review (.md)');
-  expect(output).toContain('Register.pdf · p. 1');
-  expect(output).toContain('Register.pdf · p. 2');
+  await expect(page.getByRole('button', { name: 'Register.pdf · p. 1', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Next obligation' }).click();
+  await expect(page.getByRole('heading', { name: duties[1], exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Register.pdf · p. 2', exact: true })).toBeVisible();
 });
 
 test('a complete scanned form joins a question across transcription requests before assessment', async ({ page, context }) => {
@@ -2443,8 +2443,8 @@ test('a complete scanned form joins a question across transcription requests bef
   expect(reviews.flatMap(({ input }) => input.questions)).toEqual(questions);
   expect(reviews.flatMap(({ result }) => result.findings.map(finding => finding.question))).toEqual(questions);
   await selectLastFinding(page, questions);
-  const output = await report(page, 'Download responses');
-  expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) => `## Question ${i + 1}. ${question}`));
+  await page.getByRole('button', { name: 'Previous question' }).click();
+  await expect(page.getByRole('heading', { name: questions[2], exact: true })).toBeVisible();
 });
 
 test('retrying a whole questionnaire resumes after the last successful part', async ({ page }, testInfo) => {
@@ -2470,7 +2470,7 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   expect(firstAttempt[0].status()).toBe(429);
   expect(firstAttempt[1].request().postDataJSON()).toEqual(firstAttempt[0].request().postDataJSON());
   expect(firstAttempt.at(-1).status()).toBe(503);
-  await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'This review' })).toHaveCount(0);
   const completedQuestions = firstAttempt.slice(1, -1).flatMap(response => {
     expect(response.status()).toBe(200);
     return response.request().postDataJSON().questions;
@@ -2479,8 +2479,6 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   expect(retry[0].input).toEqual(firstAttempt.at(-1).request().postDataJSON());
   expect([...completedQuestions, ...retry.flatMap(({ input }) => input.questions)]).toEqual(questions);
   await selectLastFinding(page, questions);
-  const output = await report(page, 'Download responses');
-  expect(output.match(/^## Question .+$/gm)).toHaveLength(questions.length);
 });
 
 test('cancelling a paused multipart review keeps completed work for the next submission', async ({ page }) => {
@@ -2508,7 +2506,7 @@ test('cancelling a paused multipart review keeps completed work for the next sub
   await expect(progress).toHaveAttribute('aria-valuenow', '10');
   await page.getByRole('button', { name: 'Cancel review' }).click();
   await expect(page.getByRole('button', { name: 'Find evidence' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'This review' })).toHaveCount(0);
   await page.getByRole('navigation', { name: 'Review steps' }).getByRole('button', { name: /Existing policies/ }).click();
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Registry.txt');
   await continueToSource(page, 'questionnaire');
