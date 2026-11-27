@@ -57,13 +57,11 @@ function SearchTerms({ finding, documents, selected, onSelect, onOpen }: {
   const total = finding.totalSearchTerms ?? terms.length;
   return (
     <section aria-label="Search terms">
-      {terms.length > 0 && <div className="trail-filter">
-        <label htmlFor="trail-term-filter">Search term</label>
-        <select id="trail-term-filter" value={selected} onChange={event => onSelect(event.target.value)}>
-          <option value="">All terms</option>
-          {terms.map(term => <option key={term}>{term}</option>)}
-        </select>
-      </div>}
+      {terms.length > 0 && <fieldset className="term-chips" aria-label="Filter by search term">
+        <button type="button" aria-pressed={!selected} onClick={() => onSelect('')}>All terms</button>
+        {terms.map(term => <button key={term} type="button" aria-pressed={selected === term}
+          onClick={() => onSelect(selected === term ? '' : term)}>{term}</button>)}
+      </fieldset>}
       {total > terms.length && <p className="muted-note">Showing the first {terms.length} terms.</p>}
       {proofs.map(proof => <TermProof key={selected + '/' + proof.term} proof={proof} documents={documents}
         expanded={Boolean(selected)} onOpen={onOpen} />)}
