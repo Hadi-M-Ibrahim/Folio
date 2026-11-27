@@ -1,26 +1,26 @@
 # <img src="public/folio.svg" alt="" width="40" height="40" align="absmiddle"> Folio
 
-Folio compares state requirements with an organization’s existing policies. For a questionnaire, the analyst reviews a cited response to each state question. For a new regulatory guide, Folio extracts obligations so the analyst can decide which policies to keep, revise, or write. [Open Folio](https://folio-policy-review.vercel.app)
+Folio compares state requirements with existing policies. An analyst can answer a questionnaire with citations or use a new guide to decide which policies to keep, change, or write. [Open Folio](https://folio-policy-review.vercel.app)
 
-## System architecture
+## Architecture
 
-The React and TypeScript client splits long sources into sections and saves the files, completed sections, and analyst decisions in IndexedDB. After a refresh, it can resume from the last checkpoint. Citations open the original page, and the browser generates the final response or action-list PDF. [Sectioning and checkpoints](src/review/wholeReview.ts) · [Local storage](src/review/localReviews.ts)
+The React client uses TypeScript and sends long documents in sections. IndexedDB keeps files, progress, and decisions so the analyst can continue after a page reload. The client exports responses or policy actions to PDF. [Review sections](src/review/wholeReview.ts) · [Local storage](src/review/localReviews.ts)
 
-A Python function on Vercel receives each section at `POST /api/review`, validates PDF page counts, and sends relevant attachments to Anthropic. It returns findings with document IDs and physical page numbers. Editing an input cancels the background review. The API checks its session before dispatching another model call. [API](api/review.py) · [PDF handling](api/_review/pdf_context.py)
+A Python function on Vercel receives each section at `POST /api/review`. It compares PDF page counts with the client’s counts before it sends pages to Anthropic. If the analyst changes an input, Folio cancels the review. [Review API](api/review.py)
 
-## How the backend reviews a requirement
+## Evidence review
 
-Planning, assessment, and drafting use the same model, Claude Sonnet 5.5. Batching, scan transcription, and follow-up searches determine how many calls a review needs.
+1. **Questions.** Claude Sonnet 5.5 selects search terms. Folio keeps the wording of each state question. For a guide, the model gives one question and one source quotation per obligation. [Planner](api/_review/planner.py)
+2. **Search.** Python uses a BM25 score to select up to six passages. It includes up to two more for possible exceptions. The search trail shows terms, passages, and page numbers. [Policy search](api/_review/search.py)
+3. **Assessment.** The model cites passages that support or contradict a requirement. To follow a reference, the model selects a term from a passage. Python finds up to three more passages. [Evidence review](api/_review/model.py)
+4. **Checks.** Python compares each quotation with its passage and source page. For a conflict, the model must show overlap in parties, populations, events, and duties. If a check fails, Folio marks the finding for review.
 
-1. **Plan the search.** The planner suggests literal search terms for each state question. For guides, it also proposes one question per obligation. Python preserves questionnaire wording and anchors each guide question to a quotation in the source. [Planner](api/_review/planner.py)
-2. **Retrieve evidence.** Python indexes the selected policy pages and ranks passages using a BM25-style score. It keeps the top six matches plus up to two passages containing possible exceptions. The analyst can inspect the terms, page hits, and excerpts in the search trail. [Retrieval](api/_review/search.py)
-3. **Assess and follow references.** The reviewer cites supporting and conflicting passages by ID and quotation. An unresolved reference, definition, or apparent conflict can trigger one more search per finding. The reviewer names a term from a retrieved passage. Python looks it up and returns up to three new excerpts for a final assessment alongside the originals. [Evidence reviewer](api/_review/model.py)
-4. **Verify and decide.** Python checks each quotation against its passage and page text. A conflict also requires the reviewer to report overlap in actor, population, triggering event, and duty. Failed checks flag the finding. The analyst decides whether the evidence applies and can request an editable draft. A confirmed questionnaire response requires a citation. A proposed policy action can be saved without one. [Draft generation](api/_review/draft.py)
+The analyst can open the source page and change the draft. Citations are mandatory for confirmed responses and optional for policy actions. [Drafts](api/_review/draft.py)
 
-## Research behind the design
+## Research and evaluation
 
-**Task-dependent handoffs.** Tieu et al.’s ReActNet compiles a communication graph for each task. Folio fixes the allowed steps in Python and lets the reviewer choose the lookup branch for each finding. In one test fixture, page 1 of a dispatch manual requires cotton cord and refers restoration shipments to “Schedule Cobalt.” Page 7 says those shipments travel untied. The expected finding cites both pages as mixed evidence. [Tieu et al., *Inference-Time Graph Engineering for Multi-Agent LLM Workflows* (2026)](https://arxiv.org/abs/2609.05774) · [Evaluation cases](tests/fixtures/followup_cases.json)
+Tieu and colleagues adapt the workflow to each task. Folio uses fixed steps but lets the model select one more search per finding. [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774)
 
-**Explicit responsibility for evidence.** Srinivasan et al. found that responsibility for system-wide checks can diffuse across agents. A shared specification and a designated safety lead helped in their experiments. Folio gives both assessment passes the same evidence rules and assigns the final quotation and status checks to Python. [Srinivasan et al., *Aligning AI Teams* (2026)](https://arxiv.org/abs/2611.17820)
+Srinivasan and colleagues assign safety checks to one agent. Folio gives each assessment the same evidence rules. Python does the citation and status checks. [Aligning AI Teams](https://arxiv.org/abs/2611.17820)
 
-The evaluation runs the same reviewer with follow-up enabled and disabled on seven author-labeled synthetic cases. Both runs start with identical passages. The comparison tracks missed exceptions, false contradictions, citation accuracy, token use, and latency. [Paired evaluation](scripts/evaluate_followup.py)
+The evaluation compares reviews with and without the second search on seven synthetic cases. Each pair starts with the same passages. The evaluation records missed exceptions, incorrect reports of conflict, citation accuracy, token counts, and time. [Evaluation](scripts/evaluate_followup.py)
