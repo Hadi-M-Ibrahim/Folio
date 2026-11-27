@@ -1,93 +1,26 @@
 # <img src="public/folio.svg" alt="" width="40" height="40" align="absmiddle"> Folio
 
-Folio helps compliance analysts answer state questionnaires and turn regulatory guides into a policy worklist. Start either workflow with your own documents.
+Folio compares state requirements with an organization’s existing policies. For a questionnaire, the analyst reviews a cited response to each state question. For a new regulatory guide, Folio extracts obligations so the analyst can decide which policies to keep, revise, or write. [Open Folio](https://folio-policy-review.vercel.app)
 
-## Use Folio
+## System architecture
 
-Open [Folio](https://folio-policy-review.vercel.app).
+The React and TypeScript client splits long sources into sections and saves the files, completed sections, and analyst decisions in IndexedDB. After a refresh, it can resume from the last checkpoint. Citations open the original page, and the browser generates the final response or action-list PDF. [Sectioning and checkpoints](src/review/wholeReview.ts) · [Local storage](src/review/localReviews.ts)
 
-- **Answer a questionnaire.** Add the existing policies to search, then upload a questionnaire or paste the state’s questions. Check the cited pages and choose **Generate response** or write your own. Use **Shorten**, **Simplify**, or **Add detail** to revise the wording. From **Responses**, download a PDF of your saved answers and citations.
-- **Review a new policy guide.** Upload at least one existing policy file (PDF, TXT, or Markdown), then upload or paste the new guide. Compare each obligation with your policies. Generate or write a policy action, optionally cite a passage, then save the action or flag it for follow-up. Use the sidebar to resolve or reopen obligations. Download the action list as a PDF from the **Action list** tab.
+A Python function on Vercel receives each section at `POST /api/review`, validates PDF page counts, and sends relevant attachments to Anthropic. It returns findings with document IDs and physical page numbers. Editing an input cancels the background review. The API checks its session before dispatching another model call. [API](api/review.py) · [PDF handling](api/_review/pdf_context.py)
 
-Folio can start an Anthropic review in the background once both the source and the first policy are ready. Click **Find evidence** or **Review obligations** to see the current progress. If the review has finished, the button opens the results immediately. Adding a file, editing text, or changing a range cancels that version. Click the review button to review your changes.
+## How the backend reviews a requirement
 
-Keep the tab open while Folio reviews a long document. The progress bar tracks completed work, and the findings appear in document order. Use the range controls to choose questions or physical pages. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment. Changing the selection cannot recall pages already sent to Anthropic.
+Planning, assessment, and drafting use the same model, Claude Sonnet 5.5. Batching, scan transcription, and follow-up searches determine how many calls a review needs.
 
-Folio checks each PDF’s page count against its submitted page list before sending it to Anthropic. If Folio can’t verify the pages, re-export the PDF and attach the new copy. Each section sends the corresponding source PDF pages. Folio searches every selected policy page before assessing a question. For larger PDF packets, it attaches the policy pages containing candidate evidence, including exceptions and follow-up matches. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section sent to Folio and must fit its 4 MB request budget.
+1. **Plan the search.** The planner suggests literal search terms for each state question. For guides, it also proposes one question per obligation. Python preserves questionnaire wording and anchors each guide question to a quotation in the source. [Planner](api/_review/planner.py)
+2. **Retrieve evidence.** Python indexes the selected policy pages and ranks passages using a BM25-style score. It keeps the top six matches plus up to two passages containing possible exceptions. The analyst can inspect the terms, page hits, and excerpts in the search trail. [Retrieval](api/_review/search.py)
+3. **Assess and follow references.** The reviewer cites supporting and conflicting passages by ID and quotation. An unresolved reference, definition, or apparent conflict can trigger one more search per finding. The reviewer names a term from a retrieved passage. Python looks it up and returns up to three new excerpts for a final assessment alongside the originals. [Evidence reviewer](api/_review/model.py)
+4. **Verify and decide.** Python checks each quotation against its passage and page text. A conflict also requires the reviewer to report overlap in actor, population, triggering event, and duty. Failed checks flag the finding. The analyst decides whether the evidence applies and can request an editable draft. A confirmed questionnaire response requires a citation. A proposed policy action can be saved without one. [Draft generation](api/_review/draft.py)
 
-On the existing-policies step, **Use last policies** adds the files you last uploaded in this browser. You can change the files or choose new page ranges for this review. **Forget** clears the reusable set.
+## Research behind the design
 
-Folio saves uploaded files, page selections, responses, and decisions in this browser. After a refresh, choose **Resume review** to continue an interrupted run from its last finished section. The **Reviews** list has a menu on each row to rename, move, or delete it. Clearing this site’s browser data removes the saved copies.
+**Task-dependent handoffs.** Tieu et al.’s ReActNet compiles a communication graph for each task. Folio fixes the allowed steps in Python and lets the reviewer choose the lookup branch for each finding. In one test fixture, page 1 of a dispatch manual requires cotton cord and refers restoration shipments to “Schedule Cobalt.” Page 7 says those shipments travel untied. The expected finding cites both pages as mixed evidence. [Tieu et al., *Inference-Time Graph Engineering for Multi-Agent LLM Workflows* (2026)](https://arxiv.org/abs/2609.05774) · [Evaluation cases](tests/fixtures/followup_cases.json)
 
-## Repository layout
+**Explicit responsibility for evidence.** Srinivasan et al. found that responsibility for system-wide checks can diffuse across agents. A shared specification and a designated safety lead helped in their experiments. Folio gives both assessment passes the same evidence rules and assigns the final quotation and status checks to Python. [Srinivasan et al., *Aligning AI Teams* (2026)](https://arxiv.org/abs/2611.17820)
 
-| Directory | Contents |
-| --- | --- |
-| `src/components/` | Review setup, findings inspector, and source dialogs |
-| `src/review/` | Frontend review types, API client, page citations, file import, and report export |
-| `api/` | Python review endpoint, retrieval, and citation verification |
-| `scripts/` | Private PDF preparation tool |
-| `tests/` | API tests, offline fixtures, and browser tests for both workflows |
-| `requirements/` | Python packages for linting, test coverage, and local PDF tools |
-| `public/` | Icons and social preview artwork |
-
-## Run locally
-
-Use Python 3.12 and Node 22.23.5 or a newer 22.x release. Set `ANTHROPIC_API_KEY` in the Python API’s environment to run reviews. Start the API in one terminal and Vite in another.
-
-```sh
-python3 -m pip install -r requirements.txt
-python3 api/review.py
-```
-
-```sh
-npm ci
-npm run dev
-```
-
-Open the loopback URL printed by Vite. The UI proxies review requests to port 8000.
-
-### Work with the supplied PDFs
-
-The private materials belong in the ignored `Materials/` directory. The optional local preparation tool searches physical PDF pages and writes review bundles under the ignored `.local-review/` directory. The bundle records which pages were selected so a reviewer can see the scope of the search.
-
-For an existing PDF environment, uninstall the old `PyMuPDF` distribution before installing `requirements/pdf.txt`. Both packages provide the `pymupdf` module.
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements/pdf.txt
-.venv/bin/python scripts/prepare_review.py questionnaire --questions 1-5
-.venv/bin/python scripts/prepare_review.py guide --pages 11
-```
-
-In the local app, open either workflow and import the prepared review on the first step. Check the selected source and policies before submitting them for model review.
-
-## How findings are produced
-
-The model planner proposes atomic guide obligations anchored to verbatim source text and suggests literal search phrases, including exceptions. The Python service keeps the requirement, search terms, source page, and exact quote together through retrieval and assessment. It ranks relevant passages, reserves room for possible exceptions, and exposes term matches alongside the recommendation. Before returning a model finding, it checks quoted text against the retrieved passage and its source page. Missing or invalid citations can downgrade the finding. A verified quotation proves the words appear on that page. The analyst still judges their scope and meaning.
-
-When a cross-reference, definition, or apparent conflict leaves a question open, the reviewer can request one more search for a literal term in a retrieved passage. Python searches the submitted policy pages and returns up to three new excerpts. The reviewer assesses them alongside the original evidence under the same citation checks and time budget. Open **Search trail** to inspect the reference, term, page hits, and new passages. An unresolved lookup stays flagged for review.
-
-The conditional handoff adapts an idea from [Inference-Time Graph Engineering for Multi-Agent LLM Workflows](https://arxiv.org/abs/2609.05774). The shared evidence rubric and independent citation verifier draw on [Aligning AI Teams](https://arxiv.org/abs/2611.17820).
-
-Run `python3 scripts/evaluate_followup.py` to check the synthetic cases and their scoring rules offline. With `ANTHROPIC_API_KEY` set, add `--live` to compare both reviewers using the same initial passages. The report includes missed exceptions, false contradictions, citation accuracy, token counts, and elapsed time. The cases have author-written labels and cover both workflows.
-
-## Checks and deployment
-
-Both workflows share a limit of 30 submissions from one IP address in 10 minutes. The Vercel Firewall rule **Folio review submissions** counts POSTs to `/api/review` and `/api/review/` per edge region. Each API worker also enforces the limit before reading documents. A limited request receives HTTP 429. A multi-part review waits for the quota to reset and then resumes. A single-request review keeps the inputs for retry. Both use the `Retry-After` header when available. [Vercel rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
-
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements/lint.txt -r requirements/test.txt
-npm run lint
-npm run test:unit
-npm run build
-npx playwright install --only-shell chromium
-npm run test:e2e
-.venv/bin/python -m ruff check api scripts tests
-.venv/bin/python -m coverage run --branch --source=api -m unittest discover -s tests -v
-.venv/bin/python -m coverage report --show-missing --precision=1
-```
-
-GitHub Actions runs Oxlint, TypeScript, the Vite build, desktop and mobile browser tests, Ruff, and the Python tests on pull requests and pushes to main. The backend job summary lists uncovered API lines and branches. The main branch requires a pull request, passing frontend and backend jobs, and a successful Vercel preview. Merging deploys the revision to production. Keep the provider credential in a sensitive, server-side production environment variable.
+The evaluation runs the same reviewer with follow-up enabled and disabled on seven author-labeled synthetic cases. Both runs start with identical passages. The comparison tracks missed exceptions, false contradictions, citation accuracy, token use, and latency. [Paired evaluation](scripts/evaluate_followup.py)
