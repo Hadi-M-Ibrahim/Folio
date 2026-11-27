@@ -159,6 +159,23 @@ async function report(page, name) {
   return readFile(await (await download).path(), 'utf8');
 }
 
+async function pdfPageTexts(download) {
+  const bytes = await readFile(await download.path());
+  const task = getDocument({ data: Uint8Array.from(bytes) });
+  try {
+    const document = await task.promise;
+    const pages = [];
+    for (let number = 1; number <= document.numPages; number++) {
+      const sheet = await document.getPage(number);
+      const content = await sheet.getTextContent();
+      pages.push(content.items.map(item => item.str).join(' ').replace(/\s+/gu, ' ').trim());
+    }
+    return pages;
+  } finally {
+    await task.destroy();
+  }
+}
+
 async function pasteSource(page, mode, text) {
   const guide = mode === 'guide';
   await page.getByRole('button', { name: guide ? 'Paste guide text' : 'Paste a question or list' }).click();
@@ -677,6 +694,72 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(reopen).toHaveCount(0);
 });
 
+test('Responses downloads a paginated PDF of saved answers and selected citations', async ({ page }) => {
+  const questions = [
+    'Who controls the vehicle gate?', 'Who keeps the inspection log?',
+    'Who signs the annual declaration?', 'How are retention exceptions recorded?',
+  ];
+  const suggestedQuote = 'The coordinator keeps the inspection log.';
+  const selectedQuote = 'Renée signs the café’s inspection log after each visit.';
+  const confirmedAnswer = 'Renée confirms each visit — including the café’s late shift.';
+  const draftLines = Array.from({ length: 80 }, (_, i) => `Exception ${i + 1} awaits a countersignature.`);
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', [suggestedQuote, 'Parking permits are issued at reception.', selectedQuote].join('\f'));
+  await clickReview(page, 'questionnaire');
+
+  const responses = page.getByRole('region', { name: 'Responses', exact: true });
+  const downloadPdf = responses.getByRole('button', { name: 'Download PDF', exact: true });
+  await page.getByRole('button', { name: 'Responses', exact: true }).click();
+  await expect(downloadPdf).toBeDisabled();
+  await responses.getByRole('button', { name: 'Review questions' }).click();
+  const next = page.getByRole('button', { name: 'Next question' });
+  const answer = page.getByLabel('Response for submission');
+  await next.click();
+  await page.getByRole('button', { name: 'Search trail', exact: true }).click();
+  const matches = page.getByRole('region', { name: 'Ranked passages' });
+  const chosen = matches.getByRole('article').filter({ hasText: 'p. 3' });
+  const cite = chosen.getByRole('button', { name: 'Cite in response' });
+  if (!await cite.isVisible()) await chosen.locator('summary').click();
+  await cite.click();
+  await answer.fill(confirmedAnswer);
+  await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
+  await next.click();
+  await next.click();
+  await answer.fill(draftLines.join('\n'));
+  await page.getByRole('button', { name: 'Previous question' }).click();
+  await page.getByRole('button', { name: 'Flag for follow-up', exact: true }).click();
+  await page.getByRole('button', { name: 'Responses', exact: true }).click();
+  await expect(downloadPdf).toBeEnabled();
+
+  const pending = page.waitForEvent('download');
+  await downloadPdf.click();
+  const download = await pending;
+  expect(download.suggestedFilename()).toBe('folio-questionnaire-responses.pdf');
+  const pages = await pdfPageTexts(download);
+  const text = pages.join(' ');
+  expect(text).not.toContain(questions[0]);
+  expect(text).not.toContain(suggestedQuote);
+  const headings = [...text.matchAll(/\bQuestion (\d+)\b/gi)];
+  expect(headings.map(match => Number(match[1]))).toEqual([2, 3, 4]);
+  const entries = headings.map((heading, i) => text.slice(heading.index, headings[i + 1]?.index));
+  expect(entries[0]).toContain(questions[1]);
+  expect(entries[0]).toContain('Confirmed');
+  expect(entries[0]).toContain(confirmedAnswer);
+  expect(entries[0]).toMatch(/Records\.txt\s*·\s*p\.\s*3\b/);
+  expect(entries[0]).toContain(selectedQuote);
+  expect(entries[1]).toContain(questions[2]);
+  expect(entries[1]).toContain('Flagged for follow-up');
+  expect(entries[1]).toContain('No response entered.');
+  expect(entries[2]).toContain(questions[3]);
+  expect(entries[2]).toContain('Draft');
+  for (const line of draftLines) expect(entries[2]).toContain(line);
+  const firstDraftPage = pages.findIndex(text => text.includes(draftLines[0]));
+  const lastDraftPage = pages.findIndex(text => text.includes(draftLines.at(-1)));
+  expect(lastDraftPage).toBeGreaterThan(firstDraftPage);
+});
+
 test('a failed or superseded rewrite preserves the analyst’s text', async ({ page }) => {
   await page.goto('/#/new/questionnaire');
   await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?\nWho signs it?');
@@ -882,6 +965,7 @@ test('a guide compared with an uploaded policy produces an action list with a tr
   expect(output).toContain('Add an inspection record to the handover procedure.');
   await page.getByRole('button', { name: 'Action list', exact: true }).click();
   await expect(page.getByRole('button', { name: /Write new policy/ })).toContainText(obligation);
+  await expect(page.getByRole('region', { name: 'Action list' }).getByRole('button', { name: 'Download PDF' })).toHaveCount(0);
 });
 
 test('a pasted policy supplements the required upload when reviewing guide obligations', async ({ page }) => {

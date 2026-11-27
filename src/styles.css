@@ -431,6 +431,7 @@ summary::-webkit-details-marker {
 .library {
   margin-top: 24px;
 }
+.response-downloads { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; margin-bottom: 12px; }
 .library-row {
   display: flex;
   align-items: center;

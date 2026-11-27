@@ -6,7 +6,7 @@ import { exportReview } from '../review/exportReview';
 import { guideCitation, guideLocation, submittedSource, type SourceLocation } from '../review/guideSource';
 import {
   modeLabels, policyActionLabels, responseLabels, type Decision,
-  type Evidence, type Review, type ReviewRow,
+  type Evidence, type Review, type SavedResponse,
 } from '../review/model';
 import { FindingQueue, type QueueOptions } from './FindingQueue';
 import { Inspector } from './Inspector';
@@ -48,6 +48,7 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   const next = visible[position + 1];
   const entries = rows.flatMap(({ finding, index, decision }) => decision ? [{ finding, index, decision }] : []);
   const reviewed = entries.filter(({ decision }) => isGuide ? decision.action : decision.value).length;
+  const downloadReview = () => exportReview(review, rows);
 
   function updateQueue(changes: Partial<QueueOptions>) {
     setQueue((options) => ({ ...options, ...changes }));
@@ -77,7 +78,7 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
 
   return (
     <section className="workspace" data-single-item={findings.length <= 1}>
-      <ReviewHeading review={review} reviewed={reviewed} onDownload={() => exportReview(review, rows)} />
+      <ReviewHeading review={review} reviewed={reviewed} showingOutput={nav === 'decisions'} onDownload={downloadReview} />
       <div className="review-toolbar">
         <nav className="mode-tabs" aria-label="This review">
           <button aria-pressed={nav === 'findings'} onClick={() => setNav('findings')}>Review {groupLabel.toLowerCase()}</button>
@@ -129,7 +130,7 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
       )}
       {nav === 'documents' && <SourceDocuments review={review} onOpen={setSource} />}
       {nav === 'decisions' && (
-        <ReviewDecisions entries={entries} isGuide={isGuide} onReturn={() => selectFinding(selected, true)} onSelect={(index) => {
+        <ReviewDecisions entries={entries} review={review} onMarkdown={downloadReview} onReturn={() => selectFinding(selected, true)} onSelect={(index) => {
           updateQueue({ search: '', status: 'all' });
           selectFinding(index, true);
         }} />
@@ -139,7 +140,9 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   );
 }
 
-function ReviewHeading({ review, reviewed, onDownload }: { review: Review; reviewed: number; onDownload: () => void }) {
+function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
+  review: Review; reviewed: number; showingOutput: boolean; onDownload: () => void;
+}) {
   const isGuide = review.input.mode === 'guide';
   const summary = [
     review.sourceDocument?.title,
@@ -155,9 +158,9 @@ function ReviewHeading({ review, reviewed, onDownload }: { review: Review; revie
           <h1 tabIndex={-1}>{isGuide ? 'Policy guide review' : 'Questionnaire review'}</h1>
           <p>{summary.filter(Boolean).join(' · ')}</p>
         </div>
-        <button className="report-link" onClick={onDownload}>
+        {(isGuide || !showingOutput) && <button className="report-link" onClick={onDownload}>
           <Download size={16} /> {isGuide ? 'Download action list' : 'Download responses'}
-        </button>
+        </button>}
       </div>
     </header>
   );
@@ -189,14 +192,44 @@ function SourceDocuments({ review, onOpen }: { review: Review; onOpen: (source: 
   );
 }
 
-function ReviewDecisions({ entries, isGuide, onSelect, onReturn }: {
-  entries: (ReviewRow & { decision: Decision })[];
-  isGuide: boolean;
+function ResponseDownloads({ title, entries, onMarkdown }: {
+  title: string; entries: SavedResponse[]; onMarkdown: () => void;
+}) {
+  const [state, setState] = useState<'idle' | 'preparing' | 'error'>('idle');
+  async function download() {
+    setState('preparing');
+    try {
+      const { exportResponsePdf } = await import('../review/exportResponsePdf');
+      await exportResponsePdf(title, entries);
+      setState('idle');
+    } catch {
+      setState('error');
+    }
+  }
+  return (
+    <>
+      <div className="response-downloads">
+        <button className="report-link" type="button" disabled={!entries.length || state === 'preparing'} onClick={download}>
+          <Download size={15} aria-hidden="true" />{state === 'preparing' ? 'Preparing PDF…' : 'Download PDF'}
+        </button>
+        <button type="button" className="text-link" onClick={onMarkdown}>Full review (.md)</button>
+      </div>
+      {state === 'error' && <p role="alert" className="response-error">The PDF could not be downloaded. Please try again.</p>}
+    </>
+  );
+}
+
+function ReviewDecisions({ entries, review, onSelect, onReturn, onMarkdown }: {
+  entries: SavedResponse[];
+  review: Review;
   onSelect: (index: number) => void;
   onReturn: () => void;
+  onMarkdown: () => void;
 }) {
+  const isGuide = review.input.mode === 'guide';
   return (
     <section className="library" id="review-output" tabIndex={-1} aria-label={isGuide ? 'Action list' : 'Responses'}>
+      {!isGuide && <ResponseDownloads title={review.title} entries={entries} onMarkdown={onMarkdown} />}
       {entries.map(({ finding, decision, index }) => {
         const label = decision.action ? policyActionLabels[decision.action] : decision.value ? responseLabels[decision.value] : 'Draft';
         const text = decision.note || decision.answer;
