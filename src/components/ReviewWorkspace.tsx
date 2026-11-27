@@ -17,21 +17,22 @@ type Props = {
   onUpdateFinding: (key: string, changes: FindingState) => void;
 };
 
-function useWorkspacePosition(review: Review) {
+function useWorkspacePosition(key: string, rows: readonly { resolved: boolean }[]) {
   const positionInHistory = window.history.state?.folioWorkspace;
-  const saved = positionInHistory?.key === review.key ? positionInHistory : undefined;
+  const saved = positionInHistory?.key === key ? positionInHistory : undefined;
   const [nav, setNav] = useState<'findings' | 'documents' | 'decisions'>(() =>
     saved?.nav === 'documents' || saved?.nav === 'decisions' ? saved.nav : 'findings');
-  const [selected, setSelected] = useState<number>(() =>
-    Number.isInteger(saved?.selected) && saved.selected >= 0 && saved.selected < review.result.findings.length ? saved.selected : 0);
+  const [selected, setSelected] = useState<number>(() => {
+    if (Number.isInteger(saved?.selected) && saved.selected >= 0 && saved.selected < rows.length) return saved.selected;
+    return Math.max(0, rows.findIndex(row => !row.resolved));
+  });
   useLayoutEffect(() => {
-    window.history.replaceState({ ...window.history.state, folioWorkspace: { key: review.key, nav, selected } }, '');
-  }, [review.key, nav, selected]);
+    window.history.replaceState({ ...window.history.state, folioWorkspace: { key, nav, selected } }, '');
+  }, [key, nav, selected]);
   return { nav, setNav, selected, setSelected };
 }
 
 export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Props) {
-  const { nav, setNav, selected, setSelected } = useWorkspacePosition(review);
   const [source, setSource] = useState<SourceLocation | null>(null);
   const [queue, setQueue] = useState<QueueOptions>({ search: '', status: 'all', showStatuses: false, expanded: false });
   const detailRef = useRef<HTMLDivElement>(null);
@@ -49,6 +50,7 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
     const state = findingStates.get(key);
     return { finding, index, key, decision: state?.decision, resolved: !!state?.resolved };
   });
+  const { nav, setNav, selected, setSelected } = useWorkspacePosition(review.key, rows);
   const query = queue.search.trim().toLowerCase();
   const visible = rows.filter(({ finding }) =>
     (queue.status === 'all' || queue.status === finding.status) &&

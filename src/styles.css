@@ -528,6 +528,7 @@ summary::-webkit-details-marker {
 .modal-head h2 {
   font: 400 2.15rem/1.12 var(--serif);
   letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
 }
 .modal-head p {
   margin-top: 5px;

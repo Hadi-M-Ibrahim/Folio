@@ -268,16 +268,24 @@ async function createNamedQuestionnaire(page, title) {
 }
 
 async function openWithEntryScriptHeld(page, path) {
-  const entry = '**/assets/index-*.js';
-  const requested = page.waitForRequest(entry);
-  const gate = Promise.withResolvers();
-  await page.route(entry, async (route) => {
-    await gate.promise;
-    await route.continue();
-  });
-  await page.goto(path, { waitUntil: 'commit' });
-  await requested;
-  return gate.resolve;
+  // WebKit waits for pending page loads before taking a screenshot. Defer the
+  // real module request so the static page can finish painting on either engine.
+  let entry;
+  await page.route(url => url.pathname === '/', async route => {
+    const response = await route.fetch();
+    const html = await response.text();
+    const body = html.replace(/<script\b[^>]*\bsrc="(\/assets\/index-[^"]+\.js)"[^>]*><\/script>/, (_, src) => {
+      entry = src;
+      return '';
+    });
+    await route.fulfill({ response, body });
+  }, { times: 1 });
+  await page.goto(path);
+  expect(entry).toBeTruthy();
+  return () => page.evaluate(async src => {
+    await import(src);
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }, entry);
 }
 
 test('the cold landing page is painted before the application downloads and stays in place', async ({ page }, testInfo) => {
@@ -292,7 +300,7 @@ test('the cold landing page is painted before the application downloads and stay
     await landscape.evaluate(image => image.decode());
     before = await page.screenshot();
   } finally {
-    release();
+    await release();
   }
   await page.waitForLoadState('load');
   const after = await page.screenshot();
@@ -326,11 +334,20 @@ test('a cold workflow deep link paints no landing hero', async ({ page }) => {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     expect(await page.evaluate(() => window.homeWasPainted)).toBe(false);
   } finally {
-    release();
+    await release();
   }
   await expect(page.getByRole('heading', { name: 'Add existing policies', exact: true })).toBeFocused();
   expect(await page.evaluate(() => window.homeWasPainted)).toBe(false);
   expect(landscapeRequests).toHaveLength(0);
+});
+
+test('a missing review link explains where reviews are saved and returns to the library', async ({ page }) => {
+  await page.goto('/#/review/missing-review');
+  await expect(page.getByRole('heading', { name: 'Review not found' })).toBeFocused();
+  await expect(page.getByText('This review isn’t saved in this browser.')).toBeVisible();
+  await expect(page).toHaveTitle('Review not found · Folio');
+  await page.getByRole('link', { name: 'View all reviews' }).click();
+  await expect(page.getByRole('heading', { name: 'Start a review' })).toBeFocused();
 });
 
 test('a late font keeps the headline at its first painted width', async ({ page }) => {
@@ -349,7 +366,12 @@ test('a late font keeps the headline at its first painted width', async ({ page 
   let firstWidth;
   try {
     await expect(title).toBeVisible();
-    await expect.poll(() => page.evaluate(() => performance.getEntriesByName('first-contentful-paint').length)).toBe(1);
+    // A background or image can paint while optional fonts still block glyphs.
+    // Keep the files late enough to measure the displayed fallback text.
+    await expect.poll(() => page.evaluate(() => {
+      const paint = performance.getEntriesByName('first-contentful-paint')[0];
+      return paint ? performance.now() - paint.startTime : 0;
+    })).toBeGreaterThan(350);
     firstWidth = await textWidth();
   } finally {
     fonts.resolve();
@@ -1067,11 +1089,14 @@ test('deleting an active review in another tab prevents its late result from res
   expect(assessment.ok()).toBe(true);
   expect((await assessment.json()).findings[0].question).toBe(obligation);
   const manager = await context.newPage();
+  const observer = await context.newPage();
   const links = manager.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
   try {
     await clickReview(page, 'guide');
     await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
     await manager.goto('/#review-options');
+    await observer.goto(await links.filter({ hasText: 'Closing procedure' }).evaluate(link => link.href));
+    await expect(observer.getByText('This review is running in another tab.')).toBeVisible();
     await chooseReviewAction(manager, 'Closing procedure', 'Delete');
     const [revocation] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith('/api/review-session') &&
@@ -1083,6 +1108,8 @@ test('deleting an active review in another tab prevents its late result from res
   } finally {
     await route.fulfill({ response: assessment });
   }
+  await expect(observer.getByRole('heading', { name: 'Review not found' })).toBeVisible();
+  await observer.getByRole('link', { name: 'View all reviews' }).click();
   await page.getByRole('link', { name: 'Folio home' }).click();
   await expect(page.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link')).toHaveText([/Existing record/]);
   await manager.reload();
@@ -1266,7 +1293,7 @@ test('editing a running questionnaire aborts it and only explicit submission rev
   await questions.fill(newQuestion);
   await questions.blur();
   release();
-  expect((await cancelled).failure().errorText).toContain('ABORTED');
+  expect((await cancelled).failure().errorText).toMatch(/abort|cancel/i);
   expect((await stopped).status()).toBe(200);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await addPolicy(page, 'Signatures.txt', 'The registrar signs the revised inspection log.');
@@ -1504,6 +1531,7 @@ test('The question queue resolves and reopens questions independently of saved r
   await page.getByRole('link', { name: 'All reviews' }).click();
   await page.reload();
   await page.locator('.session-review').click();
+  await expect(page.getByRole('heading', { name: questions[3], exact: true })).toBeVisible();
   await showQueue();
   await expect(disclosure).toHaveText('Resolved 3');
   await disclosure.click();
@@ -2247,9 +2275,9 @@ test('PDF arrows keep the current sheet and document position through slow page 
   await expectPdfFrames(page, position, title, [1, 3, 2]);
 });
 
-test('Find evidence stays in reach on a short screen with a long PDF filename', async ({ page, context }) => {
+test('a long PDF filename keeps the intake and source viewer controls in reach', async ({ page, context }) => {
   await page.setViewportSize({ width: page.viewportSize().width, height: 568 });
-  const name = 'Annual State Licensing Questionnaire for Residential Care Providers and Facilities, Revised September 2026.pdf';
+  const name = 'AnnualStateLicensingQuestionnaireForResidentialCareProvidersAndFacilitiesRevisedSeptember2026.pdf';
   const form = await printPdf(context, ['1. Who records the inspection?', '2. Who approves the report?']);
   await page.goto('/#/new/questionnaire');
   await addPolicy(page, 'Inspection.txt', 'Staff record inspections. Supervisors approve reports.');
@@ -2262,6 +2290,11 @@ test('Find evidence stays in reach on a short screen with a long PDF filename', 
   await expect(submit).toBeInViewport({ ratio: 1 });
   await submit.click();
   await expect(page.getByRole('heading', { name: '1. Who records the inspection?', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Source documents', exact: true }).click();
+  await page.getByRole('button').filter({ hasText: name }).click();
+  const dialog = page.getByRole('dialog', { name });
+  await expect(dialog.getByRole('button', { name: 'Close dialog' })).toBeInViewport({ ratio: 1 });
+  expect(await dialog.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 });
 
 test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
