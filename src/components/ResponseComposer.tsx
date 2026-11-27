@@ -68,8 +68,7 @@ export function ResponseComposer({ finding, decision, onChange }: {
       <div className="response-box">
         <textarea id="response-text" ref={input} rows={3} placeholder="Write your response to this question."
           value={answer} onChange={event => { setUndo(undefined); setFailure(undefined); onChange({ answer: event.target.value }); }} />
-        <fieldset className="response-tools" aria-label="Response writing tools"
-          aria-description="Uses Anthropic with this question, assessment, response and cited passages." disabled={!!pending}>
+        <fieldset className="response-tools" aria-label="Response writing tools" disabled={!!pending}>
           {available.map(action => (
             <button key={action} type="button" onClick={() => void compose(action)}>
               {action === 'draft' && <PenLine size={14} aria-hidden="true" />}
