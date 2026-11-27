@@ -658,9 +658,12 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   expect(draft).toContain('Facilities.txt, p. 1');
   await page.getByRole('button', { name: 'Remove response citation 1' }).click();
   await page.getByLabel('Response for submission').fill('The facilities coordinator.');
-  await expect(page.getByRole('button', { name: 'Confirm response', exact: true })).toBeDisabled();
+  const confirm = page.getByRole('button', { name: 'Confirm response', exact: true });
+  await expect(confirm).toBeDisabled();
+  await expect(confirm).toHaveAccessibleDescription(/Select “Cite in response” on a policy passage.*“Flag for follow-up”/);
   await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
-  await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
+  await expect(confirm).toHaveAccessibleDescription('');
+  await confirm.click();
   const reopen = page.getByRole('button', { name: 'Edit response', exact: true });
   await expect(reopen).toBeFocused();
   await expect(reopen).toHaveAccessibleDescription('Response confirmed');

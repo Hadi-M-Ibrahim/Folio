@@ -45,6 +45,7 @@ export function ResponseEditor({ finding, decision, onChange, onOpen, onRemoveCi
   const confirmed = decision?.value === 'confirmed';
   const flagged = decision?.value === 'flagged';
   const hasAnswer = !!decision?.answer?.trim();
+  const needsCitation = hasAnswer && citations.length === 0;
 
   const [editing, setEditing] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -92,13 +93,16 @@ export function ResponseEditor({ finding, decision, onChange, onOpen, onRemoveCi
             </ol>
           </div>
         )}
-        {hasAnswer && !citations.length && (
-          <small className="muted-note">Attach a citation to confirm this response, or flag it for follow-up.</small>
+        {needsCitation && (
+          <small id="response-citation-hint" className="muted-note">
+            Select “Cite in response” on a policy passage, then confirm your response. To revisit the question later, choose “Flag for follow-up”.
+          </small>
         )}
         <div className="decision-row">
           <button
             className="secondary"
             aria-pressed={confirmed}
+            aria-describedby={needsCitation ? 'response-citation-hint' : undefined}
             disabled={!hasAnswer || citations.length === 0}
             onClick={() => toggleDisposition('confirmed')}
           >
