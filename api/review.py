@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from api._review.draft import MAX_DRAFT_BYTES, draft_response
 from api._review.model import ProviderUnavailable, model_review
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit, network_key
 from api._review.search import (
@@ -100,10 +101,16 @@ class handler(BaseHTTPRequestHandler):
             return self.reply(403, {"error": "Open Folio to submit a review from this site."})
         peer = self.client_address[0] if self.client_address else None
         key = network_key(self.headers, peer, vercel=not local_operator and os.environ.get("VERCEL") == "1")
-        if path == "/api/review-session" or parse_qs(route.query).get("control") == ["session"]:
+        query = parse_qs(route.query, keep_blank_values=True)
+        if path == "/api/review-session" or query.get("control") == ["session"]:
             if self.headers.get("Sec-Fetch-Site") == "same-site" or not same_origin(self.headers):
                 return self.reply(403, {"error": "Open Folio to manage a review session."})
             return self.session_body(key, local_operator)
+        self.submit_review(key, local_operator, query.get("operation"))
+
+    def submit_review(self, key, local_operator, operation):
+        if operation not in (None, ["draft"]):
+            return self.reply(400, {"error": "Unknown review operation."})
         limited = REVIEW_LIMIT.claim(key)
         if limited:
             status, wait = limited
@@ -111,9 +118,10 @@ class handler(BaseHTTPRequestHandler):
                        if status == 429 else "The review service is at capacity.")
             unit = "second" if wait == 1 else "seconds"
             return self.reply(status, {"error": f"{warning} Try again in {wait} {unit}."}, retry_after=wait)
-        payload = self.read_payload(MAX_BODY)
+        work, limit = (draft_response, MAX_DRAFT_BYTES) if operation else (review, MAX_BODY)
+        payload = self.read_payload(limit)
         if payload is not INVALID_BODY:
-            self.review_body(payload, local_operator)
+            self.review_body(payload, local_operator, work)
 
     def read_payload(self, limit):
         if self.headers.get_content_type() != "application/json":
@@ -157,10 +165,10 @@ class handler(BaseHTTPRequestHandler):
         except SessionUnavailable:
             return self.reply(503, {"error": "Review sessions are temporarily unavailable."})
 
-    def review_body(self, payload, local_operator):
+    def review_body(self, payload, local_operator, work):
         try:
             with review_session(self.headers.get("X-Folio-Review-Token"), local_operator):
-                result = review(payload, local_operator=local_operator)
+                result = work(payload, local_operator=local_operator)
         except ReviewCancelled:
             return self.reply(409, {"code": "review_cancelled", "error": "This review session has stopped or expired."})
         except SessionUnavailable:

@@ -6,6 +6,7 @@ import os
 import random
 import threading
 import time
+from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from http.client import HTTPException
 from urllib import error, request
@@ -502,6 +503,12 @@ def model_review(payload, criteria, pages, local_operator=False):
         if payload.get("readSourcePdf") or any(d in pdf_ids and not text.strip() for (d, _), (_, text) in pages.items()):
             raise InvalidRequest("Reading scanned PDF pages requires consent to send the selected PDFs to Anthropic.")
         return local_review(criteria, pages, document_part=payload.get("documentPart", False))
+    with provider_slot(local_operator) as key:
+        return review_with_provider(payload, criteria, pages, key)
+
+
+@contextmanager
+def provider_slot(local_operator):
     if os.environ.get("VERCEL") != "1" and not local_operator:
         raise ProviderUnavailable("Model review requires the hosted service or the loopback development server.")
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -511,7 +518,7 @@ def model_review(payload, criteria, pages, local_operator=False):
         raise ProviderUnavailable("The model review service is busy. Try again shortly.")
 
     try:
-        return review_with_provider(payload, criteria, pages, key)
+        yield key
     finally:
         SLOTS.release()
 

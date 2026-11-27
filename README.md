@@ -6,7 +6,7 @@ Folio helps compliance analysts answer state questionnaires and turn regulatory 
 
 Open [Folio](https://folio-policy-review.vercel.app).
 
-- **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Open the cited page to check the suggested answer. Use a supported suggestion as a draft or write your own response. Confirm it with a citation or flag it for follow-up, then download your responses.
+- **Answer a questionnaire.** Upload the questionnaire or paste the state’s questions, then add the policies to search. Check the cited pages and choose **Draft response** or write your own. Use **Shorten**, **Simplify**, or **Add detail** to revise the wording. Confirm the response with a citation or flag it for follow-up, then download your responses.
 - **Review a new policy guide.** Upload or paste the guide, then upload at least one existing policy file (PDF, TXT, or Markdown). Compare each obligation with the policies, choose whether to write a policy, update one, or leave it unchanged, and download the action list.
 
 Folio can start an Anthropic review in the background once both the source and the first policy are ready. Click **Find evidence** or **Review obligations** to see the current progress. If the review has finished, the button opens the results immediately. Adding a file, editing text, or changing a range cancels that version. Click the review button to review your changes.

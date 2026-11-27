@@ -122,6 +122,16 @@ def provider_reply(outgoing, *, timeout):
     data = provider_input(name, payload["messages"][0]["content"])
     if name == "record_pdf_pages":
         result = read_scan(data)
+    elif name == "record_response_draft":
+        if data["action"] == "draft":
+            answer = data["assessment"] if data["citations"] else "The available policy does not establish the answer."
+        elif data["action"] == "expand":
+            answer = data["answer"] + " " + data["citations"][0]["quote"]
+        elif data["action"] == "shorten":
+            answer = "The facilities coordinator."
+        else:
+            answer = "The coordinator records the date."
+        result = {"answer": answer}
     elif name == "record_search_plan":
         if any(unit["text"] == "1. Who keeps inspection log 1?" for unit in data["sources"]):
             # No usable plan on the very first part of the 65-question PDF.
