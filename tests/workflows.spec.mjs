@@ -638,9 +638,9 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   const editor = page.getByLabel('Response for submission');
   const tools = page.getByRole('group', { name: 'Response writing tools' });
   await expect(editor).toBeEmpty();
-  await expect(tools.getByRole('button')).toHaveText(['Draft response']);
+  await expect(tools.getByRole('button')).toHaveText(['Generate response']);
   const writing = page.waitForResponse('**/api/review?operation=draft');
-  await tools.getByRole('button', { name: 'Draft response' }).click();
+  await tools.getByRole('button', { name: 'Generate response' }).click();
   const written = await writing;
   expect(written.request().postDataJSON()).toMatchObject({ action: 'draft', question, answer: '', citations: [{ quote: policy }] });
   expect(await providerCalls(written)).toEqual([{ tool: 'record_response_draft', documents: [] }]);
@@ -660,9 +660,12 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   expect(draft).toContain('Facilities.txt, p. 1');
   await page.getByRole('button', { name: 'Remove response citation 1' }).click();
   await page.getByLabel('Response for submission').fill('The facilities coordinator.');
-  await expect(page.getByRole('button', { name: 'Confirm response', exact: true })).toBeDisabled();
+  const confirm = page.getByRole('button', { name: 'Confirm response', exact: true });
+  await expect(confirm).toBeDisabled();
+  await expect(confirm).toHaveAccessibleDescription(/Select “Cite in response” on a policy passage.*“Flag for follow-up”/);
   await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
-  await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
+  await expect(confirm).toHaveAccessibleDescription('');
+  await confirm.click();
   const reopen = page.getByRole('button', { name: 'Edit response', exact: true });
   await expect(reopen).toBeFocused();
   await expect(reopen).toHaveAccessibleDescription('Response confirmed');
@@ -1053,7 +1056,7 @@ for (const hasAppendix of [true, false]) {
       await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
     } else {
       await expect(followup).toContainText('This search found no new passages.');
-      await page.getByRole('button', { name: 'Draft response' }).click();
+      await page.getByRole('button', { name: 'Generate response' }).click();
       await expect(page.getByLabel('Response for submission')).toHaveValue('The available policy does not establish the answer.');
       await expect(page.getByRole('button', { name: 'Confirm response' })).toBeDisabled();
     }
@@ -1526,7 +1529,7 @@ test('one submission recovers late incomplete batches and exports all 65 questio
   await page.getByRole('button', { name: /Records\.pdf.*p\. 145/ }).first().click();
   await expectPdfCanvas(page.getByRole('dialog'), 'Records.pdf', 145);
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'Draft response' }).click();
+  await page.getByRole('button', { name: 'Generate response' }).click();
   await page.getByRole('button', { name: 'Confirm response' }).click();
   const output = await report(page, 'Download responses');
   expect(output.match(/^## Question .+$/gm)).toEqual(questions.map((question, i) =>
