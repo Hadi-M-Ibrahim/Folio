@@ -1,25 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileText, X } from 'lucide-react';
 import type { SourceLocation } from '../review/guideSource';
-import { searchRanges } from '../review/searchText';
-import { Modal } from './Modal';
+import { highlightRanges } from '../review/searchText';
 import { PdfViewer } from './PdfViewer';
 
 function highlightPage(text: string, page: number, location: SourceLocation) {
   const { quote, marks, term } = location;
-  if (!quote) return text;
-  let hits;
-  if (marks) {
-    hits = marks.filter((mark) => mark.page === page);
-  } else if (page !== location.page) {
-    return text;
-  } else if (term) {
-    hits = searchRanges(text, quote);
-  } else {
-    const start = text.indexOf(quote);
-    if (start < 0) return text;
-    hits = [{ start, end: start + quote.length }];
-  }
+  if (!quote || (!marks && page !== location.page)) return text;
+  const hits = marks ? marks.filter(mark => mark.page === page) : highlightRanges(text, quote, term);
+  if (!hits.length) return text;
   return (
     <>
       {hits.map(({ start, end }, index) => (
@@ -35,10 +24,35 @@ function highlightPage(text: string, page: number, location: SourceLocation) {
 
 export function SourceDialog({ location, onClose }: { location: SourceLocation; onClose: () => void }) {
   const { doc } = location;
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current!;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    dialog.showModal();
+    document.body.style.overflow = 'hidden';
+    return () => {
+      dialog.close();
+      document.body.style.overflow = overflow;
+      previousFocus?.focus();
+    };
+  }, []);
   return (
-    <Modal title={doc.title} subtitle="Source document" onClose={onClose} wide>
+    <dialog ref={ref} className="modal" aria-labelledby="dialog-title" onCancel={event => {
+      event.preventDefault();
+      onClose();
+    }}>
+      <div className="modal-head">
+        <div>
+          <h2 id="dialog-title">{doc.title}</h2>
+          <p>Source document</p>
+        </div>
+        <button className="icon-button close" aria-label="Close dialog" onClick={onClose}>
+          <X size={19} />
+        </button>
+      </div>
       {doc.pdfFile ? <PdfSource location={location} file={doc.pdfFile} /> : <TextSource location={location} />}
-    </Modal>
+    </dialog>
   );
 }
 

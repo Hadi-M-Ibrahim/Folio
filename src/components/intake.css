@@ -254,10 +254,9 @@
 .intake-paste-fields:not([hidden]) { display: grid; gap: 7px; margin: 8px 0 4px; }
 .intake-paste-fields input { margin-bottom: 6px; }
 .intake-paste-fields button { justify-self: start; margin-top: 3px; }
-.intake-selection, .intake-notice, .intake-error { font-size: 14px; line-height: 1.5; }
+.intake-selection, .intake-error { font-size: 14px; line-height: 1.5; }
 .intake-selection { padding: 8px 12px; border-left: 2px solid #54745a; color: #35553c; background: #f3f6f1; }
-.intake-error, .intake-notice { padding: 9px 12px; border-left: 2px solid #978567; background: #f8f4ec; }
-.intake-error { margin-top: 14px; border-color: #914831; color: #783a29; background: #faf1ed; }
+.intake-error { margin-top: 14px; padding: 9px 12px; border-left: 2px solid #914831; color: #783a29; background: #faf1ed; }
 .intake-actions {
   display: flex;
   align-items: center;

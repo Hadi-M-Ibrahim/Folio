@@ -5,7 +5,7 @@ const cwd = fileURLToPath(new URL('../', import.meta.url));
 
 export default defineConfig({
   testDir: '.',
-  testMatch: 'workflows.spec.mjs',
+  testMatch: '*.spec.mjs',
   outputDir: '../test-results',
   workers: 2,
   use: { baseURL: 'http://127.0.0.1:4177' },

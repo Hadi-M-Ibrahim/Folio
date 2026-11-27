@@ -3,11 +3,14 @@ import json
 import os
 import threading
 import unittest
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from api import review as api
 from api._review import model, sessions
+from api._review.rate_limit import ReviewRateLimit
 from tests.test_pdf_review import pdf_attachment
 from tests.test_review import insufficient_assessments
 
@@ -85,6 +88,72 @@ def mixed_assessments(rows):
     return assessments
 
 
+@contextmanager
+def pending_reservation(store, table_name, reserve):
+    """Pause the worker's write until the competing caller blocks or finishes."""
+    caller = threading.current_thread()
+    writing, competing = threading.Event(), threading.Event()
+    mutex = store.lock
+
+    class PausedWrites(OrderedDict):
+        def __setitem__(self, key, value):
+            if threading.current_thread() is not caller:
+                writing.set()
+                if not competing.wait(5):
+                    raise AssertionError("Competing reservation never reached the store")
+            super().__setitem__(key, value)
+
+    class ObservedLock:
+        def __enter__(self):
+            if not mutex.acquire(blocking=False):
+                competing.set()
+                if not mutex.acquire(timeout=5):
+                    raise AssertionError("Reservation never released the store lock")
+
+        def __exit__(self, *_):
+            mutex.release()
+
+    table = PausedWrites(getattr(store, table_name))
+    with (patch.object(store, table_name, table), patch.object(store, "lock", ObservedLock()),
+          ThreadPoolExecutor(1) as pool):
+        worker = pool.submit(reserve)
+        try:
+            if not writing.wait(5):
+                raise AssertionError("First reservation never reached its write")
+            yield
+        finally:
+            # If the competitor bypasses the lock it can finish before the worker.
+            competing.set()
+            worker.result(timeout=5)
+
+
+class ReservationContentionTests(unittest.TestCase):
+    def test_competing_claims_cannot_both_consume_the_last_request(self):
+        limiter = ReviewRateLimit(limit=2, window=7, clock=lambda: 0)
+        self.assertIsNone(limiter.claim("network"))
+
+        def claim_last():
+            self.assertIsNone(limiter.claim("network"))
+
+        with pending_reservation(limiter, "clients", claim_last):
+            self.assertEqual(limiter.claim("network"), (429, 7))
+
+    def test_competing_networks_cannot_both_take_the_last_client_slot(self):
+        limiter = ReviewRateLimit(max_clients=1, window=7, clock=lambda: 0)
+
+        def claim_first():
+            self.assertIsNone(limiter.claim("first"))
+
+        with pending_reservation(limiter, "clients", claim_first):
+            self.assertEqual(limiter.claim("second"), (503, 7))
+
+    def test_competing_sessions_cannot_both_take_the_last_lease(self):
+        store = sessions.LocalSessions(capacity=1, clock=lambda: 0)
+        with (pending_reservation(store, "entries", lambda: sessions.create_session(store)),
+              self.assertRaises(sessions.SessionUnavailable)):
+            sessions.create_session(store)
+
+
 class ConcurrentReviewTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"VERCEL": "1", "ANTHROPIC_API_KEY": "test-key"}, clear=True))
@@ -157,9 +226,11 @@ class ConcurrentReviewTests(unittest.TestCase):
     def test_cancelled_session_stops_both_batches_before_repair(self):
         store = sessions.LocalSessions()
         token = sessions.create_session(store)
-        both_in_flight = threading.Barrier(2, action=lambda: store.cancel(sessions.session_key(token)), timeout=5)
+        key = sessions.session_key(token)
+        both_in_flight = threading.Barrier(2, action=lambda: store.cancel(key), timeout=5)
 
         def omit_rows(rows):
+            self.assertTrue(store.active(key), "A repair reached the provider after session cancellation")
             both_in_flight.wait()
             return []
 
@@ -198,6 +269,7 @@ class ConcurrentReviewTests(unittest.TestCase):
             active = pool.submit(api.review, register_review("questionnaire"))
             try:
                 both_in_flight.wait()
+                send.side_effect = AssertionError("Revoked review contacted the provider after waiting")
                 with patch.object(model.CONNECTIONS, "acquire", side_effect=wait_for_connection):
                     waiting = pool.submit(queued_review)
                     self.assertTrue(queued.wait(5), "Second review never requested a provider connection")

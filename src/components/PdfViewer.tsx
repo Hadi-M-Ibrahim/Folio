@@ -2,13 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Maximize2, Minus, Plus } from 'lucide-react';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask, TextLayer } from 'pdfjs-dist';
 import { openPdf } from '../review/pdf';
-import { searchRanges } from '../review/searchText';
+import { highlightRanges } from '../review/searchText';
 import './PdfViewer.css';
 
 type Highlight = { page: number; text: string; term?: boolean };
 type ViewerProps = {
   file: File;
-  pages?: readonly number[];
+  pages: readonly number[];
   initialPage?: number;
   onPageChange?: (physicalPage: number) => void;
   highlight?: Highlight;
@@ -19,9 +19,8 @@ const fit = zoomLevels.indexOf(1);
 function markText(container: HTMLElement, quote: string, term: boolean) {
   const runs = Array.from(container.children);
   const textOf = (run: Element) => run.tagName === 'BR' ? '\n' : run.textContent || '';
-  const text = runs.map(textOf).join('');
-  const start = text.indexOf(quote);
-  const hits = term ? searchRanges(text, quote) : start < 0 ? [] : [{ start, end: start + quote.length }];
+  const hits = highlightRanges(runs.map(textOf).join(''), quote, term);
+  if (!hits.length) return;
   let offset = 0;
   let hit = 0;
   for (const run of runs) {
@@ -166,24 +165,23 @@ function PdfPage({ pdf, number, scale, fileName, highlight }: {
 function PdfPreview({ pdf, file, pages, initialPage, onPageChange, highlight, error }: ViewerProps & {
   pdf?: PDFDocumentProxy; error?: string;
 }) {
-  const numbers = pages ?? Array.from({ length: pdf?.numPages ?? 1 }, (_, i) => i + 1);
-  const [current, setCurrent] = useState(initialPage ?? numbers[0]);
+  const [current, setCurrent] = useState(initialPage ?? pages[0]);
   const [zoom, setZoom] = useState(fit);
-  const number = numbers.includes(current) ? current : numbers[0];
-  const index = numbers.indexOf(number);
+  const index = Math.max(0, pages.indexOf(current));
+  const number = pages[index];
   function go(target: number) { setCurrent(target); onPageChange?.(target); }
-  const enabled = Boolean(pdf && numbers.length);
+  const enabled = Boolean(pdf && pages.length);
   return <>
     <div className="pdf-toolbar">
       <div className="pdf-controls">
-        <button type="button" aria-label="Previous PDF page" disabled={!enabled || index === 0} onClick={() => go(numbers[index - 1])}>
+        <button type="button" aria-label="Previous PDF page" disabled={!enabled || index === 0} onClick={() => go(pages[index - 1])}>
           <ChevronLeft size={17} /></button>
-        <select aria-label="PDF page" disabled={!enabled} value={number} data-all-pages={!pages}
+        <select aria-label="PDF page" disabled={!enabled} value={number}
           onChange={(event) => go(Number(event.target.value))}>
-          {numbers.map((n) => <option key={n} value={n}>Page {n}</option>)}
+          {pages.map((n) => <option key={n} value={n}>Page {n}</option>)}
         </select>
         <span className="pdf-total">of {pdf?.numPages ?? '…'}</span>
-        <button type="button" aria-label="Next PDF page" disabled={!enabled || index >= numbers.length - 1} onClick={() => go(numbers[index + 1])}>
+        <button type="button" aria-label="Next PDF page" disabled={!enabled || index >= pages.length - 1} onClick={() => go(pages[index + 1])}>
           <ChevronRight size={17} /></button>
       </div>
       <div className="pdf-controls">
@@ -194,7 +192,7 @@ function PdfPreview({ pdf, file, pages, initialPage, onPageChange, highlight, er
       </div>
     </div>
     <div className="pdf-frame">
-      {pdf && numbers.length > 0 ? <PdfPage pdf={pdf} number={number} fileName={file.name} highlight={highlight} scale={zoomLevels[zoom]} /> :
+      {pdf && pages.length > 0 ? <PdfPage pdf={pdf} number={number} fileName={file.name} highlight={highlight} scale={zoomLevels[zoom]} /> :
         <output className="pdf-status">{error ?? (pdf ? 'Choose pages to preview.' : 'Opening PDF…')}</output>}
     </div>
   </>;

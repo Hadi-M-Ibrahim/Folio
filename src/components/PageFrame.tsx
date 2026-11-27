@@ -3,8 +3,6 @@ import { ArrowDown, ArrowRight, BookOpen, ClipboardList } from 'lucide-react';
 import type { ReviewSummary } from '../review/localReviews';
 import { ReviewList, type ReviewActions } from './ReviewList';
 
-export type { ReviewActions } from './ReviewList';
-
 export const workflows = [
   {
     mode: 'questionnaire',

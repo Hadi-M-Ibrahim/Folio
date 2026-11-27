@@ -35,8 +35,8 @@ function base64Pdf(blob: Blob): Promise<string> {
   });
 }
 
-async function renderPageImage(page: PDFPageProxy, signal?: AbortSignal) {
-  signal?.throwIfAborted();
+async function renderPageImage(page: PDFPageProxy, signal: AbortSignal) {
+  signal.throwIfAborted();
   const { width, height } = page.getViewport({ scale: 1 });
   // 180 dpi for standard paper; bound memory for oversized pages.
   const scale = Math.min(2.5, 3200 / Math.max(width, height), Math.sqrt(5_000_000 / (width * height)));
@@ -46,7 +46,7 @@ async function renderPageImage(page: PDFPageProxy, signal?: AbortSignal) {
   canvas.height = Math.max(1, Math.ceil(viewport.height));
   const render = page.render({ canvas, viewport });
   const cancel = () => render.cancel();
-  signal?.addEventListener('abort', cancel, { once: true });
+  signal.addEventListener('abort', cancel, { once: true });
   try {
     await render.promise;
     const image = await new Promise<Blob>((resolve, reject) => {
@@ -55,7 +55,7 @@ async function renderPageImage(page: PDFPageProxy, signal?: AbortSignal) {
     });
     return { image, width, height, pixelsWide: canvas.width, pixelsHigh: canvas.height };
   } finally {
-    signal?.removeEventListener('abort', cancel);
+    signal.removeEventListener('abort', cancel);
     canvas.width = canvas.height = 0;
     page.cleanup();
   }
@@ -63,7 +63,7 @@ async function renderPageImage(page: PDFPageProxy, signal?: AbortSignal) {
 
 // Build a new, image-only PDF. Copying source PDF objects can bring along
 // other pages' shared image resources, form values and embedded attachments.
-async function selectedPagesPdf(pdf: PDFDocumentProxy, numbers: number[], signal?: AbortSignal) {
+async function selectedPagesPdf(pdf: PDFDocumentProxy, numbers: number[], signal: AbortSignal) {
   const chunks: BlobPart[] = [];
   const offsets = [0];
   let length = 0;
@@ -84,7 +84,7 @@ async function selectedPagesPdf(pdf: PDFDocumentProxy, numbers: number[], signal
   const kids = numbers.map((_, i) => (3 + i * 3) + ' 0 R').join(' ');
   object(`<< /Type /Pages /Count ${numbers.length} /Kids [${kids}] >>`);
   for (const number of numbers) {
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     const { width, height, image, pixelsWide, pixelsHigh } = await renderPageImage(await pdf.getPage(number), signal);
     const w = width.toFixed(4);
     const h = height.toFixed(4);
@@ -102,12 +102,12 @@ async function selectedPagesPdf(pdf: PDFDocumentProxy, numbers: number[], signal
 }
 
 // Each review attempt owns its reader. A retry can begin while the cancelled attempt's worker shuts down.
-export function createPdfAttachmentReader(doc: Policy, role: PdfAttachment['role'], signal?: AbortSignal) {
+export function createPdfAttachmentReader(doc: Policy, role: PdfAttachment['role'], signal: AbortSignal) {
   let loading: ReturnType<typeof openPdf> | undefined;
   let closing: Promise<void> | undefined;
 
   function close() {
-    signal?.removeEventListener('abort', onAbort);
+    signal.removeEventListener('abort', onAbort);
     if (!closing) closing = loading ? loading.then(task => task.destroy(), () => {}) : Promise.resolve();
     return closing;
   }
@@ -118,7 +118,7 @@ export function createPdfAttachmentReader(doc: Policy, role: PdfAttachment['role
   }
 
   async function attachment(pageNumbers: readonly number[], renderSelectedPages = false): Promise<PdfAttachment> {
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     if (closing) throw Error('This PDF reader is closed.');
     const file = doc.pdfFile;
     if (!file) throw Error('Choose the original PDF again to attach its pages.');
@@ -134,30 +134,27 @@ export function createPdfAttachmentReader(doc: Policy, role: PdfAttachment['role
     if (!useOriginal(pdfPageCounts.get(file))) {
       if (!loading) {
         loading = openPdf(file, signal);
-        signal?.addEventListener('abort', onAbort, { once: true });
+        signal.addEventListener('abort', onAbort, { once: true });
       }
       const pdf = await (await loading).promise;
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       if (lastPage > pdf.numPages) throw Error('Choose pages within the original PDF.');
       if (!useOriginal(pdf.numPages)) blob = await selectedPagesPdf(pdf, pages, signal);
     }
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     const data = await base64Pdf(blob);
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     return { role, documentId: doc.id, title: doc.title, pages, data };
   }
   return { attachment, close };
 }
 
-export async function makePdfAttachment(
-  doc: Policy, role: PdfAttachment['role'], pageNumbers: readonly number[], signal?: AbortSignal,
-  options?: { renderSelectedPages?: boolean },
-): Promise<PdfAttachment> {
-  const reader = createPdfAttachmentReader(doc, role, signal);
+export async function makePolicyPdfAttachment(doc: Policy, signal: AbortSignal): Promise<PdfAttachment> {
+  const reader = createPdfAttachmentReader(doc, 'policy', signal);
   try {
-    return await reader.attachment(pageNumbers, options?.renderSelectedPages);
+    return await reader.attachment(doc.pages.map(page => page.number));
   } catch (error) {
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     throw error;
   } finally {
     await reader.close();

@@ -3,7 +3,7 @@ import type { Policy } from './model';
 
 export type Transcript = { pages: Policy['pages']; questions?: PdfQuestion[] };
 export type Span = { start: number; end: number };
-export type PageSpan = Span & { number: number };
+type PageSpan = Span & { number: number };
 
 export function pageSpans(pages: Policy['pages'], separatorLength: number, offset = 0): PageSpan[] {
   let start = -offset;
@@ -18,7 +18,7 @@ export function pagesIn(spans: PageSpan[], { start, end }: Span): number[] {
   return spans.filter(page => page.end > start && page.start < end).map(page => page.number);
 }
 
-export function guideBreak(text: string, start: number, target: number): number {
+function guideBreak(text: string, start: number, target: number): number {
   const window = text.slice(start, target);
   const half = Math.floor(window.length / 2);
   // Prefer complete paragraphs and sentences before resorting to a wrapped line or word.

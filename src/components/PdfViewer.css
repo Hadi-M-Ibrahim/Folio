@@ -5,8 +5,6 @@
 .pdf-controls button { display: inline-grid; place-items: center; min-width: 32px; min-height: 34px; }
 .pdf-controls button:hover:enabled { background: var(--paper); }
 .pdf-controls select { margin: 0 2px; padding: 4px; min-height: 30px; border: 1px solid var(--line); background: white; font-size: 13px; }
-/* Reserve space for four-digit counts before the document opens. */
-.pdf-controls select[data-all-pages='true'] { min-width: 11ch; }
 .pdf-total, .pdf-zoom { white-space: nowrap; color: var(--muted); }
 .pdf-total { min-width: 6ch; }
 .pdf-zoom { min-width: 4ch; text-align: center; }

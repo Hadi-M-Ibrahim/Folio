@@ -29,12 +29,12 @@ from api._review.search import (
     MAX_DOCUMENTS,
     MAX_PAGE_CHARS,
     MAX_PAGES,
+    MAX_REQUEST_BYTES,
     STOP,
     guide_criteria,
     validate,
     words,
 )
-from api.review import MAX_BODY
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -222,7 +222,7 @@ def shortlist(pages, criteria):
 
 def save_private(payload):
     encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
-    if len(encoded) > MAX_BODY:
+    if len(encoded) > MAX_REQUEST_BYTES:
         raise ValueError("This review exceeds the API request byte limit. Use a smaller selection.")
     directory = ROOT / ".local-review"
     directory.mkdir(mode=0o700, exist_ok=True)
