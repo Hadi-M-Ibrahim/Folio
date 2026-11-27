@@ -1005,6 +1005,7 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
   const downloadPdf = responses.getByRole('button', { name: 'Download PDF', exact: true });
   await page.getByRole('button', { name: 'Responses', exact: true }).click();
   await expect(downloadPdf).toBeDisabled();
+  await expect(responses.getByRole('button', { name: /Full review/ })).toHaveCount(0);
   await responses.getByRole('button', { name: 'Review questions' }).click();
   const next = page.getByRole('button', { name: 'Next question' });
   const answer = page.getByLabel('Response for submission');
@@ -1050,6 +1051,37 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
   const firstDraftPage = pages.findIndex(text => text.includes(draftLines[0]));
   const lastDraftPage = pages.findIndex(text => text.includes(draftLines.at(-1)));
   expect(lastDraftPage).toBeGreaterThan(firstDraftPage);
+});
+
+test('an embedded Mac browser can retry a failed PDF download in the same review', async ({ page }) => {
+  // FileSaver's embedded-WebKit path previously opened a blank popup here.
+  await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', {
+    value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',
+  }));
+  const popups = [];
+  page.on('popup', popup => popups.push(popup));
+  await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Records.txt', 'The registrar signs the inspection log.');
+  await continueToSource(page, 'questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who signs the log?');
+  await clickReview(page, 'questionnaire');
+  const answer = 'The registrar signs the inspection log.';
+  await page.getByLabel('Response for submission').fill(answer);
+  await page.getByRole('button', { name: 'Responses', exact: true }).click();
+  const button = page.getByRole('button', { name: 'Download PDF', exact: true });
+  await page.route('**/downloads/responses-v1.js', route => route.abort(), { times: 1 });
+  await button.click();
+  await expect(page.getByRole('alert')).toContainText('The PDF could not be downloaded');
+  const pending = page.waitForEvent('download');
+  await button.click();
+  const download = await pending;
+  expect(download.suggestedFilename()).toBe('folio-questionnaire-responses.pdf');
+  expect((await pdfPageTexts(download)).join(' ')).toContain(answer);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  const repeat = page.waitForEvent('download');
+  await button.click();
+  expect((await repeat).suggestedFilename()).toBe(download.suggestedFilename());
+  expect(popups).toHaveLength(0);
 });
 
 test('a failed or superseded rewrite preserves the analyst’s text', async ({ page }) => {

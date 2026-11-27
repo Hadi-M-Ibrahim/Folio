@@ -1,3 +1,4 @@
+import { downloadFile } from './downloadFile';
 import { guideCitation } from './guideSource';
 import {
   assessmentLabel,
@@ -140,12 +141,6 @@ export function exportReview(review: Review, rows: readonly ReviewRow[]): void {
   else appendQuestionnaireResponses(lines, rows);
   if (!guideOnly) appendEvidenceRecord(lines, review, rows);
 
-  const url = URL.createObjectURL(
-    new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' }),
-  );
-  const download = document.createElement('a');
-  download.href = url;
-  download.download = isGuide ? 'folio-policy-action-list.md' : 'folio-questionnaire-responses.md';
-  download.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadFile(new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' }),
+    isGuide ? 'folio-policy-action-list.md' : 'folio-questionnaire-responses.md');
 }

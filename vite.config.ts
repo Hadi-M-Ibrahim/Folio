@@ -29,6 +29,15 @@ export default defineConfig({
       }
     },
   }],
+  // An open review may request its first export after the next deployment.
+  build: { rollupOptions: {
+    input: { index: 'index.html', responsePdf: 'src/review/exportResponsePdf.ts' },
+    preserveEntrySignatures: 'exports-only',
+    output: {
+      entryFileNames: chunk => chunk.name === 'responsePdf' ? 'downloads/responses-v1.js' : 'assets/[name]-[hash].js',
+      manualChunks: id => id.includes('commonjsHelpers') || /\/src\/review\/(model|downloadFile)\.ts$/.test(id) ? 'shared' : undefined,
+    },
+  } },
   server: { proxy: { '/api/review': { target: 'http://127.0.0.1:8000', changeOrigin: false } } },
   preview: {
     headers: Object.fromEntries(deployment.headers

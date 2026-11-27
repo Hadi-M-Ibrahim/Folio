@@ -1,13 +1,14 @@
 import pdfMake from 'pdfmake/build/pdfmake';
-import regularFont from 'pdfmake/fonts/Roboto/Roboto-Regular.ttf?url';
-import mediumFont from 'pdfmake/fonts/Roboto/Roboto-Medium.ttf?url';
+import regularFont from 'pdfmake/fonts/Roboto/Roboto-Regular.ttf?inline';
+import mediumFont from 'pdfmake/fonts/Roboto/Roboto-Medium.ttf?inline';
 import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces';
+import { downloadFile } from './downloadFile';
 import { responseLabels, type SavedResponse } from './model';
 
-pdfMake.setFonts({ Roboto: {
-  normal: new URL(regularFont, import.meta.url).href,
-  bold: new URL(mediumFont, import.meta.url).href,
-} });
+pdfMake.addVirtualFileSystem({
+  'Roboto-Regular.ttf': regularFont.split(',')[1],
+  'Roboto-Medium.ttf': mediumFont.split(',')[1],
+});
 
 export async function exportResponsePdf(title: string, entries: readonly SavedResponse[]) {
   const content: Content[] = [
@@ -45,5 +46,6 @@ export async function exportResponsePdf(title: string, entries: readonly SavedRe
       fontSize: 9, color: '#645f58', margin: [48, 14, 48, 0],
     }),
   };
-  await pdfMake.createPdf(document).download('folio-questionnaire-responses.pdf');
+  const pdf = await pdfMake.createPdf(document).getBlob();
+  downloadFile(pdf, 'folio-questionnaire-responses.pdf');
 }

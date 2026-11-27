@@ -134,7 +134,7 @@ export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Prop
       )}
       {nav === 'documents' && <SourceDocuments review={review} onOpen={setSource} />}
       {nav === 'decisions' && (
-        <ReviewDecisions entries={entries} review={review} onMarkdown={downloadReview} onReturn={() => selectFinding(selected, true)} onSelect={(index) => {
+        <ReviewDecisions entries={entries} review={review} onReturn={() => selectFinding(selected, true)} onSelect={(index) => {
           updateQueue({ search: '', status: 'all' });
           selectFinding(index, true);
         }} />
@@ -212,15 +212,33 @@ function SourceDocuments({ review, onOpen }: { review: Review; onOpen: (source: 
   );
 }
 
-function ResponseDownloads({ title, entries, onMarkdown }: {
-  title: string; entries: SavedResponse[]; onMarkdown: () => void;
+let pdfExporter: Promise<typeof import('../review/exportResponsePdf')> | undefined;
+let pdfLoadFailed = false;
+
+function loadPdfExporter() {
+  if (!pdfExporter) {
+    // Browsers can cache a rejected import for the lifetime of the tab.
+    const load: Promise<typeof import('../review/exportResponsePdf')> = pdfLoadFailed && import.meta.env.PROD
+      ? import(/* @vite-ignore */ '/downloads/responses-v1.js?retry=' + Date.now())
+      : import('../review/exportResponsePdf');
+    pdfExporter = load.catch((error: unknown) => {
+      pdfLoadFailed = true;
+      pdfExporter = undefined;
+      throw error;
+    });
+  }
+  return pdfExporter;
+}
+
+function ResponseDownloads({ title, entries }: {
+  title: string; entries: SavedResponse[];
 }) {
   const [state, setState] = useState<'idle' | 'preparing' | 'error'>('idle');
   async function download() {
     setState('preparing');
     try {
-      const { exportResponsePdf } = await import('../review/exportResponsePdf');
-      await exportResponsePdf(title, entries);
+      const pdf = await loadPdfExporter();
+      await pdf.exportResponsePdf(title, entries);
       setState('idle');
     } catch {
       setState('error');
@@ -232,24 +250,22 @@ function ResponseDownloads({ title, entries, onMarkdown }: {
         <button className="report-link" type="button" disabled={!entries.length || state === 'preparing'} onClick={download}>
           <Download size={15} aria-hidden="true" />{state === 'preparing' ? 'Preparing PDF…' : 'Download PDF'}
         </button>
-        <button type="button" className="text-link" onClick={onMarkdown}>Full review (.md)</button>
       </div>
       {state === 'error' && <p role="alert" className="response-error">The PDF could not be downloaded. Please try again.</p>}
     </>
   );
 }
 
-function ReviewDecisions({ entries, review, onSelect, onReturn, onMarkdown }: {
+function ReviewDecisions({ entries, review, onSelect, onReturn }: {
   entries: SavedResponse[];
   review: Review;
   onSelect: (index: number) => void;
   onReturn: () => void;
-  onMarkdown: () => void;
 }) {
   const isGuide = review.input.mode === 'guide';
   return (
     <section className="library" id="review-output" tabIndex={-1} aria-label={isGuide ? 'Action list' : 'Responses'}>
-      {!isGuide && <ResponseDownloads title={review.title} entries={entries} onMarkdown={onMarkdown} />}
+      {!isGuide && <ResponseDownloads title={review.title} entries={entries} />}
       {entries.map(({ finding, decision, index }) => {
         const label = decision.action ? policyActionLabels[decision.action] : decision.value ? responseLabels[decision.value] : 'Draft';
         const text = decision.note || decision.answer;
