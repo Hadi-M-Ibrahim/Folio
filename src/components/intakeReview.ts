@@ -3,12 +3,10 @@ import { makePdfAttachment } from '../review/pdf';
 import { executeWholeReview } from '../review/wholeReview';
 import {
   MAX_PDF_ATTACHMENT_PAGES, MAX_REQUEST_BYTES, ReviewSizeError, modeLabels,
-  type Mode, type PdfAttachment, type Policy, type ReviewInput, type Scope,
+  type Mode, type IntakePolicy, type PdfAttachment, type Policy, type ReviewInput, type Scope,
 } from '../review/model';
 import type { IntakeSource } from './SourceFields';
 import { ReviewJob, type ReviewRecipe, type ReviewWork } from '../review/reviewJob';
-
-export type IntakePolicy = Policy & { pasted?: true };
 
 export function needsPolicyFile(mode: Mode, originals: IntakePolicy[]) {
   return mode === 'guide' && !originals.some(policy => !policy.pasted);

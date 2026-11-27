@@ -3,14 +3,16 @@ import { ArrowLeft, ArrowRight, Check, FolderOpen, LoaderCircle } from 'lucide-r
 import { checkInput, checkPolicies, isLoopback } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
 import {
-  MAX_POLICY_DOCUMENTS, readScope,
-  type Mode, type Policy, type ReviewInput,
+  MAX_POLICY_DOCUMENTS, isUploadedPolicy, readScope,
+  type IntakePolicy, type Mode, type Policy, type ReviewInput,
 } from '../review/model';
 import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
 import { questionsFromText } from './intakeQuestions';
 import { SourceFields, sourceFromDocument, type IntakeSource } from './SourceFields';
 import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
-import { needsPolicyFile, prepareReview, type IntakePolicy } from './intakeReview';
+import { needsPolicyFile, prepareReview } from './intakeReview';
+import { loadRecentPolicies, loadReviewPolicies, removeRecentPolicy, saveRecentPolicies } from '../review/recentPolicies';
+import type { LastPolicyChoice } from './LastPolicies';
 import type { ReviewJob } from '../review/reviewJob';
 import { ReviewProgress } from './ReviewProgress';
 import { useIntakeReview } from './useIntakeReview';
@@ -151,9 +153,9 @@ function useFileRead(sourceStep: boolean) {
     const pending = sequence.current;
     return () => { pending.version++; };
   }, [page]);
-  function begin(count: number) {
+  function begin(message: string) {
     const version = ++sequence.current.version;
-    setReading({ page, message: count === 1 ? 'Reading file…' : 'Reading files…' });
+    setReading({ page, message });
     return () => sequence.current.version === version;
   }
   return { busy: reading?.page === page ? reading.message : '', begin, finish: () => setReading(undefined) };
@@ -282,10 +284,41 @@ function IntakeForm({ initialMode, sourceStep, onClose, onSubmit, initial, sessi
     setOriginalDocuments(next);
     if (scope) setSelection({ ...selection, scope: undefined });
     if (fromDraft) setDraft(emptyPolicyDraft);
+    return next;
+  }
+
+  async function rememberUploads(next: IntakePolicy[], isCurrent: () => boolean, onlyIfNoHistory = false) {
+    try {
+      await saveRecentPolicies(next, onlyIfNoHistory);
+    } catch {
+      if (isCurrent()) setError('Files attached. This browser couldn’t save them for the next review.');
+    }
+  }
+
+  async function useLastPolicies(choice: LastPolicyChoice) {
+    const isCurrent = fileRead.begin('Loading policies…');
+    setError('');
+    try {
+      const files = choice.kind === 'upload'
+        ? await loadRecentPolicies(choice.set.revision) : await loadReviewPolicies(choice.key);
+      if (!isCurrent()) return;
+      if (!files?.length) {
+        setError(choice.kind === 'upload' ? 'The saved files have changed. Choose them again or upload files.'
+          : 'This review has no reusable policy files. Choose files to continue.');
+        return;
+      }
+      review.edit();
+      const next = acceptAddedPolicies(files);
+      if (choice.kind === 'review') await rememberUploads(next, isCurrent, true);
+    } catch (cause) {
+      if (isCurrent()) setError(documentErrorMessage(cause));
+    } finally {
+      if (isCurrent()) fileRead.finish();
+    }
   }
 
   async function importFiles(files: File[], kind: 'source' | 'policies' | 'bundle') {
-    const isCurrent = fileRead.begin(files.length);
+    const isCurrent = fileRead.begin(files.length === 1 ? 'Reading file…' : 'Reading files…');
     review.edit();
     setError('');
     try {
@@ -294,7 +327,7 @@ function IntakeForm({ initialMode, sourceStep, onClose, onSubmit, initial, sessi
         if (!isCurrent()) return false;
         setSelection({ mode: prepared.mode, policyRanges: {}, scope: prepared.scope });
         setSource(prepared.source);
-        setOriginalDocuments(prepared.documents);
+        setOriginalDocuments(prepared.documents.map(doc => ({ ...doc, prepared: true })));
         setDraft(emptyPolicyDraft);
       } else if (kind === 'source') {
         if (files.length > 1) throw Error('Choose one source file for this review.');
@@ -312,7 +345,7 @@ function IntakeForm({ initialMode, sourceStep, onClose, onSubmit, initial, sessi
           added.push(await readDocument(file, existing));
           if (!isCurrent()) return false;
         }
-        acceptAddedPolicies(added);
+        await rememberUploads(acceptAddedPolicies(added), isCurrent);
       }
       return true;
     } catch (cause) {
@@ -326,6 +359,12 @@ function IntakeForm({ initialMode, sourceStep, onClose, onSubmit, initial, sessi
   function removePolicy(id: string) {
     review.edit();
     const next = documents.filter((doc) => doc.id !== id);
+    const uploads = originalDocuments.filter(isUploadedPolicy);
+    if (uploads.some(doc => doc.id === id)) {
+      void removeRecentPolicy(id, uploads.map(doc => doc.id)).catch(() => {
+        setError('File removed from this review. This browser couldn’t update the saved files.');
+      });
+    }
     setOriginalDocuments(originalDocuments.filter((doc) => doc.id !== id));
     const nextRanges = { ...policyRanges };
     delete nextRanges[id];
@@ -425,6 +464,7 @@ function IntakeForm({ initialMode, sourceStep, onClose, onSubmit, initial, sessi
                   }}
                   onEditRange={review.edit}
                   onFiles={files => importFiles(files, 'policies')}
+                  onUseLast={useLastPolicies}
                   onAdd={policy => { review.edit(); acceptAddedPolicies([{ ...policy, pasted: true }], true); }}
                   onRange={selectPolicyPages}
                   onRemove={removePolicy}
