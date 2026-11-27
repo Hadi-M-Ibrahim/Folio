@@ -212,7 +212,7 @@ async function expectQuietReview(page) {
 async function clickReview(page, mode) {
   const guide = mode === 'guide';
   const submit = page.getByRole('button', { name: guide ? 'Review obligations' : 'Find evidence' });
-  await expect(submit).toHaveAccessibleDescription(guide ? /Anthropic/i : '');
+  if (!guide) await expect(submit).toHaveAccessibleDescription('');
   await expect(page.getByRole('checkbox')).toHaveCount(0);
   await submit.click();
 }
@@ -423,6 +423,8 @@ test('a guide waits for a policy file, then finishes in intake and opens once af
   await policies.getByText('Required').click();
   await expect(policies).toHaveAttribute('aria-current', 'step');
   await expect(page.getByRole('button', { name: 'Review obligations' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Review obligations' })).toHaveAccessibleDescription('');
+  await expect(page.locator('#intake-sharing')).toHaveCount(0);
   await expect(page.getByLabel('Upload policy files')).toHaveAccessibleDescription(/Anthropic/i);
   await expect(page.getByRole('progressbar', { name: 'Review progress' })).toHaveCount(0);
   expect(requests).toHaveLength(0);
@@ -1121,6 +1123,7 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
   await expect(submit).toBeDisabled();
   await addPolicy(page, file, text);
   await expect(submit).toBeEnabled();
+  await expect(submit).toHaveAccessibleDescription('This review shares your guide and relevant policy text with Anthropic.');
   expect(requests).toHaveLength(1);
   const response = await submitReview(page, 'guide');
   expect(response.request().postDataJSON().documents.map(doc => doc.title)).toEqual(['Facilities policy', file]);

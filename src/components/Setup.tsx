@@ -91,9 +91,7 @@ function selectedPolicies(originals: Policy[], ranges: PolicyRanges): Policy[] {
 }
 
 function guideSharingDisclosure(source: IntakeSource, documents: Policy[]) {
-  if (source.document?.pdfFile || documents.some((doc) => doc.pdfFile)) {
-    return 'Folio shares the included PDFs or selected pages with Anthropic, along with text from your guide and relevant policy passages.';
-  }
+  if (source.document?.pdfFile || documents.some((doc) => doc.pdfFile)) return undefined;
   return 'This review shares your guide and relevant policy text with Anthropic.';
 }
 
