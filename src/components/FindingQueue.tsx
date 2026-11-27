@@ -1,6 +1,7 @@
-import { Check, ChevronRight, Circle, CircleCheck, Search, SlidersHorizontal, X } from 'lucide-react';
+import { Check, ChevronRight, Search, SlidersHorizontal, Undo2, X } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { policyActionLabels, responseLabels, statusLabels, type ReviewRow, type Status } from '../review/model';
+import { QuestionListMotion } from './QuestionListMotion';
 
 export type QueueOptions = {
   search: string;
@@ -110,7 +111,7 @@ export function ResolutionButton({ row, onResolve, showLabel }: {
   row: QueueRow; onResolve: ChangeResolution; showLabel?: boolean;
 }) {
   const label = row.resolved ? 'Reopen question' : 'Resolve question';
-  const Icon = row.resolved ? CircleCheck : Circle;
+  const Icon = row.resolved ? Undo2 : Check;
   return (
     <button type="button" id={'resolve-question-' + row.index} className="resolution-button"
       aria-label={label + ' ' + (row.index + 1)} title={label}
@@ -159,7 +160,7 @@ function QuestionList({ rows, filtered, onResolve, ...list }: ListProps & { filt
   }
 
   return (
-    <>
+    <QuestionListMotion resolvedCount={resolved.length}>
       <section aria-label="Open questions"><QueueItems {...list} rows={open} onResolve={moveQuestion} /></section>
       {resolved.length > 0 && (
         <>
@@ -172,6 +173,6 @@ function QuestionList({ rows, filtered, onResolve, ...list }: ListProps & { filt
           </section>
         </>
       )}
-    </>
+    </QuestionListMotion>
   );
 }
