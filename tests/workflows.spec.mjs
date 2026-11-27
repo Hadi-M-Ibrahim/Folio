@@ -717,6 +717,77 @@ test('a failed or superseded rewrite preserves the analyst’s text', async ({ p
   }
 });
 
+test('the guide search trail opens ranked sources and filters page proof by literal term', async ({ page }) => {
+  const pages = [
+    'Archive the inspection log. Recheck the INSPECTION LOG before filing. The inspection logbook stays on site.',
+    'Send a copy of the inspection log to the registrar.',
+    'Archive the signature sheet.',
+  ];
+  await page.goto('/#/new/guide');
+  await pasteSource(page, 'guide', 'Staff must archive each inspection log.');
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', pages.join('\f'));
+  await clickReview(page, 'guide');
+
+  const trail = page.getByRole('button', { name: 'Search trail', exact: true });
+  const ranked = page.getByRole('button', { name: 'Ranked passages', exact: true });
+  const rankedPassages = page.getByRole('region', { name: 'Ranked passages', exact: true });
+  const terms = page.getByRole('button', { name: 'Search terms', exact: true });
+  const term = page.getByRole('combobox', { name: 'Search term', exact: true });
+  await trail.click();
+  await expect(trail).toHaveAttribute('aria-expanded', 'true');
+  await expect(ranked).toHaveAttribute('aria-pressed', 'true');
+  await expect(terms).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('button', { name: 'Follow-up search', exact: true })).toHaveCount(0);
+  await expect(term).toBeHidden();
+
+  const matches = rankedPassages.getByRole('article');
+  await expect(matches).toHaveCount(pages.length);
+  for (const [index, quote] of pages.entries()) {
+    const match = matches.nth(index);
+    const summary = match.locator('summary');
+    await expect(summary).toHaveAccessibleName('Ranked match ' + (index + 1) + ', Records.txt, p. ' + (index + 1));
+    if (index > 0) await summary.click();
+    await expect(match.getByRole('blockquote')).toContainText(quote);
+    await match.getByRole('button', { name: new RegExp('Open Records\\.txt.*p\\. ' + (index + 1)) }).click();
+    await expect(page.locator('dialog mark')).toHaveText(quote);
+    await page.keyboard.press('Escape');
+  }
+
+  await terms.click();
+  await expect(terms).toHaveAttribute('aria-pressed', 'true');
+  await expect(ranked).toHaveAttribute('aria-pressed', 'false');
+  await expect(rankedPassages).toBeHidden();
+  await expect(term.getByRole('option', { selected: true })).toHaveText('All terms');
+  const phrase = page.locator('summary').filter({ hasText: 'Model-planned term' });
+  const archive = page.locator('summary').filter({ hasText: 'archive' });
+  await expect(phrase).toContainText('inspection log');
+  await expect(phrase).toContainText(/3 hits.*2 pages/);
+  await expect(archive).toContainText('Requirement term');
+  await phrase.click();
+  const firstPage = page.getByRole('button', { name: /Records\.txt.*p\. 1\s*2 hits/ });
+  await expect(firstPage).toBeVisible();
+  await phrase.click();
+  await expect(firstPage).toBeHidden();
+  await term.selectOption({ label: 'inspection log' });
+  await expect(archive).toBeHidden();
+  await expect(page.getByRole('button', { name: /Records\.txt.*p\. 2\s*1 hit/ })).toBeVisible();
+  await firstPage.click();
+  await expect(page.locator('dialog mark')).toHaveText(['inspection log', 'INSPECTION LOG']);
+  await page.keyboard.press('Escape');
+  await term.selectOption({ label: 'staff' });
+  await expect(firstPage).toBeHidden();
+  await expect(page.getByText(/No exact matches/)).toBeVisible();
+  await term.selectOption({ label: 'All terms' });
+  await expect(archive).toBeVisible();
+  await expect(phrase).toBeVisible();
+  await ranked.click();
+  await expect(term).toBeHidden();
+  await trail.click();
+  await expect(trail).toHaveAttribute('aria-expanded', 'false');
+  await expect(ranked).toBeHidden();
+});
+
 for (const hasAppendix of [true, false]) {
   test(`a follow-up search traces a cross-reference ${hasAppendix ? 'to a new passage' : 'with no new passages'}`, async ({ page }) => {
     const question = 'Who files the inspection log?';
@@ -731,17 +802,35 @@ for (const hasAppendix of [true, false]) {
     await clickReview(page, 'questionnaire');
     const toggle = page.getByRole('button', { name: 'Search trail' });
     const followup = page.getByRole('region', { name: 'Follow-up search' });
+    const showFollowup = page.getByRole('button', { name: 'Follow-up search', exact: true });
+    const ranked = page.getByRole('button', { name: 'Ranked passages', exact: true });
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(followup).toBeHidden();
     await toggle.click();
+    await expect(ranked).toHaveAttribute('aria-pressed', 'true');
+    await expect(showFollowup).toHaveAttribute('aria-pressed', 'false');
+    await expect(followup).toBeHidden();
+    const candidate = page.getByRole('region', { name: 'Ranked passages', exact: true }).getByRole('article');
+    await expect(candidate).toHaveCount(1);
+    await expect(candidate.getByRole('blockquote')).toContainText(sourceQuote);
+    await candidate.getByRole('button', { name: 'Cite in response', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
+    await showFollowup.click();
+    await expect(showFollowup).toHaveAttribute('aria-pressed', 'true');
+    await expect(ranked).toHaveAttribute('aria-pressed', 'false');
+    await expect(candidate).toBeHidden();
+    await expect(page.getByRole('combobox', { name: 'Search term' })).toBeHidden();
     await expect(followup).toContainText('cross-reference');
-    await expect(page.getByRole('article').filter({ hasText: /Ranked match/ })).toHaveCount(1);
     const origin = followup.getByRole('article').filter({ hasText: 'Originating passage' });
+    await origin.getByRole('button', { name: 'Remove citation', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeHidden();
     await origin.getByRole('button', { name: /Filing.txt.*p\. 1/ }).click();
     await expect(page.locator('dialog mark')).toHaveText(sourceQuote);
     await page.keyboard.press('Escape');
     await expect(followup.getByText(term, { exact: true })).toBeVisible();
-    await expect(followup.getByRole('button', { name: /p\. 1\s*1 hit/ })).toBeVisible();
+    await followup.getByRole('button', { name: /p\. 1\s*1 hit/ }).click();
+    await expect(page.locator('dialog mark')).toHaveText(term);
+    await page.keyboard.press('Escape');
     if (hasAppendix) {
       await followup.getByRole('button', { name: /p\. 2\s*2 hits/ }).click();
       await expect(page.locator('dialog mark')).toHaveText([term, term]);
@@ -749,6 +838,9 @@ for (const hasAppendix of [true, false]) {
       const result = followup.getByRole('article').filter({ hasText: 'New passage from follow-up' });
       await result.getByRole('button', { name: /Filing.txt.*p\. 2/ }).click();
       await expect(page.locator('dialog mark')).toHaveText(appendixQuote);
+      await page.keyboard.press('Escape');
+      await result.getByRole('button', { name: 'Cite in response', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Remove response citation 1' })).toBeVisible();
     } else {
       await expect(followup).toContainText('This search found no new passages.');
       await page.getByRole('button', { name: 'Draft response' }).click();

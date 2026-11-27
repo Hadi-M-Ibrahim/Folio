@@ -183,8 +183,7 @@ h1 {
 }
 .report-link,
 .citation,
-.text-link,
-.proof-page {
+.text-link {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -199,8 +198,7 @@ h1 {
 }
 .report-link:hover,
 .citation:hover,
-.text-link:hover,
-.proof-page:hover {
+.text-link:hover {
   color: var(--ink);
   text-decoration: underline;
 }
@@ -227,8 +225,7 @@ h1 {
 .queue-search,
 .inspector-meta,
 .decision-row,
-.source-toolbar > span,
-.search-heading {
+.source-toolbar > span {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -236,19 +233,15 @@ h1 {
 .section-title {
   justify-content: space-between;
 }
-.section-title h2,
-.search-heading h3 {
+.section-title h2 {
   font-size: 17px;
   font-weight: 600;
 }
 .section-title span,
 .queue-row .row-status,
 .item-id,
-.count,
 .assessment small,
-.muted-note,
-.proof-term small,
-.proof-page {
+.muted-note {
   color: var(--muted);
   font-size: 13px;
 }
@@ -406,68 +399,8 @@ h1 {
   width: 2px;
   background: currentColor;
 }
-.search-toggle,
-.search-proof summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 550;
-}
-.search-toggle {
-  width: 100%;
-  border-block: 1px solid var(--line);
-  padding: 13px 0;
-  justify-content: space-between;
-}
-.search-toggle:hover {
-  background: var(--paper);
-}
-.search-toggle[aria-expanded='true'] svg,
-details[open] > summary svg:last-child {
-  transform: rotate(180deg);
-}
-#search-results {
-  padding: 18px 0;
-}
-.search-proof summary {
-  list-style: none;
-}
 summary::-webkit-details-marker {
   display: none;
-}
-.search-heading {
-  margin-bottom: 10px;
-}
-.term-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.term-chips button {
-  border: 1px solid var(--line);
-  padding: 5px 9px;
-  font-size: 14px;
-}
-.term-chips button[aria-pressed='true'] {
-  background: var(--ink);
-  color: white;
-}
-.search-proof {
-  margin: 15px 0 24px;
-}
-.proof-term {
-  display: grid;
-  gap: 5px;
-  border-top: 1px solid var(--line);
-  padding: 10px 0;
-}
-.proof-page {
-  text-align: left;
-}
-.proof-page em {
-  font-style: normal;
-  margin-left: auto;
 }
 .decision-row {
   flex-wrap: wrap;
