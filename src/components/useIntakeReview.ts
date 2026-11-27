@@ -4,7 +4,7 @@ import type { ReviewProgressState } from '../review/reviewProgress';
 
 type View = { kind: 'idle' | 'changed' } | { kind: 'running'; progress: ReviewProgressState };
 
-export function useIntakeReview(policyStep: boolean, onSubmit: (job: ReviewJob) => void, onError: (cause: unknown) => void) {
+export function useIntakeReview(sourceStep: boolean, onSubmit: (job: ReviewJob) => void, onError: (cause: unknown) => void) {
   const current = useRef<ReviewJob>(undefined);
   const started = useRef<'early' | 'submitted' | undefined>(undefined);
   const [job, setJob] = useState<ReviewJob>();
@@ -12,16 +12,16 @@ export function useIntakeReview(policyStep: boolean, onSubmit: (job: ReviewJob) 
   const [changed, setChanged] = useState(false);
   const state = useReviewState(job);
 
-  if (!policyStep && submittedFrom) setSubmittedFrom('');
+  if (!sourceStep && submittedFrom) setSubmittedFrom('');
   useEffect(() => () => {
     // Submitted jobs belong to the tab. Only speculative work belongs to the form.
     if (!current.current?.submitted) current.current?.cancel();
   }, []);
   useEffect(() => {
-    if (state.kind === 'complete' && policyStep && submittedFrom && window.location.hash === submittedFrom) {
+    if (state.kind === 'complete' && sourceStep && submittedFrom && window.location.hash === submittedFrom) {
       window.location.hash = '/review/' + state.review.key;
     }
-  }, [state, submittedFrom, policyStep]);
+  }, [state, submittedFrom, sourceStep]);
 
   function cancel() {
     current.current?.cancel();
@@ -52,7 +52,7 @@ export function useIntakeReview(policyStep: boolean, onSubmit: (job: ReviewJob) 
     }
   }
 
-  const view: View = submittedFrom && policyStep && state.kind === 'running' ? state : { kind: changed ? 'changed' : 'idle' };
+  const view: View = submittedFrom && sourceStep && state.kind === 'running' ? state : { kind: sourceStep && changed ? 'changed' : 'idle' };
   const failure = submittedFrom && state.kind === 'failed' ? state : undefined;
   return { view, failure, start, edit, cancel };
 }

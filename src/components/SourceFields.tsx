@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, ClipboardPaste, FilePenLine, FileText, FolderOpen, X } from 'lucide-react';
-import { isLoopback } from '../review/client';
+import { ChevronDown, ClipboardPaste, FilePenLine, FileText, X } from 'lucide-react';
 import type { Policy } from '../review/model';
 import { IntakeFile } from './IntakeFile';
 import { PdfViewer } from './PdfViewer';
@@ -63,11 +62,12 @@ type SourceFieldsProps = {
   source: IntakeSource;
   questions: string[];
   onChange: (source: IntakeSource) => void;
-  onFiles: (files: File[], kind: 'source' | 'bundle') => Promise<boolean>;
+  onFiles: (files: File[]) => Promise<boolean>;
+  onFinishText: () => void;
   onEditRange?: () => void;
 };
 
-function SourceText({ isGuide, source, questions, onChange }: Omit<SourceFieldsProps, 'onFiles'>) {
+function SourceText({ isGuide, source, questions, onChange, onFinishText }: Omit<SourceFieldsProps, 'onFiles'>) {
   const open = source.showText ?? (!source.name && Boolean(source.text));
   const pasteLabel = isGuide ? 'Paste guide text' : 'Paste a question or list';
   const textAction = source.name ? 'Preview and edit text' : pasteLabel;
@@ -91,6 +91,7 @@ function SourceText({ isGuide, source, questions, onChange }: Omit<SourceFieldsP
           id="intake-source"
           rows={5}
           value={source.text}
+          onBlur={onFinishText}
           placeholder={isGuide ? 'Paste your regulatory guide…' : 'Paste your questionnaire or type a question…'}
           onChange={(event) => onChange({ text: event.target.value, name: source.name, showText: true })}
         />}
@@ -105,7 +106,7 @@ function uploadDetail(source: IntakeSource) {
   return original ? original.pages.length + (original.pages.length === 1 ? ' page' : ' pages') : 'Edited text';
 }
 
-export function SourceFields({ isGuide, source, questions, onChange, onFiles, onEditRange }: SourceFieldsProps) {
+export function SourceFields({ isGuide, source, questions, onChange, onFiles, onEditRange, onFinishText }: SourceFieldsProps) {
   const [previewId, setPreviewId] = useState<string>();
   const availableRange = useMemo(() => source.range ?? (isGuide || source.document?.pdfFile ? undefined : questionnaireRange(questions, source.document)),
     [isGuide, questions, source.range, source.document]);
@@ -122,7 +123,7 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles, on
         describedBy="intake-intro"
         attachedFiles={[pdf]}
         detail={pdf ? pdfScopeLabel(pageNumbers, Boolean(source.selection)) : uploadDetail(source)}
-        onFiles={(files) => onFiles(files, 'source')}
+        onFiles={onFiles}
       />
       <div className="intake-source-options">
         {pdf ? (
@@ -131,7 +132,7 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles, on
             <FileText size={16} aria-hidden="true" /> Preview PDF
             <ChevronDown className="intake-chevron" size={14} aria-hidden="true" />
           </button>
-        ) : <SourceText isGuide={isGuide} source={source} questions={questions} onChange={onChange} />}
+        ) : <SourceText isGuide={isGuide} source={source} questions={questions} onChange={onChange} onFinishText={onFinishText} />}
         {availableRange && (
           <SourceRange
             key={availableRange.original?.id ?? 'pasted'}
@@ -150,21 +151,6 @@ export function SourceFields({ isGuide, source, questions, onChange, onFiles, on
       {pdf && <div id="source-pdf-preview" hidden={!previewOpen}>
         {previewOpen && <PdfViewer file={pdf} pages={pageNumbers} />}
       </div>}
-      {isLoopback && (
-        <label className="intake-bundle">
-          <FolderOpen size={15} aria-hidden="true" /> Import a prepared review (.json)
-          <input
-            type="file"
-            accept=".json"
-            aria-describedby="intake-intro"
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = '';
-              if (file) void onFiles([file], 'bundle');
-            }}
-          />
-        </label>
-      )}
     </>
   );
 }

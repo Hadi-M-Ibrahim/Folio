@@ -28,7 +28,9 @@ function checkPolicyPages({ pages, pdfFile }: Policy): number {
   return characters;
 }
 
-function checkPolicies(documents: Policy[]) {
+export function checkPolicies(documents: Policy[]) {
+  if (!Array.isArray(documents) || documents.length > MAX_POLICY_DOCUMENTS)
+    throw Error('Include up to 18 policy documents.');
   const ids = new Set<string>();
   let pages = 0;
   let characters = 0;
@@ -47,14 +49,11 @@ function checkPolicies(documents: Policy[]) {
 
 export function checkInput(input: ReviewInput, { allowGuideDraft = false } = {}) {
   if (!['questionnaire', 'guide'].includes(input.mode)) throw Error('Choose a valid review mode.');
-  if (!Array.isArray(input.documents) || input.documents.length > MAX_POLICY_DOCUMENTS)
-    throw Error('Include up to 18 policy documents.');
+  checkPolicies(input.documents);
   if (!input.documents.length && !input.transcribeSourceOnly) {
     if (input.mode === 'questionnaire') throw Error('Add at least one policy to search for answers.');
     if (!allowGuideDraft) throw Error(guidePolicyRequired);
   }
-  checkPolicies(input.documents);
-
   if (!input.readSourcePdf) checkSourceText(input);
 }
 

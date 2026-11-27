@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, Check, LoaderCircle } from 'lucide-react';
-import { checkInput, guidePolicyRequired, isLoopback } from '../review/client';
+import { ArrowLeft, ArrowRight, Check, FolderOpen, LoaderCircle } from 'lucide-react';
+import { checkInput, checkPolicies, isLoopback } from '../review/client';
 import { documentErrorMessage, readDocument } from '../review/files';
 import {
   MAX_POLICY_DOCUMENTS, readScope,
   type Mode, type Policy, type ReviewInput, type Scope,
 } from '../review/model';
-import { emptyPolicyDraft, PolicyFields } from './PolicyFields';
+import { emptyPolicyDraft, pastedPolicy, PolicyFields } from './PolicyFields';
 import { questionsFromText } from './intakeQuestions';
 import { SourceFields, sourceFromDocument, type IntakeSource } from './SourceFields';
 import { preparedGuide, preparedSelection, questionnaireRange } from './SourceRange';
-import { needsPolicyFile, prepareReview, reviewInput, type IntakePolicy } from './intakeReview';
+import { needsPolicyFile, prepareReview, type IntakePolicy } from './intakeReview';
 import type { ReviewJob } from '../review/reviewJob';
 import { ReviewProgress } from './ReviewProgress';
 import { useIntakeReview } from './useIntakeReview';
@@ -18,7 +18,7 @@ import './intake.css';
 
 type SetupProps = {
   initialMode: Mode;
-  policyStep: boolean;
+  sourceStep: boolean;
   onClose: () => void;
   onSubmit: (job: ReviewJob) => void;
 };
@@ -27,15 +27,17 @@ const intakeCopy = {
   guide: {
     sourceLabel: 'Regulatory guide',
     sourceTitle: 'Review a new policy guide',
-    sourceIntro: 'Upload or paste the guide. On the next step, add an existing policy file to compare.',
-    policyIntro: 'Upload an existing policy file to start comparing it with the guide.',
+    sourceIntro: 'Upload or paste the guide to compare it with your policies.',
+    policyIntro: 'Upload the existing policy files you want to compare with the new guide.',
+    next: 'Continue to guide',
     submit: 'Review obligations',
   },
   questionnaire: {
     sourceLabel: 'State questions',
     sourceTitle: 'Answer a questionnaire',
-    sourceIntro: 'Start with the state questionnaire or a single question you need to answer.',
-    policyIntro: 'Add your first policy to start finding evidence for the state’s questions.',
+    sourceIntro: 'Upload the state questionnaire or enter the questions you need to answer.',
+    policyIntro: 'Add the existing policies you want to search for answers.',
+    next: 'Continue to questions',
     submit: 'Find evidence',
   },
 };
@@ -79,11 +81,8 @@ async function readPreparedReview(file: File) {
   return { mode: input.mode, documents: input.documents, scope: readScope(input.corpusScope), source };
 }
 
-function sourceError(mode: Mode, source: IntakeSource, questions: string[]): string {
-  if (source.readSourcePdf && source.document?.pdfFile) return '';
-  if (mode === 'guide' && !source.text.trim()) return 'Upload or paste your regulatory guide.';
-  if (mode === 'questionnaire' && !questions.length) return 'Upload or enter at least one state question.';
-  return '';
+function sourceQuestions(source: IntakeSource, mode: Mode): string[] {
+  return source.questions ?? (mode === 'guide' || source.readSourcePdf ? [] : questionsFromText(source.text));
 }
 
 type PolicyRanges = Record<string, Policy['pages']>;
@@ -91,25 +90,21 @@ function selectedPolicies(originals: Policy[], ranges: PolicyRanges): Policy[] {
   return originals.map((doc) => Object.hasOwn(ranges, doc.id) ? { ...doc, pages: ranges[doc.id] } : doc);
 }
 
-function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnlocked, onSelect }: {
-  step: number; sourceLabel: string; sourceDescription: string;
-  busy: boolean; policiesUnlocked: boolean; onSelect: (step: number) => void;
+function IntakeSteps({ step, sourceLabel, busy, sourceUnlocked, onSelect }: {
+  step: number; sourceLabel: string;
+  busy: boolean; sourceUnlocked: boolean; onSelect: (step: number) => void;
 }) {
   return (
     <nav aria-label="Review steps">
       <ol className="intake-steps">
-        {[sourceLabel, 'Existing policies'].map((label, index) => (
+        {['Existing policies', sourceLabel].map((label, index) => (
           <li key={label} data-complete={index + 1 < step}>
             <button type="button" className="intake-step-control" aria-current={step === index + 1 ? 'step' : undefined}
-              disabled={busy || (index === 1 && !policiesUnlocked)} onClick={() => onSelect(index + 1)}>
+              disabled={busy || (index === 1 && !sourceUnlocked)} onClick={() => onSelect(index + 1)}>
               <span className="intake-step-number" aria-hidden="true">
                 {index + 1 < step ? <Check size={12} /> : index + 1}
               </span>
-              <span className="intake-step-text">
-                {label}
-                {index === 0 && step === 2 && <small>{sourceDescription}</small>}
-                {index === 1 && <small>Required</small>}
-              </span>
+              <span className="intake-step-text">{label}</span>
             </button>
           </li>
         ))}
@@ -118,15 +113,15 @@ function IntakeSteps({ step, sourceLabel, sourceDescription, busy, policiesUnloc
   );
 }
 
-function IntakeActions({ step, busy, needsUpload, submitLabel, view, onCancel }: {
-  step: number; busy: string; needsUpload: boolean; submitLabel: string;
+function IntakeActions({ busy, ready, submitLabel, view, onCancel }: {
+  busy: string; ready: boolean; submitLabel: string;
   view: ReturnType<typeof useIntakeReview>['view']; onCancel: () => void;
 }) {
   return (
     <div className="intake-actions">
       <div className="intake-review-status">
         {view.kind === 'running' && <ReviewProgress progress={view.progress} />}
-        {view.kind === 'changed' && step === 2 && !needsUpload && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
+        {view.kind === 'changed' && ready && <output className="intake-changed">Inputs changed. Choose {submitLabel} to review this version.</output>}
       </div>
       {view.kind === 'running' && <a className="intake-all-reviews" href="#review-options">All reviews</a>}
       {view.kind === 'running'
@@ -134,24 +129,16 @@ function IntakeActions({ step, busy, needsUpload, submitLabel, view, onCancel }:
           event.preventDefault();
           onCancel();
         }}>Cancel review</button>
-        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || needsUpload}>
-          <span>{busy || (step === 1 ? 'Continue to policies' : submitLabel)}</span>
+        : <button key="submit" type="submit" className="intake-primary" disabled={Boolean(busy) || !ready}>
+          <span>{busy || submitLabel}</span>
           {busy ? <LoaderCircle size={16} className="intake-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
         </button>}
     </div>
   );
 }
 
-function introText(mode: Mode, step: number, hasPolicies: boolean, needsUpload: boolean) {
-  const copy = intakeCopy[mode];
-  if (step === 1) return copy.sourceIntro;
-  if (!hasPolicies) return copy.policyIntro;
-  if (mode === 'questionnaire') return 'Choose the policies to search for evidence.';
-  return needsUpload ? guidePolicyRequired : 'Add any other policies that apply to this guide.';
-}
-
-function useFileRead(policyStep: boolean) {
-  const page = useMemo(() => ({ policyStep }), [policyStep]);
+function useFileRead(sourceStep: boolean) {
+  const page = useMemo(() => ({ sourceStep }), [sourceStep]);
   const sequence = useRef({ version: 0 });
   const [reading, setReading] = useState<{ page: typeof page; message: string }>();
   useEffect(() => {
@@ -166,7 +153,7 @@ function useFileRead(policyStep: boolean) {
   return { busy: reading?.page === page ? reading.message : '', begin, finish: () => setReading(undefined) };
 }
 
-export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps) {
+export function Setup({ initialMode, sourceStep, onClose, onSubmit }: SetupProps) {
   const [mode, setMode] = useState(initialMode);
   const [source, setSource] = useState<IntakeSource>({ text: '', name: '' });
   const [originalDocuments, setOriginalDocuments] = useState<IntakePolicy[]>([]);
@@ -175,19 +162,23 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
   const [scope, setScope] = useState<Scope>();
   const [draft, setDraft] = useState(emptyPolicyDraft);
   const [lastError, setLastError] = useState({ step: 1, message: '' });
-  const fileRead = useFileRead(policyStep);
+  const fileRead = useFileRead(sourceStep);
   const { busy } = fileRead;
   const heading = useRef<HTMLHeadingElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
-  const review = useIntakeReview(policyStep, onSubmit, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }));
+  const review = useIntakeReview(sourceStep, onSubmit, cause => setLastError({ step: 2, message: documentErrorMessage(cause) }));
   const isGuide = mode === 'guide';
   const needsUpload = needsPolicyFile(mode, originalDocuments);
   const copy = intakeCopy[mode];
-  const questions = useMemo(() => source.questions ?? (isGuide || source.readSourcePdf ? [] : questionsFromText(source.text)),
-    [source.questions, source.readSourcePdf, source.text, isGuide]);
-  const sourcePath = '#/new/' + initialMode;
-  const validationError = sourceError(mode, source, questions);
-  const step = policyStep && !validationError ? 2 : 1;
+  const questions = useMemo(() => sourceQuestions(source, mode), [source, mode]);
+  const hasPolicyDraft = Boolean(draft.title.trim() || draft.text.trim());
+  const canContinue = !needsUpload && (documents.length > 0 || Boolean(draft.text.trim()));
+  const sourceReady = Boolean(source.readSourcePdf || (isGuide ? source.text.trim() : questions.length));
+  const policyPath = '#/new/' + initialMode;
+  const step = sourceStep && canContinue && !hasPolicyDraft ? 2 : 1;
+  const page = step === 1
+    ? { label: 'Existing policies', title: 'Add existing policies', intro: copy.policyIntro, action: copy.next, ready: canContinue }
+    : { label: copy.sourceLabel, title: copy.sourceTitle, intro: copy.sourceIntro, action: copy.submit, ready: sourceReady };
   const error = step === 2 && review.failure ? documentErrorMessage(review.failure.error) : lastError.step === step ? lastError.message : '';
 
   function setError(message: string) {
@@ -195,8 +186,8 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
   }
 
   useEffect(() => {
-    if (policyStep && step === 1) window.location.replace(sourcePath);
-  }, [policyStep, step, sourcePath]);
+    if (sourceStep && step === 1) window.location.replace(policyPath);
+  }, [sourceStep, step, policyPath]);
   useEffect(() => {
     heading.current?.focus({ preventScroll: true });
     window.scrollTo(0, 0);
@@ -205,14 +196,14 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
     if (error) alert.current?.focus();
   }, [error]);
 
-  const snapshot = { mode, source, questions, documents, originals: originalDocuments, draft, scope };
+  const snapshot = { mode, source, questions, documents, originals: originalDocuments, scope };
 
   function acceptAddedPolicies(added: IntakePolicy[], fromDraft = false) {
     const next = [...originalDocuments, ...added];
     if (next.length > MAX_POLICY_DOCUMENTS) throw Error('Choose up to 18 policy documents.');
     const selected = selectedPolicies(next, policyRanges);
     try {
-      checkInput(reviewInput(mode, source, questions, selected));
+      checkPolicies(selected);
     } catch (cause) {
       if (!added.some((doc) => doc.pdfFile)) throw cause;
       setError(documentErrorMessage(cause) + ' Open a PDF policy preview to choose the pages to review.');
@@ -220,9 +211,6 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
     setOriginalDocuments(next);
     setScope(undefined);
     if (fromDraft) setDraft(emptyPolicyDraft);
-    if ((!fromDraft || source.document?.pdfFile) && (fromDraft || !draft.text.trim() && !draft.title.trim())) {
-      review.start(() => prepareReview({ ...snapshot, documents: selected, originals: next, draft: emptyPolicyDraft, scope: undefined }), true);
-    }
   }
 
   async function importFiles(files: File[], kind: 'source' | 'policies' | 'bundle') {
@@ -245,9 +233,7 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
         if (!isCurrent()) return false;
         const next = sourceFromDocument(doc, isGuide);
         setSource(next);
-        if (doc.pdfFile && documents.length > 0) {
-          review.start(() => prepareReview({ ...snapshot, source: next, questions: next.questions ?? [] }), true);
-        }
+        review.start(() => prepareReview({ ...snapshot, source: next, questions: sourceQuestions(next, mode) }), true);
       } else {
         if (files.length + documents.length > MAX_POLICY_DOCUMENTS) throw Error('Choose up to 18 policy documents.');
         const added: Policy[] = [];
@@ -291,7 +277,7 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
     const ranges = { ...policyRanges, [id]: pages };
     setPolicyRanges(ranges);
     try {
-      checkInput(reviewInput(mode, source, questions, selectedPolicies(originalDocuments, ranges)));
+      checkPolicies(selectedPolicies(originalDocuments, ranges));
       setError('');
     } catch (cause) {
       setError(documentErrorMessage(cause));
@@ -302,20 +288,30 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
     if (busy || target === step) return;
     setError('');
     if (target === 2) {
-      if (validationError) { setError(validationError); return; }
-      window.history.pushState({ folioIntakeSource: sourcePath }, '', sourcePath + '/policies');
+      if (!canContinue) return;
+      try {
+        if (hasPolicyDraft) {
+          acceptAddedPolicies([{ ...pastedPolicy(draft, documents.length + 1), pasted: true }], true);
+        } else {
+          checkPolicies(documents);
+        }
+      } catch (cause) {
+        setError(documentErrorMessage(cause));
+        return;
+      }
+      window.history.pushState({ folioPolicies: policyPath }, '', policyPath + '/source');
       window.dispatchEvent(new HashChangeEvent('hashchange'));
-    } else if (window.history.state?.folioIntakeSource === sourcePath) {
+    } else if (window.history.state?.folioPolicies === policyPath) {
       window.history.back();
     } else {
-      window.location.replace(sourcePath);
+      window.location.replace(policyPath);
     }
   }
 
   function submit(event: FormEvent) {
     event.preventDefault();
     if (step === 1) return selectStep(2);
-    if (busy) return;
+    if (busy || !sourceReady) return;
     setError('');
     review.start(() => prepareReview(snapshot));
   }
@@ -338,29 +334,18 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
         <ArrowLeft size={15} aria-hidden="true" /> Back
       </button>
       <div className="intake-layout">
-        <IntakeSteps step={step} sourceLabel={copy.sourceLabel}
-          busy={Boolean(busy)} policiesUnlocked={!validationError} onSelect={selectStep}
-          sourceDescription={source.name || (isGuide ? 'Guide text' : questions.length + (questions.length === 1 ? ' question' : ' questions'))} />
+        <IntakeSteps step={step} sourceLabel={copy.sourceLabel} busy={Boolean(busy)} sourceUnlocked={canContinue} onSelect={selectStep} />
         <div className="intake-sheet">
           <h1 id="intake-title" ref={heading} tabIndex={-1}>
-            {step === 1 ? copy.sourceTitle : 'Add existing policies'}
+            {page.title}
           </h1>
           <p className="intake-intro" id="intake-intro">
-            {introText(mode, step, documents.length > 0, needsUpload)}
+            {page.intro}
           </p>
           <form onSubmit={submit}>
             <fieldset disabled={Boolean(busy)} className="intake-fields">
-              <legend className="intake-sr-only">{step === 1 ? copy.sourceLabel : 'Existing policies'}</legend>
-              {step === 1 ? (
-                <SourceFields
-                  isGuide={isGuide}
-                  source={source}
-                  questions={questions}
-                  onFiles={importFiles}
-                  onEditRange={review.edit}
-                  onChange={updateSource}
-                />
-              ) : (
+              <legend className="intake-sr-only">{page.label}</legend>
+              {step === 1 ? <>
                 <PolicyFields
                   allowPaste={!needsUpload}
                   documents={documents}
@@ -377,15 +362,33 @@ export function Setup({ initialMode, policyStep, onClose, onSubmit }: SetupProps
                   onRemove={removePolicy}
                   onError={setError}
                 />
-              )}
-              {source.selection && <output className="intake-selection">{source.selection}</output>}
-              {scope && step === 2 && (
-                <output className="intake-help">This review searches {scope.selectedPages.toLocaleString()} selected {scope.selectedPages === 1 ? 'page' : 'pages'} from {scope.sourcePages.toLocaleString()} source pages.</output>
-              )}
+                {scope && <output className="intake-help">This review searches {scope.selectedPages.toLocaleString()} selected {scope.selectedPages === 1 ? 'page' : 'pages'} from {scope.sourcePages.toLocaleString()} source pages.</output>}
+                {isLoopback && (
+                  <label className="intake-bundle">
+                    <FolderOpen size={15} aria-hidden="true" /> Import a prepared review (.json)
+                    <input type="file" accept=".json" aria-describedby="intake-intro" onChange={event => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = '';
+                      if (file) void importFiles([file], 'bundle');
+                    }} />
+                  </label>
+                )}
+              </> : <>
+                <SourceFields
+                  isGuide={isGuide}
+                  source={source}
+                  questions={questions}
+                  onFiles={files => importFiles(files, 'source')}
+                  onFinishText={() => { if (sourceReady) review.start(() => prepareReview(snapshot), true); }}
+                  onEditRange={review.edit}
+                  onChange={updateSource}
+                />
+                {source.selection && <output className="intake-selection">{source.selection}</output>}
+              </>}
             </fieldset>
             {error && <p ref={alert} className="intake-error" role="alert" tabIndex={-1}>{error}</p>}
-            <IntakeActions step={step} busy={busy} needsUpload={step === 2 && needsUpload}
-              submitLabel={copy.submit} view={review.view} onCancel={review.cancel} />
+            <IntakeActions busy={busy} ready={page.ready}
+              submitLabel={page.action} view={review.view} onCancel={review.cancel} />
             {busy && <output className="intake-sr-only">{busy}</output>}
           </form>
         </div>

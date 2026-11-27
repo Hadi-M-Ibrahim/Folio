@@ -5,7 +5,6 @@ import {
   MAX_PDF_ATTACHMENT_PAGES, MAX_REQUEST_BYTES, ReviewSizeError, modeLabels,
   type Mode, type PdfAttachment, type Policy, type ReviewInput, type Scope,
 } from '../review/model';
-import { emptyPolicyDraft, pastedPolicy } from './PolicyFields';
 import type { IntakeSource } from './SourceFields';
 import { ReviewJob } from '../review/reviewJob';
 
@@ -48,22 +47,19 @@ function withReturnedPages(doc: Policy, returned?: Policy['pages']): Policy {
   return { ...doc, pages: doc.pages.map((page) => ({ ...page, text: textByPage.get(page.number) ?? page.text })) };
 }
 
-export function reviewInput(mode: Mode, source: IntakeSource, questions: string[], policies: Policy[]): ReviewInput {
+function reviewInput(mode: Mode, source: IntakeSource, questions: string[], policies: Policy[]): ReviewInput {
   return {
     mode, documents: policies,
     ...(source.readSourcePdf ? { readSourcePdf: true } : mode === 'guide' ? { guide: source.text.trim() } : { questions }),
   };
 }
 
-export function prepareReview({ mode, source, questions, documents, originals, draft, scope }: {
+export function prepareReview({ mode, source, questions, documents, originals, scope }: {
   mode: Mode; source: IntakeSource; questions: string[]; documents: Policy[]; originals: IntakePolicy[];
-  draft: typeof emptyPolicyDraft; scope?: Scope;
+  scope?: Scope;
 }): ReviewJob {
   if (needsPolicyFile(mode, originals)) throw Error(guidePolicyRequired);
-  const includeDraft = Boolean(draft.text.trim() || draft.title.trim());
-  const policies = includeDraft ? [...documents, pastedPolicy(draft, documents.length + 1)] : documents;
-  if (!policies.length && mode === 'questionnaire') throw Error('Upload a policy file or paste a policy to continue.');
-  const input = { ...reviewInput(mode, source, questions, policies), allowModel: true, modelSharingConsent: true };
+  const input = { ...reviewInput(mode, source, questions, documents), allowModel: true, modelSharingConsent: true };
   checkInput(input);
   let policyAttachments: PdfAttachment[] | undefined;
 
@@ -82,10 +78,10 @@ export function prepareReview({ mode, source, questions, documents, originals, d
     return {
       input: {
         ...input, ...(result.guide !== undefined && { guide: result.guide }), ...(result.questions && { questions: result.questions }),
-        documents: policies.map(doc => withReturnedPages(doc, result.policyPageText?.find(record => record.documentId === doc.id)?.pages)),
+        documents: documents.map(doc => withReturnedPages(doc, result.policyPageText?.find(record => record.documentId === doc.id)?.pages)),
       },
       result, sourceDocument: source.document && withReturnedPages(source.document, result.sourcePages),
-      sourceSelection: source.selection, scope: includeDraft ? undefined : scope,
+      sourceSelection: source.selection, scope,
     };
   });
 }
