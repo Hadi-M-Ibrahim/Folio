@@ -18,7 +18,7 @@ export default function App() {
   const [findingStates, setFindingStates] = useState(() => new Map<string, FindingState>());
   const [screens, setScreens] = useState<typeof import('./components/reviewScreens')>();
   const [loadFailed, setLoadFailed] = useState(false);
-  const setupMode = workflows.find(({ mode }) => path === '/new/' + mode || path === '/new/' + mode + '/policies')?.mode;
+  const setupMode = workflows.find(({ mode }) => ['', '/source', '/policies'].some(suffix => path === '/new/' + mode + suffix))?.mode;
   const lastView = useRef({ path, screens });
   const review = reviews.find((item) => path === '/review/' + item.key);
   const reviewState = useReviewState(review);
@@ -84,7 +84,7 @@ export default function App() {
           {loadFailed && <button className="secondary" onClick={() => window.location.reload()}>Reload review</button>}
         </div>
       ) : setupMode ? (
-        <screens.Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onSubmit={trackReview} />
+        <screens.Setup key={setupMode} initialMode={setupMode} sourceStep={path.endsWith('/source')} onClose={() => { window.location.hash = 'review-options'; }} onSubmit={trackReview} />
       ) : reviewState.kind === 'complete' ? (
         <screens.ReviewWorkspace key={reviewState.review.key} review={reviewState.review} findingStates={findingStates} onUpdateFinding={updateFinding} />
       ) : review && (

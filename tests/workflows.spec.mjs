@@ -56,10 +56,10 @@ function uploadPdf(page, label, name, buffer) {
   return page.getByLabel(label, { exact: true }).setInputFiles({ name, mimeType: 'application/pdf', buffer });
 }
 
-async function expectCompactPdf(page) {
+async function expectCompactPdf(page, mode = 'questionnaire') {
   await expect(page.getByRole('button', { name: 'Preview PDF', exact: true })).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByRole('region', { name: 'PDF preview', includeHidden: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Continue to policies' })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole('button', { name: mode === 'guide' ? 'Review obligations' : 'Find evidence' })).toBeInViewport({ ratio: 1 });
 }
 
 async function chooseRange(page, action, label, value) {
@@ -176,10 +176,16 @@ async function pdfPageTexts(download) {
   }
 }
 
+async function continueToSource(page, mode) {
+  await page.getByRole('button', { name: mode === 'guide' ? 'Continue to guide' : 'Continue to questions' }).click();
+}
+
 async function pasteSource(page, mode, text) {
   const guide = mode === 'guide';
   await page.getByRole('button', { name: guide ? 'Paste guide text' : 'Paste a question or list' }).click();
-  await page.getByLabel(guide ? 'Guide text' : 'Questions', { exact: true }).fill(text);
+  const field = page.getByLabel(guide ? 'Guide text' : 'Questions', { exact: true });
+  await field.fill(text);
+  await field.blur();
 }
 
 async function addPolicy(page, name, text) {
@@ -290,7 +296,7 @@ test('a cold workflow deep link paints no landing hero', async ({ page }) => {
   } finally {
     release();
   }
-  await expect(page.getByRole('heading', { name: 'Review a new policy guide', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Add existing policies', exact: true })).toBeFocused();
   expect(await page.evaluate(() => window.homeWasPainted)).toBe(false);
 });
 
@@ -337,7 +343,7 @@ test('review tools load on demand and recover after a download failure', async (
   expect(requests).toBeGreaterThan(0);
   await page.unroute(bundle);
   await page.getByRole('button', { name: 'Reload review' }).click();
-  await expect(page.getByRole('heading', { name: 'Answer a questionnaire', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Add existing policies', exact: true })).toBeFocused();
 });
 
 for (const mode of ['guide', 'questionnaire']) {
@@ -345,14 +351,14 @@ for (const mode of ['guide', 'questionnaire']) {
     const guide = mode === 'guide';
     const source = guide ? 'Staff must keep a log.' : 'Who keeps the log?';
     await page.goto('/#/new/' + mode);
-    await pasteSource(page, mode, source);
-    await page.getByRole('button', { name: 'Continue to policies' }).click();
+    await addPolicy(page, 'Log.txt', 'Office staff keep the log.');
+    await continueToSource(page, mode);
     const release = await holdNextReview(page, route => route.fulfill({
       status: 429, contentType: 'text/html', body: 'Too many requests',
       headers: guide ? { 'Retry-After': '70' } : {},
     }));
     const response = page.waitForResponse('**/api/review');
-    await addPolicy(page, 'Log.txt', 'Office staff keep the log.');
+    await pasteSource(page, mode, source);
     await clickReview(page, mode);
     release();
     const first = await response;
@@ -370,17 +376,17 @@ for (const mode of ['guide', 'questionnaire']) {
 test('a provider outage preserves the question and uploaded policy for retry', async ({ page }, testInfo) => {
   const question = `Who keeps the outage log for case ${testInfo.project.name}-${testInfo.repeatEachIndex}-${testInfo.retry}?`;
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', question);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Outages.txt', 'The office manager keeps the outage log.');
+  await continueToSource(page, 'questionnaire');
   const release = await holdNextReview(page);
   const response = page.waitForResponse('**/api/review');
-  await addPolicy(page, 'Outages.txt', 'The office manager keeps the outage log.');
+  await pasteSource(page, 'questionnaire', question);
   await clickReview(page, 'questionnaire');
   release();
   const first = await response;
   expect(first.status()).toBe(503);
   await expect(page.getByRole('alert')).toContainText('Folio could not reach Anthropic. Try again shortly.');
-  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Outages.txt');
+  await expect(page.getByLabel('Questions', { exact: true })).toHaveValue(question);
   const retry = await submitReview(page, 'questionnaire');
   expect(retry.ok()).toBe(true);
   expect(retry.request().postDataJSON()).toEqual(first.request().postDataJSON());
@@ -392,11 +398,11 @@ for (const mode of ['questionnaire', 'guide']) {
     const source = mode === 'guide' ? 'Staff must retain the inspection log.' : 'Who retains the inspection log?';
     const requests = captureReviewRequests(page);
     await page.goto('/#/new/' + mode);
-    await pasteSource(page, mode, source);
-    await page.getByRole('button', { name: 'Continue to policies' }).click();
+    await addPolicy(page, 'Inspection.txt', 'The registrar retains the inspection log.');
+    await continueToSource(page, mode);
     const release = await holdNextReview(page);
     const started = page.waitForRequest('**/api/review');
-    await addPolicy(page, 'Inspection.txt', 'The registrar retains the inspection log.');
+    await pasteSource(page, mode, source);
     const request = await started;
     const home = page.getByRole('link', { name: 'Folio home' });
     const progress = page.getByRole('progressbar', { name: 'Review progress' });
@@ -432,13 +438,13 @@ test('cancelling a second review leaves the first available for retry from home'
   const question = 'Who keeps the register?';
   const requests = captureReviewRequests(page);
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', question);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Register.txt', 'The registrar keeps the register.');
+  await continueToSource(page, 'questionnaire');
   const failQuestionnaire = await holdNextReview(page, route => route.fulfill({
     status: 503, json: { error: 'Assessment interrupted.' },
   }));
   const started = page.waitForRequest('**/api/review');
-  await addPolicy(page, 'Register.txt', 'The registrar keeps the register.');
+  await pasteSource(page, 'questionnaire', question);
   await started;
   await clickReview(page, 'questionnaire');
   await page.getByRole('link', { name: 'All reviews' }).click();
@@ -447,12 +453,12 @@ test('cancelling a second review leaves the first available for retry from home'
   const href = await questionnaire.getAttribute('href');
 
   await page.getByRole('link', { name: /Review a new policy guide/ }).click();
-  await pasteSource(page, 'guide', 'Staff must retain the signed register.');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', 'Staff keep the signed register.');
+  await continueToSource(page, 'guide');
   const releaseGuide = await holdNextReview(page);
   const guide = page.waitForRequest('**/api/review');
   try {
-    await addPolicy(page, 'Records.txt', 'Staff keep the signed register.');
+    await pasteSource(page, 'guide', 'Staff must retain the signed register.');
     const guideRequest = await guide;
     await clickReview(page, 'guide');
     await page.getByRole('link', { name: 'All reviews' }).click();
@@ -483,11 +489,11 @@ test('cancelling a second review leaves the first available for retry from home'
 
 test('leaving an unsubmitted review keeps speculative work out of the tab list', async ({ page }) => {
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await continueToSource(page, 'questionnaire');
   const release = await holdNextReview(page);
   const started = page.waitForRequest('**/api/review');
-  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?');
   const request = await started;
   const list = page.getByRole('region', { name: 'Reviews in this tab' });
   try {
@@ -514,8 +520,10 @@ test('a prepared review waits for submission and rejects a keyword-only result',
   await page.getByLabel('Import a prepared review (.json)').setInputFiles({
     name: 'inspection.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(input)),
   });
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Registry');
+  await expect(page).toHaveURL(/\/new\/questionnaire$/);
+  await continueToSource(page, 'questionnaire');
+  await expect(page.getByLabel('Questions', { exact: true })).toHaveValue(question);
   expect(requests).toHaveLength(0);
   await page.route('**/api/review', route => route.fulfill({ json: { engine: 'local', findings: [] } }), { times: 1 });
   await submitReview(page, 'questionnaire');
@@ -525,129 +533,168 @@ test('a prepared review waits for submission and rejects a keyword-only result',
   await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
 });
 
-test('a guide waits for a policy file, then finishes in intake and opens once after explicit submission', async ({ page, context }) => {
+test('a guide waits for its final source file and opens the completed review only on submission', async ({ page, context }) => {
   const duty = 'Staff must retain the signed archive register.';
   const pdf = await printPdf(context, [duty, 'Registry reference notes.']);
+  const policy = await printPdf(context, ['Staff keep the signed archive register.']);
   const requests = captureReviewRequests(page);
   const release = await holdNextReview(page);
   await page.goto('/#/new/guide');
   const steps = page.getByRole('navigation', { name: 'Review steps' });
-  const policies = steps.getByRole('button', { name: /Existing policies.*Required/ });
-  await expect(policies).toBeDisabled();
-  await uploadPdf(page, 'Upload regulatory guide', 'Archive guide.pdf', pdf);
-  await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
-  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive guide.pdf', 1);
-  await policies.getByText('Required').click();
+  const policies = steps.getByRole('button', { name: /Existing policies/ });
+  const guide = steps.getByRole('button', { name: /Regulatory guide/ });
+  await expect(steps.getByRole('button').first()).toHaveAccessibleName('Existing policies');
   await expect(policies).toHaveAttribute('aria-current', 'step');
-  await expect(page.getByRole('button', { name: 'Review obligations' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Review obligations' })).toHaveAccessibleDescription('');
-  await expect(page.getByLabel('Upload policy files')).toHaveAccessibleDescription('Upload an existing policy file to start comparing it with the guide.');
-  await expect(page.getByRole('progressbar', { name: 'Review progress' })).toHaveCount(0);
-  expect(requests).toHaveLength(0);
-  const started = page.waitForRequest('**/api/review');
-  const policy = await printPdf(context, ['Staff keep the signed archive register.']);
+  await expect(guide).toBeDisabled();
+  await expect(steps.getByText('Required', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continue to guide' })).toBeDisabled();
+  await expect(page.getByLabel('Upload policy files')).toHaveAccessibleDescription(/polic/i);
   await uploadPdf(page, 'Upload policy files', 'Archive policy.pdf', policy);
+  await continueToSource(page, 'guide');
+  await expect(guide).toHaveAttribute('aria-current', 'step');
+  const submit = page.getByRole('button', { name: 'Review obligations' });
+  await expect(submit).toBeDisabled();
+  await expect(submit).toHaveAccessibleDescription('');
+  await expectQuietReview(page);
+  expect(requests).toHaveLength(0);
+
+  const started = page.waitForRequest('**/api/review');
+  await uploadPdf(page, 'Upload regulatory guide', 'Archive guide.pdf', pdf);
   expect((await started).postDataJSON()).toMatchObject({
     mode: 'guide', documents: [{ title: 'Archive policy.pdf' }], allowModel: true, modelSharingConsent: true,
     pdfAttachments: [{ role: 'source', title: 'Archive guide.pdf' }, { role: 'policy', title: 'Archive policy.pdf' }],
   });
+  await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Archive guide.pdf', 1);
   await expectQuietReview(page);
   await clickReview(page, 'guide');
   await expect(page.getByRole('progressbar', { name: 'Review progress' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel review' })).toBeVisible();
-  await steps.getByRole('button', { name: /Regulatory guide/ }).click();
-  await page.getByRole('button', { name: 'Choose guide pages' }).click();
+  await policies.click();
+  await page.getByRole('button', { name: 'Preview Archive policy.pdf' }).click();
   await expectQuietReview(page);
   const finished = waitForBackgroundReview(page);
   release();
   await finished;
-  await expectQuietReview(page);
   await expect(page).toHaveURL(/\/new\/guide$/);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await expectQuietReview(page);
+  await continueToSource(page, 'guide');
   await expectQuietReview(page);
   await clickReview(page, 'guide');
   await expect(page.getByRole('heading', { name: duty, exact: true })).toBeVisible();
   expect(requests).toHaveLength(1);
 });
 
-test('a questionnaire PDF waits until its pasted policy is committed', async ({ page, context }) => {
+test('a committed pasted policy unlocks the questionnaire and the final PDF starts the review', async ({ page, context }) => {
   const question = 'Who keeps the inspection log?';
   const policy = 'The registrar keeps the inspection log.';
   const form = await printPdf(context, [question]);
   const requests = captureReviewRequests(page);
   await page.goto('/#/new/questionnaire');
   const steps = page.getByRole('navigation', { name: 'Review steps' });
-  const policies = steps.getByRole('button', { name: /Existing policies.*Required/ });
-  await expect(policies).toBeDisabled();
-  await uploadPdf(page, 'Upload questionnaire', 'Form.pdf', form);
-  await expect(policies).toBeEnabled();
-  await policies.focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeFocused();
+  const questions = steps.getByRole('button', { name: 'State questions', exact: true });
+  await expect(steps.getByRole('button').first()).toHaveAccessibleName('Existing policies');
+  await expect(steps.getByText('Required', { exact: true })).toHaveCount(0);
+  await expect(questions).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
   await page.getByRole('button', { name: 'Paste a policy' }).click();
   await page.getByLabel(/Policy title/).fill('Registry');
   await page.getByLabel('Policy text', { exact: true }).fill(policy);
-  await steps.getByRole('button', { name: /State questions/ }).click();
-  await expect(page.getByRole('button', { name: 'Remove file' })).toBeVisible();
-  await policies.getByText('Required').click();
-  await expect(page.getByLabel('Policy text', { exact: true })).toHaveValue(policy);
+  await page.getByRole('button', { name: 'Add policy', exact: true }).click();
+  await expect(questions).toBeEnabled();
+  await questions.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Answer a questionnaire' })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Find evidence' })).toBeDisabled();
+  await page.goBack();
+  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Registry');
+  await page.goForward();
+  await expect(page).toHaveURL(/\/new\/questionnaire\/source$/);
   expect(requests).toHaveLength(0);
+
   const started = page.waitForRequest('**/api/review');
   const finished = waitForBackgroundReview(page);
-  await page.getByRole('button', { name: 'Add policy', exact: true }).click();
+  await uploadPdf(page, 'Upload questionnaire', 'Form.pdf', form);
   expect((await started).postDataJSON()).toMatchObject({
     questions: [question], documents: [{ title: 'Registry', pages: [{ number: 1, text: policy }] }],
   });
   await finished;
   await expectQuietReview(page);
-  await expect(page).toHaveURL(/\/new\/questionnaire\/policies$/);
+  await expect(page).toHaveURL(/\/new\/questionnaire\/source$/);
   await clickReview(page, 'questionnaire');
   await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
   expect(requests).toHaveLength(1);
 });
 
-test('removing the source locks the policies step until another valid source is supplied', async ({ page }) => {
-  await page.goto('/#/new/questionnaire/policies');
+test('history navigation keeps a new pasted policy on the first step until it is added', async ({ page }) => {
+  await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Records.txt', 'The clerk keeps the register.');
+  await continueToSource(page, 'questionnaire');
+  await page.goBack();
+  await page.getByRole('button', { name: 'Paste a policy' }).click();
+  await page.getByLabel(/Policy title/).fill('Inspections');
+  const policy = page.getByLabel('Policy text', { exact: true });
+  await policy.fill('The manager signs the inspection report.');
+  await page.goForward();
   await expect(page).toHaveURL(/\/new\/questionnaire$/);
-  const policies = page.getByRole('navigation', { name: 'Review steps' }).getByRole('button', { name: /Existing policies/ });
-  const question = 'Who signs the register?';
-  await page.getByLabel('Upload questionnaire').setInputFiles({
-    name: 'Register.txt', mimeType: 'text/plain', buffer: Buffer.from(question),
-  });
-  await expect(policies).toBeEnabled();
-  await page.getByRole('button', { name: 'Remove file' }).click();
-  await expect(policies).toBeDisabled();
-  await page.getByLabel('Questions', { exact: true }).fill(question);
-  await policies.click();
-  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeFocused();
+  await expect(policy).toHaveValue('The manager signs the inspection report.');
+  await continueToSource(page, 'questionnaire');
+  await expect(page.getByRole('button', { name: 'Find evidence' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByRole('list', { name: 'Added policies' }).getByRole('listitem')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Preview Inspections' })).toBeVisible();
 });
 
-test('editing a running questionnaire aborts it and a fresh review can start early again', async ({ page }) => {
+test('removing the last policy locks the source step until a new policy is added', async ({ page }) => {
+  await page.goto('/#/new/questionnaire/source');
+  await expect(page).toHaveURL(/\/new\/questionnaire$/);
+  const questions = page.getByRole('navigation', { name: 'Review steps' }).getByRole('button', { name: /State questions/ });
+  await addPolicy(page, 'Register.txt', 'The registrar signs the register.');
+  await continueToSource(page, 'questionnaire');
+  await page.goBack();
+  await page.getByRole('button', { name: 'Remove Register.txt' }).click();
+  await expect(questions).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
+  await page.goForward();
+  await expect(page).toHaveURL(/\/new\/questionnaire$/);
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
+  await addPolicy(page, 'Signatures.txt', 'The manager signs the register.');
+  await questions.click();
+  await expect(page.getByRole('heading', { name: 'Answer a questionnaire' })).toBeFocused();
+});
+
+test('editing a running questionnaire aborts it and only explicit submission reviews the changes', async ({ page }) => {
   const oldQuestion = 'Who keeps the inspection log?';
   const newQuestion = 'Who signs the revised inspection log?';
   const requests = captureReviewRequests(page);
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', oldQuestion);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Inspection.md', 'The clerk keeps the inspection log.');
+  await continueToSource(page, 'questionnaire');
   const release = await holdNextReview(page);
   const started = page.waitForRequest('**/api/review');
-  await addPolicy(page, 'Inspection.md', 'The clerk keeps the inspection log.');
+  const questions = page.getByLabel('Questions', { exact: true });
+  await page.getByRole('button', { name: 'Paste a question or list' }).click();
+  await questions.fill(oldQuestion);
+  await expect(questions).toBeFocused();
+  expect(requests).toHaveLength(0);
+  await questions.blur();
   const first = await started;
   const cancelled = page.waitForEvent('requestfailed', request => request === first);
   const token = first.headers()['x-folio-review-token'];
   expect(token).toBeTruthy();
   const stopped = page.waitForResponse(response => response.url().endsWith('/api/review-session') &&
     response.request().postDataJSON().token === token);
-  await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await expectQuietReview(page);
-  await page.getByLabel('Questions', { exact: true }).fill(newQuestion);
+  await questions.fill(newQuestion);
+  await questions.blur();
   release();
   expect((await cancelled).failure().errorText).toContain('ABORTED');
   expect((await stopped).status()).toBe(200);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
   await addPolicy(page, 'Signatures.txt', 'The registrar signs the revised inspection log.');
   await page.getByRole('button', { name: 'Remove Inspection.md' }).click();
   await page.getByRole('button', { name: 'Preview Signatures.txt' }).click();
+  await continueToSource(page, 'questionnaire');
+  await expect(questions).toHaveValue(newQuestion);
   await expectQuietReview(page);
   await expect(page.getByText(/Inputs changed/)).toHaveCount(0);
   expect(requests).toHaveLength(1);
@@ -660,15 +707,17 @@ test('editing a running questionnaire aborts it and a fresh review can start ear
 
   await page.getByRole('link', { name: 'All reviews' }).click();
   await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
-  await pasteSource(page, 'questionnaire', oldQuestion);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', 'The office manager keeps the inspection log.');
+  await continueToSource(page, 'questionnaire');
   const fresh = page.waitForRequest('**/api/review');
   const finished = waitForBackgroundReview(page);
-  await addPolicy(page, 'Records.txt', 'The office manager keeps the inspection log.');
+  await page.getByLabel('Upload questionnaire').setInputFiles({
+    name: 'Inspection.txt', mimeType: 'text/plain', buffer: Buffer.from(oldQuestion),
+  });
   expect((await fresh).postDataJSON()).toMatchObject({ questions: [oldQuestion], documents: [{ title: 'Records.txt' }] });
   await finished;
   await expectQuietReview(page);
-  await expect(page).toHaveURL(/\/new\/questionnaire\/policies$/);
+  await expect(page).toHaveURL(/\/new\/questionnaire\/source$/);
   expect(requests).toHaveLength(3);
 });
 
@@ -685,11 +734,9 @@ test('each selected PDF shows preparation, attachment, and a persistent policy e
   const first = await printPdf(context, ['The clerk keeps the inspection log.']);
   const second = await printPdf(context, ['The manager signs the inspection log.']);
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   const requests = captureReviewRequests(page);
   const upload = page.getByLabel('Upload policy files');
-  await expect(upload).toHaveAccessibleDescription('Add your first policy to start finding evidence for the state’s questions.');
+  await expect(upload).toHaveAccessibleDescription(/polic/i);
   await upload.setInputFiles([
     { name: 'Clerk.pdf', mimeType: 'application/pdf', buffer: first },
     { name: 'Manager.pdf', mimeType: 'application/pdf', buffer: second },
@@ -699,17 +746,23 @@ test('each selected PDF shows preparation, attachment, and a persistent policy e
     await expect(page.locator('.intake-file-feedback').filter({ hasText: name })).toContainText('Preparing PDF');
   }
   expect(requests).toHaveLength(0);
-  const finished = waitForBackgroundReview(page);
   await page.evaluate(() => window.releasePolicyReads());
   const policies = page.getByRole('list', { name: 'Added policies' });
   await expect(policies.getByRole('listitem')).toHaveCount(2);
   await expect(page.getByText('PDF attached', { exact: true })).toHaveCount(2);
-  await expect(page.getByRole('button', { name: 'Find evidence' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeEnabled();
   await expect(page.locator('.intake-file-feedback')).toHaveCount(0);
   await expect(policies).toContainText('Clerk.pdf');
   await expect(policies).toContainText('Manager.pdf');
+  await continueToSource(page, 'questionnaire');
+  await expect(page.getByRole('button', { name: 'Find evidence' })).toBeDisabled();
+  expect(requests).toHaveLength(0);
+  const finished = waitForBackgroundReview(page);
+  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?');
   await finished;
   await expectQuietReview(page);
+  await page.goBack();
+  await expect(policies.getByRole('listitem')).toHaveCount(2);
   expect(requests).toHaveLength(1);
 });
 
@@ -725,20 +778,24 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await expect(page.getByRole('heading', { name: 'Reviews in this tab' })).toHaveCount(0);
   await expect(page.getByRole('banner').getByRole('button', { name: 'Document privacy' })).toHaveCount(0);
   await page.getByRole('link', { name: /Answer a questionnaire/ }).click();
-  await pasteSource(page, 'questionnaire', question);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  await expect(page).toHaveURL(/questionnaire\/policies$/);
-  await page.goBack();
-  await expect(page.getByLabel('Questions', { exact: true })).toHaveValue(question);
-  await page.goForward();
-  await page.getByRole('button', { name: 'Find evidence' }).click();
-  await expect(page.getByRole('alert')).toBeVisible();
-  const assessment = page.waitForResponse('**/api/review');
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue to questions' })).toBeDisabled();
   await addPolicy(page, 'Facilities.txt', policy);
   await page.getByRole('button', { name: 'Preview Facilities.txt', exact: true }).click();
   const preview = page.getByRole('textbox', { name: 'Text of Facilities.txt, page 1' });
   await expect(preview).toHaveValue(policy);
   await expect(preview).not.toBeEditable();
+  await continueToSource(page, 'questionnaire');
+  await expect(page.getByRole('button', { name: 'Find evidence' })).toBeDisabled();
+  const assessment = page.waitForResponse('**/api/review');
+  await pasteSource(page, 'questionnaire', question);
+  await (await assessment).finished();
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/new\/questionnaire$/);
+  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Facilities.txt');
+  await page.goForward();
+  await expect(page).toHaveURL(/#\/new\/questionnaire\/source$/);
+  await expect(page.getByLabel('Questions', { exact: true })).toHaveValue(question);
   const response = await submitReview(page, 'questionnaire', assessment);
   expect(response.request().postDataJSON().pdfAttachments ?? []).toEqual([]);
   expect(await providerCalls(response)).toEqual([
@@ -821,9 +878,9 @@ test('The question queue resolves and reopens questions independently of saved r
   const questions = ['Who checks the gate?', 'Who keeps the log?', 'Who signs the declaration?',
     'Who records exceptions?', 'Who checks permits?', 'Who reviews access?'];
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', questions.join('\n'));
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   await addPolicy(page, 'Records.txt', 'The coordinator keeps the log and reviews access each month.');
+  await continueToSource(page, 'questionnaire');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
   await clickReview(page, 'questionnaire');
 
   const queue = page.getByRole('complementary', { name: 'Review queue' });
@@ -884,9 +941,9 @@ test('The question queue resolves and reopens questions independently of saved r
 test('Resolving a question slides the next question into its place and respects reduced motion', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', 'Who records exceptions during an annual inspection of the facility?\nWho keeps the log?');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   await addPolicy(page, 'Records.txt', 'The coordinator keeps the inspection log.');
+  await continueToSource(page, 'questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who records exceptions during an annual inspection of the facility?\nWho keeps the log?');
   await clickReview(page, 'questionnaire');
   const queue = page.getByRole('complementary', { name: 'Review queue' });
   await expect(queue).toBeVisible();
@@ -939,9 +996,9 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
   const confirmedAnswer = 'Renée confirms each visit — including the café’s late shift.';
   const draftLines = Array.from({ length: 80 }, (_, i) => `Exception ${i + 1} awaits a countersignature.`);
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', questions.join('\n'));
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   await addPolicy(page, 'Records.txt', [suggestedQuote, 'Parking permits are issued at reception.', selectedQuote].join('\f'));
+  await continueToSource(page, 'questionnaire');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
   await clickReview(page, 'questionnaire');
 
   const responses = page.getByRole('region', { name: 'Responses', exact: true });
@@ -997,9 +1054,9 @@ test('Responses downloads a paginated PDF of saved answers and selected citation
 
 test('a failed or superseded rewrite preserves the analyst’s text', async ({ page }) => {
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?\nWho signs it?');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log and signs it.');
+  await continueToSource(page, 'questionnaire');
+  await pasteSource(page, 'questionnaire', 'Who keeps the inspection log?\nWho signs it?');
   await clickReview(page, 'questionnaire');
   const editor = page.getByLabel('Response for submission');
   await editor.fill('The registrar maintains the log.');
@@ -1042,9 +1099,9 @@ test('the guide search trail opens ranked sources and filters page proof by lite
     'Archive the signature sheet.',
   ];
   await page.goto('/#/new/guide');
-  await pasteSource(page, 'guide', 'Staff must archive each inspection log.');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
   await addPolicy(page, 'Records.txt', pages.join('\f'));
+  await continueToSource(page, 'guide');
+  await pasteSource(page, 'guide', 'Staff must archive each inspection log.');
   await clickReview(page, 'guide');
 
   const trail = page.getByRole('button', { name: 'Search trail', exact: true });
@@ -1121,9 +1178,9 @@ for (const hasAppendix of [true, false]) {
     const appendixQuote = 'Appendix B assigns filing to the coordinator. Appendix B applies to all offices.';
     const pages = hasAppendix ? [sourceQuote, appendixQuote] : [sourceQuote];
     await page.goto('/#/new/questionnaire');
-    await pasteSource(page, 'questionnaire', question);
-    await page.getByRole('button', { name: 'Continue to policies' }).click();
     await addPolicy(page, 'Filing.txt', pages.join('\f'));
+    await continueToSource(page, 'questionnaire');
+    await pasteSource(page, 'questionnaire', question);
     await clickReview(page, 'questionnaire');
     const toggle = page.getByRole('button', { name: 'Search trail' });
     const followup = page.getByRole('region', { name: 'Follow-up search' });
@@ -1183,17 +1240,18 @@ test('a guide compared with an uploaded policy produces an action list with a tr
   const obligation = 'Teams must log the inspection date before handover.';
   await page.goto('/');
   await page.getByRole('link', { name: /Review a new policy guide/ }).click();
-  await expect(page.getByRole('heading', { name: 'Review a new policy guide', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
+  await addPolicy(page, 'Handover policy.md', 'Teams log each inspection before handover.');
+  await continueToSource(page, 'guide');
+  const fullGuide = waitForBackgroundReview(page);
   await page.getByLabel('Upload regulatory guide').setInputFiles({
     name: 'Handover.txt', mimeType: 'text/plain', buffer: Buffer.from('Introduction\f' + obligation),
   });
+  await fullGuide;
   await page.getByRole('button', { name: 'Choose guide pages' }).click();
   await page.getByLabel(/Guide pages/).fill('2');
   await page.getByRole('button', { name: 'Apply range' }).click();
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const pending = page.waitForResponse('**/api/review');
-  await addPolicy(page, 'Handover policy.md', 'Teams log each inspection before handover.');
-  const response = await submitReview(page, 'guide', pending);
+  const response = await submitReview(page, 'guide');
   expect(response.request().postDataJSON()).toMatchObject({ guide: obligation, documents: [{ title: 'Handover policy.md' }] });
   expect((await response.json()).planningEngine).toBe('anthropic');
   await expect(page.getByRole('group', { name: 'Policy action', exact: true })).toBeVisible();
@@ -1220,25 +1278,27 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
   const policy = 'Facilities staff record the inspection date.';
   const requests = captureReviewRequests(page);
   await page.goto('/#/new/guide');
-  await pasteSource(page, 'guide', first + '\n\n' + second);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const submit = page.getByRole('button', { name: 'Review obligations' });
-  await expect(submit).toBeDisabled();
+  const next = page.getByRole('button', { name: 'Continue to guide' });
+  await expect(next).toBeDisabled();
   const file = 'Safety.txt';
   const text = 'Personnel wear protective gloves.';
-  const finished = waitForBackgroundReview(page);
   await addPolicy(page, file, text);
+  await continueToSource(page, 'guide');
+  const finished = waitForBackgroundReview(page);
+  await pasteSource(page, 'guide', first + '\n\n' + second);
   await finished;
   await expectQuietReview(page);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Paste a policy' }).click();
   await page.getByLabel(/Policy title/).fill('Facilities policy');
   await page.getByLabel('Policy text', { exact: true }).fill(policy);
   await page.getByRole('button', { name: 'Add policy', exact: true }).click();
   await page.getByRole('button', { name: 'Remove Safety.txt' }).click();
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Facilities policy');
-  await expect(submit).toBeDisabled();
+  await expect(next).toBeDisabled();
   await addPolicy(page, file, text);
-  await expect(submit).toBeEnabled();
+  await continueToSource(page, 'guide');
+  await expect(page.getByLabel('Guide text', { exact: true })).toHaveValue(first + '\n\n' + second);
   expect(requests).toHaveLength(1);
   const response = await submitReview(page, 'guide');
   expect(response.request().postDataJSON().documents.map(doc => doc.title)).toEqual(['Facilities policy', file]);
@@ -1267,6 +1327,8 @@ test('a pasted policy supplements the required upload when reviewing guide oblig
 
 test('editing a selected question batch clears its previous source attribution', async ({ page }) => {
   await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Records.txt', 'The registrar reviews the records.');
+  await continueToSource(page, 'questionnaire');
   const questions = page.getByLabel('Questions', { exact: true });
   await pasteSource(page, 'questionnaire', Array.from({ length: 31 }, (_, index) => `${index + 1}. Who reviews record ${index + 1}?`).join('\n'));
   await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '29–30');
@@ -1280,12 +1342,12 @@ test('editing a selected question batch clears its previous source attribution',
 test('Markdown exports keep document markup and multiline notes literal', async ({ page }) => {
   const obligation = 'Teams must label each record with <unit> and [owner].';
   await page.goto('/#/new/guide');
+  await addPolicy(page, 'Labelling.md', 'Records are labelled by unit and owner.');
+  await continueToSource(page, 'guide');
+  const pending = page.waitForResponse('**/api/review');
   await page.getByLabel('Upload regulatory guide').setInputFiles({
     name: 'Guide [draft].txt', mimeType: 'text/plain', buffer: Buffer.from(obligation),
   });
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const pending = page.waitForResponse('**/api/review');
-  await addPolicy(page, 'Labelling.md', 'Records are labelled by unit and owner.');
   await submitReview(page, 'guide', pending);
   await page.getByLabel('Action note').fill('Retain ![diagram](diagram.png).\n## Example heading');
   const output = await report(page, 'Download action list');
@@ -1298,29 +1360,6 @@ test('Markdown exports keep document markup and multiline notes literal', async 
 
 test('intake checks page limits and can read a PDF after rejecting a file', async ({ page, context }) => {
   await page.goto('/#/new/guide');
-  const upload = page.getByLabel('Upload regulatory guide');
-  await upload.setInputFiles({
-    name: 'Too many pages.txt', mimeType: 'text/plain', buffer: Buffer.from('Page\f'.repeat(1200) + 'Page'),
-  });
-  await expect(page.getByRole('alert')).toContainText('1,200 pages');
-
-  const pdf = await printPdf(context, ['Teams must record inspection dates.']);
-  await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', pdf);
-  await expectCompactPdf(page);
-  const preview = page.getByRole('button', { name: 'Preview PDF', exact: true });
-  await preview.focus();
-  await preview.press('Enter');
-  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Guide.pdf', 1);
-  await preview.press('Space');
-  await expectCompactPdf(page);
-  await preview.click();
-  const replacement = await printPdf(context, ['New guide first page.', 'New guide second page.']);
-  await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', replacement);
-  await expect(page.getByText('All 2 PDF pages included.')).toBeVisible();
-  await expectCompactPdf(page);
-  await expect(page.getByRole('textbox', { name: 'Guide text' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-
   const policies = page.getByLabel('Upload policy files');
   await policies.setInputFiles({
     name: 'Policy.txt', mimeType: 'text/plain', buffer: Buffer.from('record\f'.repeat(1199) + 'record'),
@@ -1330,12 +1369,39 @@ test('intake checks page limits and can read a PDF after rejecting a file', asyn
   await policies.setInputFiles({ name: 'Extra.txt', mimeType: 'text/plain', buffer: Buffer.from('record') });
   await expect(page.getByRole('alert')).toContainText('1,200 pages');
   await expect(added.getByRole('listitem')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Remove Policy.txt' }).click();
+  await addPolicy(page, 'Inspection.txt', 'Staff record inspection dates.');
+  await continueToSource(page, 'guide');
+
+  const upload = page.getByLabel('Upload regulatory guide');
+  await upload.setInputFiles({
+    name: 'Too many pages.txt', mimeType: 'text/plain', buffer: Buffer.from('Page\f'.repeat(1200) + 'Page'),
+  });
+  await expect(page.getByRole('alert')).toContainText('1,200 pages');
+
+  const pdf = await printPdf(context, ['Teams must record inspection dates.']);
+  await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', pdf);
+  await expectCompactPdf(page, 'guide');
+  const preview = page.getByRole('button', { name: 'Preview PDF', exact: true });
+  await preview.focus();
+  await preview.press('Enter');
+  await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Guide.pdf', 1);
+  await preview.press('Space');
+  await expectCompactPdf(page, 'guide');
+  await preview.click();
+  const replacement = await printPdf(context, ['New guide first page.', 'New guide second page.']);
+  await uploadPdf(page, 'Upload regulatory guide', 'Guide.pdf', replacement);
+  await expect(page.getByText('All 2 PDF pages included.')).toBeVisible();
+  await expectCompactPdf(page, 'guide');
+  await expect(page.getByRole('textbox', { name: 'Guide text' })).toHaveCount(0);
 });
 
 test('PDF arrows keep the current sheet and document position through slow page turns', async ({ page, context }) => {
   const title = 'Mixed sheets.pdf';
   const pdf = await printPdf(context, ['Landscape one', 'Portrait two', 'Landscape three'], { portraitPages: [2] });
   await page.goto('/#/new/guide');
+  await addPolicy(page, 'Inspection.txt', 'Staff record inspection dates.');
+  await continueToSource(page, 'guide');
   await uploadPdf(page, 'Upload regulatory guide', title, pdf);
   await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
@@ -1382,19 +1448,21 @@ test('PDF arrows keep the current sheet and document position through slow page 
   await expectPdfFrames(page, position, title, [1, 3, 2]);
 });
 
-test('Continue stays in reach on a short screen with a long PDF filename', async ({ page, context }) => {
+test('Find evidence stays in reach on a short screen with a long PDF filename', async ({ page, context }) => {
   await page.setViewportSize({ width: page.viewportSize().width, height: 568 });
   const name = 'Annual State Licensing Questionnaire for Residential Care Providers and Facilities, Revised September 2026.pdf';
   const form = await printPdf(context, ['1. Who records the inspection?', '2. Who approves the report?']);
   await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Inspection.txt', 'Staff record inspections. Supervisors approve reports.');
+  await continueToSource(page, 'questionnaire');
   await uploadPdf(page, 'Upload questionnaire', name, form);
   await expectCompactPdf(page);
-  const next = page.getByRole('button', { name: 'Continue to policies' });
+  const submit = page.getByRole('button', { name: 'Find evidence' });
   await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), name, 1);
-  await expect(next).toBeInViewport({ ratio: 1 });
-  await next.click();
-  await expect(page.getByRole('heading', { name: 'Add existing policies' })).toBeVisible();
+  await expect(submit).toBeInViewport({ ratio: 1 });
+  await submit.click();
+  await expect(page.getByRole('button', { name: 'Download responses' })).toBeVisible();
 });
 
 test('questionnaire items send the physical PDF pages they span and the selected policy page', async ({ page, context }) => {
@@ -1408,7 +1476,13 @@ test('questionnaire items send the physical PDF pages they span and the selected
   const policy = await printPdf(context, ['Out-of-scope travel rules.', quote, 'Out-of-scope invoice rules.']);
   const submissions = captureReviewRequests(page);
   await page.goto('/#/new/questionnaire');
+  await uploadPdf(page, 'Upload policy files', 'Facility.pdf', policy);
+  await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Facility.pdf');
+  await continueToSource(page, 'questionnaire');
+  expect(submissions).toHaveLength(0);
+  const original = page.waitForResponse('**/api/review');
   await uploadPdf(page, 'Upload questionnaire', 'Intake.pdf', questions);
+  expect((await original).request().postDataJSON().documents[0].pages).toHaveLength(3);
   await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
   const firstCanvas = await expectPdfCanvas(viewer, 'Intake.pdf', 1);
@@ -1420,17 +1494,15 @@ test('questionnaire items send the physical PDF pages they span and the selected
   await expectPdfCanvas(viewer, 'Intake.pdf', 2);
   await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '20, 30');
   await expect(viewer.getByRole('combobox', { name: 'PDF page' }).getByRole('option')).toHaveCount(3);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  expect(submissions).toHaveLength(0);
-  const original = page.waitForRequest('**/api/review');
-  await uploadPdf(page, 'Upload policy files', 'Facility.pdf', policy);
-  expect((await original).postDataJSON().documents[0].pages).toHaveLength(3);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Preview Facility.pdf' }).click();
   await expectPdfCanvas(viewer, 'Facility.pdf', 1);
   await chooseRange(page, 'Choose policy pages', /Policy pages/, '2');
   await expectPdfCanvas(viewer, 'Facility.pdf', 2);
+  await continueToSource(page, 'questionnaire');
   expect(submissions).toHaveLength(1);
   const response = await submitReview(page, 'questionnaire');
+  expect(submissions).toHaveLength(2);
   const sent = response.request().postDataJSON();
   expect(sent.questions).toEqual([first, last]);
   expect(sent.documents).toMatchObject([{ title: 'Facility.pdf', pages: [{ number: 2, text: quote }] }]);
@@ -1457,20 +1529,21 @@ test('non-contiguous guide pages reach the planner and open at the original cita
   const guide = await printPdf(context, [obligations[0], 'Unselected payroll instructions.', obligations[1]], { portraitPages: [1] });
   const submissions = captureReviewRequests(page);
   await page.goto('/#/new/guide');
+  await addPolicy(page, 'Inspection.txt', 'Supervisors record and sign inspection reports.');
+  await continueToSource(page, 'guide');
+  expect(submissions).toHaveLength(0);
+  const original = waitForBackgroundReview(page);
   await uploadPdf(page, 'Upload regulatory guide', 'Audit.pdf', guide);
-  await expect(page.getByRole('button', { name: 'Choose guide pages' })).toBeEnabled();
+  await original;
   await chooseRange(page, 'Choose guide pages', /Guide pages/, '1, 3');
   await expect(page.getByText('Review ready', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
   const viewer = page.getByRole('region', { name: 'PDF preview' });
   await viewer.getByRole('button', { name: 'Next PDF page' }).click();
   await expectPdfCanvas(viewer, 'Audit.pdf', 3);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  expect(submissions).toHaveLength(0);
-  const pending = page.waitForResponse('**/api/review');
-  await addPolicy(page, 'Inspection.txt', 'Supervisors record and sign inspection reports.');
-  const response = await submitReview(page, 'guide', pending);
   expect(submissions).toHaveLength(1);
+  const response = await submitReview(page, 'guide');
+  expect(submissions).toHaveLength(2);
   const sent = response.request().postDataJSON();
   expect(sent.guide).toBe(obligations.join('\n\n'));
   expect(sent.documents).toMatchObject([{ title: 'Inspection.txt' }]);
@@ -1501,12 +1574,13 @@ test('selecting one of two items on a shared page sends only visible page conten
   const question = '2. Who keeps the inspection log?';
   const form = await printPdf(context, ['1. Who schedules training?\n' + question]);
   await page.goto('/#/new/questionnaire');
-  await uploadPdf(page, 'Upload questionnaire', 'Shared page.pdf', form);
-  await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '2');
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const assessment = page.waitForResponse('**/api/review');
   await addPolicy(page, 'Inspection.txt', 'The registrar keeps the inspection log.');
-  const response = await submitReview(page, 'questionnaire', assessment);
+  await continueToSource(page, 'questionnaire');
+  const original = waitForBackgroundReview(page);
+  await uploadPdf(page, 'Upload questionnaire', 'Shared page.pdf', form);
+  await original;
+  await chooseRange(page, 'Choose questionnaire items', /Questionnaire items/, '2');
+  const response = await submitReview(page, 'questionnaire');
   const sent = response.request().postDataJSON();
   expect(sent.questions).toEqual([question]);
   const source = sent.pdfAttachments[0];
@@ -1520,15 +1594,16 @@ for (const [kind, scanned] of [['image-only', true], ['partially scanned', [2]]]
     const questions = await printPdf(context, ['1. Who keeps inspection log 1?\n2. When is it signed?', 'Who keeps inspection log 2?'], { scanned });
     const policy = await printPdf(context, ['The registrar keeps inspection log 1.'], { scanned: true });
     await page.goto('/#/new/questionnaire');
+    await uploadPdf(page, 'Upload policy files', 'Scanned policy.pdf', policy);
+    await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Scanned policy.pdf');
+    await continueToSource(page, 'questionnaire');
+    const original = waitForBackgroundReview(page);
     await uploadPdf(page, 'Upload questionnaire', 'Scanned form.pdf', questions);
+    await original;
     await chooseRange(page, 'Choose questionnaire pages', /Questionnaire pages/, '2');
     await page.getByRole('button', { name: 'Preview PDF', exact: true }).click();
     await expectPdfCanvas(page.getByRole('region', { name: 'PDF preview' }), 'Scanned form.pdf', 2);
-    await page.getByRole('button', { name: 'Continue to policies' }).click();
-    const assessment = page.waitForResponse('**/api/review');
-    await uploadPdf(page, 'Upload policy files', 'Scanned policy.pdf', policy);
-    await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Scanned policy.pdf');
-    const response = await submitReview(page, 'questionnaire', assessment);
+    const response = await submitReview(page, 'questionnaire');
     const sent = response.request().postDataJSON();
     expect(sent.readSourcePdf).toBe(true);
     expect(sent.questions).toBeUndefined();
@@ -1596,12 +1671,12 @@ test('one submission recovers late incomplete batches and exports all 65 questio
   ].join('\n\n');
   const policy = await printPdf(context, policyPages.map(number => number === 145 ? policyQuote : parking), { fontSize: 12 });
   await page.goto('/#/new/questionnaire');
-  await uploadPdf(page, 'Upload questionnaire', 'Register.pdf', form);
-  await expectCompactPdf(page);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const requests = captureReviewRequests(page);
   await uploadPdf(page, 'Upload policy files', 'Records.pdf', policy);
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Records.pdf');
+  await continueToSource(page, 'questionnaire');
+  const requests = captureReviewRequests(page);
+  await uploadPdf(page, 'Upload questionnaire', 'Register.pdf', form);
+  await expectCompactPdf(page);
   const parts = await finishDocumentReview(page, 'questionnaire', requests);
 
   expect(parts.length).toBeGreaterThan(1);
@@ -1669,11 +1744,11 @@ test('a full native guide preserves repeated Unicode-positioned duties across em
   sheets[29] += '\n' + repeated;
   const guide = await printPdf(context, sheets, { fontSize: 8 });
   await page.goto('/#/new/guide');
+  await addPolicy(page, 'Archive policy.txt', 'Clerks sign the inspection log and retain each inspection register.');
+  await continueToSource(page, 'guide');
   const requests = captureReviewRequests(page);
   await uploadPdf(page, 'Upload regulatory guide', 'Archive.pdf', guide);
-  await expectCompactPdf(page);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  await addPolicy(page, 'Archive policy.txt', 'Clerks sign the inspection log and retain each inspection register.');
+  await expectCompactPdf(page, 'guide');
   const parts = await finishDocumentReview(page, 'guide', requests);
 
   const guideParts = parts.map(({ input }) => input.guide);
@@ -1735,6 +1810,8 @@ test('a guide planning timeout splits at complete duties and retry resumes at th
   const duties = ['Staff must retain the original inspection register and its signed copy for seven years.', 'Managers must sign.'];
   const pdf = await printPdf(context, duties);
   await page.goto('/#/new/guide');
+  await addPolicy(page, 'Retention.txt', 'Clerks retain the signed inspection register.');
+  await continueToSource(page, 'guide');
   const sent = [];
   await page.route('**/api/review', route => {
     const { guide, pdfAttachments } = route.request().postDataJSON();
@@ -1746,10 +1823,8 @@ test('a guide planning timeout splits at complete duties and retry resumes at th
   });
   const failure = page.waitForResponse(response => response.url().endsWith('/api/review') && response.status() === 503);
   await uploadPdf(page, 'Upload regulatory guide', 'Register.pdf', pdf);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  await addPolicy(page, 'Retention.txt', 'Clerks retain the signed inspection register.');
   await (await failure).finished();
-  await expect(page).toHaveURL(/\/new\/guide\/policies$/);
+  await expect(page).toHaveURL(/\/new\/guide\/source$/);
   const submit = page.getByRole('button', { name: 'Review obligations' });
   const parts = duties.map((text, i) => ({ text, pages: [i + 1] }));
   expect(sent).toEqual([{ text: duties.join(' '), pages: [1, 2] }, ...parts]);
@@ -1767,11 +1842,11 @@ test('a complete scanned form joins a question across transcription requests bef
   const questions = [printed[0], printed[1], printed[2] + ' ' + printed[3], printed[4]];
   const form = await printPdf(context, printed, { scanned: true });
   await page.goto('/#/new/questionnaire');
+  await addPolicy(page, 'Records.txt', 'The registrar keeps the inspection log after the archive closes.');
+  await continueToSource(page, 'questionnaire');
+  const requests = captureReviewRequests(page);
   await uploadPdf(page, 'Upload questionnaire', 'Archive scan.pdf', form);
   await expectCompactPdf(page);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const requests = captureReviewRequests(page);
-  await addPolicy(page, 'Records.txt', 'The registrar keeps the inspection log after the archive closes.');
   const parts = await finishDocumentReview(page, 'questionnaire', requests);
 
   const transcripts = parts.filter(({ input }) => input.transcribeSourceOnly);
@@ -1799,8 +1874,8 @@ test('retrying a whole questionnaire resumes after the last successful part', as
   const questions = Array.from({ length: 32 }, (_, i) => `Who keeps inspection log ${i + 1}?`);
   questions[16] = `Who keeps the outage log for case late-${testInfo.project.name}-${testInfo.repeatEachIndex}-${testInfo.retry}?`;
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', questions.join('\n'));
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await continueToSource(page, 'questionnaire');
   const release = await holdNextReview(page, route => route.fulfill({
     status: 429, body: '', headers: { 'Retry-After': '1' },
   }));
@@ -1809,7 +1884,7 @@ test('retrying a whole questionnaire resumes after the last successful part', as
     if (new URL(response.url()).pathname === '/api/review') firstAttempt.push(response);
   }
   page.on('response', capture);
-  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
   await page.getByRole('button', { name: 'Find evidence' }).click();
   release();
   await expect(page.getByRole('alert')).toContainText('Folio could not reach Anthropic.');
@@ -1834,8 +1909,8 @@ test('retrying a whole questionnaire resumes after the last successful part', as
 test('cancelling a paused multipart review keeps completed work for the next submission', async ({ page }) => {
   const questions = Array.from({ length: 25 }, (_, i) => `Who keeps inspection log ${i + 1}?`);
   await page.goto('/#/new/questionnaire');
-  await pasteSource(page, 'questionnaire', questions.join('\n'));
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await continueToSource(page, 'questionnaire');
   const requests = [];
   const nextPart = Promise.withResolvers();
   await page.route('**/api/review', route => {
@@ -1844,7 +1919,7 @@ test('cancelling a paused multipart review keeps completed work for the next sub
       ? nextPart.promise.then(() => route.fulfill({ status: 429, body: '', headers: { 'Retry-After': '70' } }))
       : route.continue();
   });
-  await addPolicy(page, 'Registry.txt', 'The registrar keeps the inspection log.');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
   const progress = page.getByRole('progressbar', { name: 'Review progress' });
   await expect.poll(() => requests.length).toBe(2);
   await expectQuietReview(page);
@@ -1857,7 +1932,9 @@ test('cancelling a paused multipart review keeps completed work for the next sub
   await page.getByRole('button', { name: 'Cancel review' }).click();
   await expect(page.getByRole('button', { name: 'Find evidence' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Download responses' })).toHaveCount(0);
+  await page.getByRole('navigation', { name: 'Review steps' }).getByRole('button', { name: /Existing policies/ }).click();
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Registry.txt');
+  await continueToSource(page, 'questionnaire');
 
   const resumed = await finishDocumentReview(page, 'questionnaire');
   expect(resumed[0].input).toEqual(requests[1]);
@@ -1878,12 +1955,12 @@ test('large questionnaire and policy originals are automatically sent as visible
   const form = oversizedPdf(await printPdf(context, [question]));
   const policy = oversizedPdf(await printPdf(context, ['The registrar signs the inspection log.']));
   await page.goto('/#/new/questionnaire');
-  await uploadPdf(page, 'Upload questionnaire', 'Complete form.pdf', form);
-  await expectCompactPdf(page);
-  await page.getByRole('button', { name: 'Continue to policies' }).click();
-  const assessment = page.waitForResponse('**/api/review');
   await uploadPdf(page, 'Upload policy files', 'Signature policy.pdf', policy);
   await expect(page.getByRole('list', { name: 'Added policies' })).toContainText('Signature policy.pdf');
+  await continueToSource(page, 'questionnaire');
+  const assessment = page.waitForResponse('**/api/review');
+  await uploadPdf(page, 'Upload questionnaire', 'Complete form.pdf', form);
+  await expectCompactPdf(page);
   const response = await submitReview(page, 'questionnaire', assessment);
   const sent = response.request().postDataJSON();
   expect(sent.questions).toEqual([question]);
