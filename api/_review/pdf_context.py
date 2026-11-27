@@ -2,11 +2,12 @@
 
 import base64
 import logging
+from contextlib import contextmanager
 from io import BytesIO
 
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, apply_configuration
 
-from .search import InvalidRequest
+from .search import MAX_PDF_PAGES, InvalidRequest
 
 # PDF repair warnings can contain bytes from the supplied document.
 logging.getLogger("pypdf").setLevel(logging.CRITICAL + 1)
@@ -16,24 +17,43 @@ logging.getLogger("pypdf").setLevel(logging.CRITICAL + 1)
 SMALL_PACKET_PAGES = 12
 
 
+@contextmanager
+def checked_pdf(attachment):
+    # Include internal page-tree nodes in the work limit. A large or incorrect
+    # /Count alone must never authorize forwarding the original bytes.
+    with apply_configuration(page_tree_maximum_entries=4 * MAX_PDF_PAGES):
+        try:
+            with (
+                BytesIO(base64.b64decode(attachment["data"], validate=True)) as source,
+                PdfReader(source, strict=True) as reader,
+            ):
+                if reader.is_encrypted and not reader.decrypt(""):
+                    raise ValueError("locked PDF")
+                if len(reader.pages) != len(attachment["pages"]):
+                    raise ValueError("page count")
+                yield reader
+        except Exception:
+            # Parser and writer exceptions can contain bytes from the supplied document.
+            raise InvalidRequest("Folio could not verify the selected PDF pages. Re-export the PDF and attach it again.") from None
+
+
+def verify_pdf_page_counts(attachments):
+    # Check the whole packet before any part of this review goes to the provider.
+    for attachment in attachments:
+        with checked_pdf(attachment):
+            pass
+
+
 def pdf_pages(attachment, wanted):
     declared = attachment["pages"]
     selected = [n for n in declared if n in wanted]
     if selected == declared:
         return attachment
-    try:
-        with BytesIO(base64.b64decode(attachment["data"], validate=True)) as source, BytesIO() as output:
-            reader = PdfReader(source)
-            if len(reader.pages) != len(declared):
-                raise ValueError("page count")
-            writer = PdfWriter()
-            writer.append(reader, pages=[i for i, n in enumerate(declared) if n in wanted],
-                          import_outline=False, excluded_fields=["/B"])
-            writer.write(output)
-            return {**attachment, "pages": selected, "data": base64.b64encode(output.getbuffer()).decode("ascii")}
-    except Exception:
-        # Parser exceptions can include PDF contents. Report only the corrective action.
-        raise InvalidRequest("Folio could not read the selected PDF pages. Re-export the PDF and attach it again.") from None
+    with checked_pdf(attachment) as reader, BytesIO() as output, PdfWriter() as writer:
+        writer.append(reader, pages=[i for i, n in enumerate(declared) if n in wanted],
+                      import_outline=False, excluded_fields=["/B"])
+        writer.write(output)
+        return {**attachment, "pages": selected, "data": base64.b64encode(output.getbuffer()).decode("ascii")}
 
 
 def assessment_pdfs(attachments, assignments):

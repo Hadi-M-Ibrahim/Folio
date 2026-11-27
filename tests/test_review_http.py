@@ -185,12 +185,22 @@ class HttpContractTests(unittest.TestCase):
             {"Host": "localhost:5173", "Origin": "http://localhost:5173"},
             {"Host": "[::1]:8000"},
         ]:
-            self.assertTrue(api.allowed_local_request(headers))
+            self.assertTrue(api.allowed_request(headers, local_operator=True, hosted=False))
         for headers in [
             {"Host": "example.org"}, {"Host": "localhost:8000", "Origin": "null"},
             {"Host": "localhost:8000", "Origin": "http://localhost:5173"},
         ]:
-            self.assertFalse(api.allowed_local_request(headers))
+            self.assertFalse(api.allowed_request(headers, local_operator=True, hosted=False))
+
+    def test_hosted_browser_origin_policy(self):
+        headers = {"Host": "folio.example:443"}
+        self.assertTrue(api.allowed_request(headers, local_operator=False, hosted=True))
+        for origin, allowed in (("https://folio.example", True), ("https://docs.example", False),
+                                ("http://folio.example:443", False), ("https://folio.example:8080", False)):
+            with self.subTest(origin=origin):
+                self.assertEqual(api.allowed_request({**headers, "Origin": origin}, local_operator=False, hosted=True), allowed)
+        for site in ("cross-site", "same-site"):
+            self.assertFalse(api.allowed_request({**headers, "Sec-Fetch-Site": site}, local_operator=False, hosted=True))
 
     def test_http_quota_precedes_review_work_and_returns_retry_after(self):
         self.server.local_operator = True

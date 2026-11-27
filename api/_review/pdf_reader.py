@@ -129,14 +129,18 @@ def read_pdf_text(mode, attachments, read_source_pdf, pages, key, deadline, *, d
         numbers = [n for n in attachment["pages"] if not pages[doc_id, n][1].strip()]
         if not numbers:
             continue
-        rows = [row for batch, _ in page_batches(mode, attachment, numbers, key, deadline) for row in batch]
+        # The transcriptions replace these blank pages, including any whitespace
+        # already counted for a page that will be read in a later batch.
+        size -= sum(len(pages[doc_id, n][1]) for n in numbers)
+        rows = []
+        for batch, _ in page_batches(mode, attachment, numbers, key, deadline):
+            size += sum(len(page["text"]) for page in batch)
+            if size > MAX_CHARS:
+                raise InvalidRequest(f"Submit at most {MAX_CHARS:,} policy characters, including transcribed pages.")
+            rows.extend(batch)
         for page in rows:
             index = (doc_id, page["number"])
-            title, original = pages[index]
-            pages[index] = (title, page["text"])
-            size += len(page["text"]) - len(original)
-        if size > MAX_CHARS:
-            raise InvalidRequest(f"Submit at most {MAX_CHARS:,} policy characters, including transcribed pages.")
+            pages[index] = (pages[index][0], page["text"])
         if not any(pages[doc_id, n][1].strip() for n in attachment["pages"]):
             raise InvalidRequest("No readable policy text was found in the selected PDF pages.")
         result.setdefault("policyPageText", []).append({"documentId": doc_id, "pages": rows})
