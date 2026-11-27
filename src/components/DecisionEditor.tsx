@@ -1,4 +1,5 @@
 import { Check, Flag, X } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { policyActionLabels, responseLabels, type Decision, type Evidence, type Finding } from '../review/model';
 import { ResponseComposer } from './ResponseComposer';
 
@@ -45,55 +46,74 @@ export function ResponseEditor({ finding, decision, onChange, onOpen, onRemoveCi
   const flagged = decision?.value === 'flagged';
   const hasAnswer = !!decision?.answer?.trim();
 
+  const [editing, setEditing] = useState(false);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const collapsed = Boolean(decision?.value) && !editing;
+
   function toggleDisposition(value: NonNullable<Decision['value']>) {
-    onChange({ value: decision?.value === value ? undefined : value });
+    const next = decision?.value === value ? undefined : value;
+    onChange({ value: next });
+    setEditing(false);
+    if (next) requestAnimationFrame(() => toggle.current?.focus({ preventScroll: true }));
   }
 
   return (
     <>
-      <ResponseComposer finding={finding} decision={decision} onChange={onChange} />
-      {citations.length > 0 && (
-        <div className="response-citations">
-          <h3>Response citations</h3>
-          <ol>
-            {citations.map((citation, i) => (
-              <li key={i}>
-                <button className="text-link" onClick={() => onOpen(citation)} title={citation.quote}>
-                  {citation.title} · p. {citation.page}
-                </button>
-                <button
-                  className="remove-citation"
-                  aria-label={`Remove response citation ${i + 1}`}
-                  onClick={() => onRemoveCitation(citation)}
-                >
-                  <X size={14} />
-                </button>
-              </li>
-            ))}
-          </ol>
+      {decision?.value && <div className="response-disposition">
+        <span id="response-status">
+          {confirmed ? <Check size={15} aria-hidden="true" /> : <Flag size={14} aria-hidden="true" />}
+          {confirmed ? 'Response confirmed' : responseLabels.flagged}
+        </span>
+        <button type="button" className="text-link" ref={toggle} aria-describedby="response-status"
+          aria-expanded={!collapsed} aria-controls="submission-response-editor" onClick={() => setEditing(!editing)}>
+          {collapsed ? 'Edit response' : 'Close editor'}
+        </button>
+      </div>}
+      <div id="submission-response-editor" className="response-fields" hidden={collapsed}>
+        <ResponseComposer finding={finding} decision={decision} onChange={onChange} />
+        {citations.length > 0 && (
+          <div className="response-citations">
+            <h3>Response citations</h3>
+            <ol>
+              {citations.map((citation, i) => (
+                <li key={i}>
+                  <button className="text-link" onClick={() => onOpen(citation)} title={citation.quote}>
+                    {citation.title} · p. {citation.page}
+                  </button>
+                  <button
+                    className="remove-citation"
+                    aria-label={`Remove response citation ${i + 1}`}
+                    onClick={() => onRemoveCitation(citation)}
+                  >
+                    <X size={14} />
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+        {hasAnswer && !citations.length && (
+          <small className="muted-note">Attach a citation to confirm this response, or flag it for follow-up.</small>
+        )}
+        <div className="decision-row">
+          <button
+            className="secondary"
+            aria-pressed={confirmed}
+            disabled={!hasAnswer || citations.length === 0}
+            onClick={() => toggleDisposition('confirmed')}
+          >
+            <Check size={15} />
+            {confirmed ? 'Clear confirmation' : 'Confirm response'}
+          </button>
+          <button
+            className="secondary"
+            aria-pressed={flagged}
+            onClick={() => toggleDisposition('flagged')}
+          >
+            <Flag size={14} />
+            {flagged ? 'Remove flag' : 'Flag for follow-up'}
+          </button>
         </div>
-      )}
-      {hasAnswer && !citations.length && (
-        <small className="muted-note">Attach a citation to confirm this response, or flag it for follow-up.</small>
-      )}
-      <div className="decision-row">
-        <button
-          className="secondary"
-          aria-pressed={confirmed}
-          disabled={!hasAnswer || citations.length === 0}
-          onClick={() => toggleDisposition('confirmed')}
-        >
-          <Check size={15} />
-          {confirmed ? 'Response confirmed' : 'Confirm response'}
-        </button>
-        <button
-          className="secondary"
-          aria-pressed={flagged}
-          onClick={() => toggleDisposition('flagged')}
-        >
-          <Flag size={14} />
-          {flagged ? responseLabels.flagged : 'Flag for follow-up'}
-        </button>
       </div>
     </>
   );
