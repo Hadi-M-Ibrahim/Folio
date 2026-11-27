@@ -149,7 +149,7 @@ async function expectAttachedSheets(attachment, numbers, portraitPages = []) {
 }
 
 async function reviewResult(response) {
-  if (!(await response.headerValue('content-type'))?.includes('application/x-ndjson')) return response.json();
+  if (!response.headers()['content-type']?.includes('application/x-ndjson')) return response.json();
   const terminal = JSON.parse((await response.text()).trimEnd().split('\n').at(-1));
   expect(terminal.status).toBe(200);
   return terminal.body;
