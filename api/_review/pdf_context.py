@@ -46,14 +46,14 @@ def verify_pdf_page_counts(attachments):
 
 def pdf_pages(attachment, wanted):
     declared = attachment["pages"]
-    selected = [n for n in declared if n in wanted]
-    if selected == declared:
+    positions = [i for i, number in enumerate(declared) if number in wanted]
+    if len(positions) == len(declared):
         return attachment
     with checked_pdf(attachment) as reader, BytesIO() as output, PdfWriter() as writer:
-        writer.append(reader, pages=[i for i, n in enumerate(declared) if n in wanted],
-                      import_outline=False, excluded_fields=["/B"])
+        writer.append(reader, pages=positions, import_outline=False, excluded_fields=["/B"])
         writer.write(output)
-        return {**attachment, "pages": selected, "data": base64.b64encode(output.getbuffer()).decode("ascii")}
+        return {**attachment, "pages": [declared[i] for i in positions],
+                "data": base64.b64encode(output.getbuffer()).decode("ascii")}
 
 
 def assessment_pdfs(attachments, assignments):

@@ -18,23 +18,18 @@ SUPPORT = {"id": "q1", "status": "supported", "answer": "The clerk stamps each p
            "supporting": [{"passage": "p1", "quote": RULE}], "counter": []}
 
 
-def pdf_attachment(role, numbers):
-    # Make standalone, blank PDF pages; the transport mock supplies the visible text in scanner tests.
-    refs = " ".join(f"{n + 3} 0 R" for n in range(len(numbers)))
-    objects = ["<< /Type /Catalog /Pages 2 0 R >>", f"<< /Type /Pages /Count {len(numbers)} /Kids [{refs}] >>",
-               *(["<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> >>"] * len(numbers))]
-    raw = bytearray(f"%PDF-1.4\n% {role}\n".encode())
-    offsets = [0]
-    for i, obj in enumerate(objects, 1):
-        offsets.append(len(raw))
-        raw.extend(f"{i} 0 obj\n{obj}\nendobj\n".encode())
-    xref = len(raw)
-    raw.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
-    for offset in offsets[1:]:
-        raw.extend(f"{offset:010d} 00000 n \n".encode())
-    raw.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+def pdf_attachment(role, numbers, *, password=None):
+    with PdfWriter() as writer, io.BytesIO() as raw:
+        writer.add_metadata({"/Title": role})
+        for number in numbers:
+            # Distinct widths let tests identify the original sheets after selection.
+            writer.add_blank_page(width=100 + number, height=200)
+        if password is not None:
+            writer.encrypt(password)
+        writer.write(raw)
+        data = base64.b64encode(raw.getvalue()).decode("ascii")
     return {"role": role, "documentId": role + "-id", "title": role + ".pdf",
-            "pages": numbers, "data": base64.b64encode(raw).decode()}
+            "pages": numbers, "data": data}
 
 
 def payload():
@@ -51,11 +46,6 @@ class PdfReviewTests(unittest.TestCase):
     def test_long_policy_context_preserves_actual_sheets_from_a_noncontiguous_selection(self):
         numbers = list(range(7, 37, 2))
         policy = pdf_attachment("policy", numbers)
-        with PdfWriter() as writer, io.BytesIO() as raw:
-            for number in numbers:
-                writer.add_blank_page(width=100 + number, height=200)
-            writer.write(raw)
-            policy["data"] = base64.b64encode(raw.getvalue()).decode("ascii")
         source = pdf_attachment("source", [3])
         evidence = [{"passages": [{"documentId": policy["documentId"], "page": n} for n in (35, 13, 13)]}]
         original, selected = pdf_context.assessment_pdfs([source, policy], evidence)
@@ -204,11 +194,7 @@ class PdfReviewTests(unittest.TestCase):
 
     def test_locked_pdf_requires_reexport_before_provider_use(self):
         request = payload()
-        with PdfWriter() as writer, io.BytesIO() as raw:
-            writer.add_blank_page(width=100, height=100)
-            writer.encrypt("synthetic password")
-            writer.write(raw)
-            request["pdfAttachments"][0]["data"] = base64.b64encode(raw.getvalue()).decode("ascii")
+        request["pdfAttachments"][0] = pdf_attachment("source", [5], password="synthetic password")
         with patch.object(model, "open_provider_request") as send, self.assertRaisesRegex(search.InvalidRequest, "Re-export"):
             api.review(request)
         send.assert_not_called()

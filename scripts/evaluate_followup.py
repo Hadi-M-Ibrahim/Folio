@@ -213,11 +213,13 @@ def summarize(results, reviewer):
 
 
 def main():
+    cases = load_cases()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--live", action="store_true", help="run both reviewers against the production model using synthetic inputs")
-    parser.add_argument("--case", action="append", choices=[c["id"] for c in load_cases()], help="select a case; repeatable")
+    parser.add_argument("--case", action="append", choices=[c["id"] for c in cases], help="select a case; repeatable")
     args = parser.parse_args()
-    cases = [c for c in load_cases() if not args.case or c["id"] in args.case]
+    if args.case:
+        cases = [c for c in cases if c["id"] in args.case]
     checks = [check_case(case) for case in cases]
     if not args.live:
         print(json.dumps({"mode": "offline-self-check", "note": "Fixture and scorer checks only. No model judgments.", "cases": checks}, indent=2))

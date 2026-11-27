@@ -38,7 +38,7 @@ export function PolicyEvidence({ finding, documents, isGuide, ...controls }: Evi
       </div>
       <EvidenceGroup passages={finding.supporting} kind="support" {...controls} />
       <EvidenceGroup passages={finding.counter} kind="counter" {...controls} />
-      {leadMatch && !showSearch && <EvidenceCard evidence={leadMatch} kind="candidate" rank={1} {...controls} />}
+      {leadMatch && !showSearch && <EvidenceCard evidence={leadMatch} kind="candidate" {...controls} />}
       {!evidenceCount && !leadMatch && (
         <div className="empty-inline">
           <FileSearch />

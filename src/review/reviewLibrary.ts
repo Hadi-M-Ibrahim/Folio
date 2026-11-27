@@ -47,10 +47,10 @@ class ReviewLibrary {
     try {
       await write;
       this.peers.send(change);
-      if (!this.ready) void this.refresh({});
+      if (!this.ready || this.warning) void this.refresh({});
       return true;
     } catch {
-      if (retainInMemory && change.key) this.unsaved.add(change.key);
+      if (retainInMemory && change.key && this.jobs.has(change.key)) this.unsaved.add(change.key);
       this.storageError();
       return false;
     }
@@ -175,7 +175,9 @@ class ReviewLibrary {
           if (this.unsaved.delete(key)) void this.refresh({});
           if (statusChanged) this.peers.send({ key });
         }
-      }, () => { this.unsaved.add(key); this.storageError(); });
+      }, () => {
+        if (this.jobs.get(key) === job) { this.unsaved.add(key); this.storageError(); }
+      });
     }));
   }
 
@@ -249,6 +251,8 @@ class ReviewLibrary {
     this.catalogRead++;
     this.selectionRead++;
     this.forget(key);
+    this.unsaved.delete(key);
+    this.storedStatus.delete(key);
     this.items = this.items.filter(item => item.key !== key);
     this.changed();
     void this.persist(persistEdit({ kind: 'delete', key }), { key });

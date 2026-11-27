@@ -1,5 +1,5 @@
 import { checkInput, encodeRequest, guidePolicyRequired } from '../review/client';
-import { makePdfAttachment } from '../review/pdf';
+import { makePolicyPdfAttachment } from '../review/pdf';
 import { executeWholeReview } from '../review/wholeReview';
 import {
   MAX_PDF_ATTACHMENT_PAGES, MAX_REQUEST_BYTES, ReviewSizeError, modeLabels,
@@ -21,8 +21,7 @@ async function attachPolicies(input: ReviewInput, hasSourcePdf: boolean, signal:
   const attachments = [];
   let encodedBytes = 0;
   for (const doc of pdfs) {
-    signal.throwIfAborted();
-    const attachment = await makePdfAttachment(doc, 'policy', doc.pages.map(page => page.number), signal);
+    const attachment = await makePolicyPdfAttachment(doc, signal);
     encodedBytes += attachment.data.length;
     if (encodedBytes > MAX_REQUEST_BYTES) {
       throw Error('The selected policy PDFs exceed the 4 MB request limit. Select fewer policy pages.');

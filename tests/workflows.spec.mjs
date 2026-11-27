@@ -876,6 +876,32 @@ test('a browser that denies IndexedDB warns the analyst and keeps the current re
   await expect(warning).toBeVisible();
 });
 
+test('deleting the last unsaved review clears the warning once storage recovers', async ({ page }) => {
+  await page.goto('/');
+  await createNamedQuestionnaire(page, 'Saved inspection');
+  await page.evaluate(() => {
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function(stores, mode, options) {
+      if (mode === 'readwrite' && Array.from(stores).includes('catalog')) {
+        throw new DOMException('Storage is full', 'QuotaExceededError');
+      }
+      return transaction.call(this, stores, mode, options);
+    };
+    window.restoreStorage = () => { IDBDatabase.prototype.transaction = transaction; };
+  });
+  await createNamedQuestionnaire(page, 'Unsaved inspection');
+  const warning = page.getByRole('alert').filter({ hasText: 'Keep this page open' });
+  await expect(warning).toBeVisible();
+  await page.evaluate(() => window.restoreStorage());
+  await chooseReviewAction(page, 'Unsaved inspection', 'Delete');
+  await page.getByRole('button', { name: 'Delete review', exact: true }).click();
+  const links = page.getByRole('region', { name: 'Reviews', exact: true }).getByRole('link');
+  await expect(links).toHaveText([/Saved inspection/]);
+  await expect(warning).toBeHidden();
+  await page.reload();
+  await expect(links).toHaveText([/Saved inspection/]);
+});
+
 test('a completed guide keeps its saved action and original cited PDFs when reopened', async ({ page, context }) => {
   const duty = 'Staff must sign the inspection log.';
   const passage = 'Office staff sign the inspection log.';

@@ -5,12 +5,13 @@ export type EvidenceControls = {
   citations: Evidence[];
   citeLabel: string;
   onOpen: (evidence: Evidence, term?: boolean) => void;
-  onCite?: (evidence: Evidence) => void;
+  onCite: (evidence: Evidence) => void;
 };
 
 const passageLabels = {
   support: 'Supporting evidence',
   counter: 'Counterevidence',
+  candidate: 'Ranked match 1',
   source: 'Originating passage',
   followup: 'New passage from follow-up',
 };
@@ -28,25 +29,22 @@ export function PassageContent({ evidence, compact = false, citations, citeLabel
           {compact ? 'Open page' : <><FileText size={14} /><span>{evidence.title}</span><i />p. {evidence.page}</>}
           <SquareArrowOutUpRight size={12} />
         </button>
-        {onCite && (
-          <button type="button" className="text-link cite-response" onClick={() => onCite(evidence)}>
-            {cited ? <Check size={13} /> : <Plus size={13} />}
-            {cited ? 'Remove citation' : citeLabel}
-          </button>
-        )}
+        <button type="button" className="text-link cite-response" onClick={() => onCite(evidence)}>
+          {cited ? <Check size={13} /> : <Plus size={13} />}
+          {cited ? 'Remove citation' : citeLabel}
+        </button>
       </div>
     </>
   );
 }
 
-export function EvidenceCard({ evidence, kind, rank, ...controls }: EvidenceControls & {
+export function EvidenceCard({ evidence, kind, ...controls }: EvidenceControls & {
   evidence: Evidence;
-  kind: keyof typeof passageLabels | 'candidate';
-  rank?: number;
+  kind: keyof typeof passageLabels;
 }) {
   return (
     <article className={'evidence-card ' + kind}>
-      <div className="evidence-label"><strong>{kind === 'candidate' ? 'Ranked match ' + rank : passageLabels[kind]}</strong></div>
+      <div className="evidence-label"><strong>{passageLabels[kind]}</strong></div>
       <PassageContent evidence={evidence} {...controls} />
     </article>
   );

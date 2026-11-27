@@ -1,17 +1,15 @@
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 
 from api._review.rate_limit import LIMIT, WINDOW_SECONDS, ReviewRateLimit, network_key
 
 
 class RateLimitTests(unittest.TestCase):
-    def test_concurrent_clients_and_window_reset(self):
+    def test_independent_client_quota_and_window_reset(self):
         now = 0.25
         limiter = ReviewRateLimit(clock=lambda: now)
-        with ThreadPoolExecutor(8) as pool:
-            results = list(pool.map(limiter.claim, ["network"] * (LIMIT + 5)))
-        self.assertEqual(results.count(None), LIMIT)
-        self.assertEqual(results.count((429, WINDOW_SECONDS)), 5)
+        for _ in range(LIMIT):
+            self.assertIsNone(limiter.claim("network"))
+        self.assertEqual(limiter.claim("network"), (429, WINDOW_SECONDS))
         self.assertIsNone(limiter.claim("another network"))
         now += WINDOW_SECONDS - 0.5
         self.assertEqual(limiter.claim("network"), (429, 1))

@@ -10,7 +10,6 @@ export type ReviewCheckpoint = { completed: [string, Result][]; subdivided: stri
 type Options = {
   input: ReviewInput;
   sourceDocument?: Policy;
-  sourceOriginal?: Policy;
   questionPages?: readonly (readonly number[])[];
   renderItemSubset?: boolean;
   policyAttachments: PdfAttachment[];
@@ -39,7 +38,7 @@ function checkpoint(options: Options): Cache {
   const cache = retries.get(options.input);
   // Intake retains this immutable input and the attached policies for an unchanged retry.
   if (cache && cache.options.sourceDocument === options.sourceDocument &&
-    cache.options.sourceOriginal === options.sourceOriginal && cache.options.renderItemSubset === options.renderItemSubset &&
+    cache.options.renderItemSubset === options.renderItemSubset &&
     cache.options.policyAttachments === options.policyAttachments &&
     JSON.stringify(cache.options.questionPages) === JSON.stringify(options.questionPages)) return cache;
   const fresh: Cache = {
@@ -351,8 +350,7 @@ export async function executeWholeReview(options: Options): Promise<Result> {
   const { input, sourceDocument } = options;
   options.signal.throwIfAborted();
   const cache = checkpoint(options);
-  const original = options.sourceOriginal ?? sourceDocument;
-  const sourcePdf = original?.pdfFile ? createPdfAttachmentReader(original, 'source', options.signal) : undefined;
+  const sourcePdf = sourceDocument?.pdfFile ? createPdfAttachmentReader(sourceDocument, 'source', options.signal) : undefined;
   const attempt = { ...options, sourcePdf };
   try {
     let result: Result;
