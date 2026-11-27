@@ -101,24 +101,30 @@ function sharingDisclosure(mode: Mode, source: IntakeSource, documents: Policy[]
   return 'This review shares your ' + subject + ' and relevant policy text with Anthropic.';
 }
 
-function IntakeSteps({ step, isGuide, sourceLabel, sourceDescription }: {
+function IntakeSteps({ step, isGuide, sourceLabel, sourceDescription, busy, policiesUnlocked, onSelect }: {
   step: number; isGuide: boolean; sourceLabel: string; sourceDescription: string;
+  busy: boolean; policiesUnlocked: boolean; onSelect: (step: number) => void;
 }) {
   return (
-    <ol className="intake-steps" aria-label="Review steps">
-      {[sourceLabel, 'Existing policies'].map((label, index) => (
-        <li key={label} aria-current={step === index + 1 ? 'step' : undefined} data-complete={index + 1 < step}>
-          <span className="intake-step-number" aria-hidden="true">
-            {index + 1 < step ? <Check size={12} /> : index + 1}
-          </span>
-          <span className="intake-step-text">
-            {label}
-            {index === 0 && step === 2 && <small>{sourceDescription}</small>}
-            {index === 1 && <small>{isGuide ? 'Optional' : 'Required'}</small>}
-          </span>
-        </li>
-      ))}
-    </ol>
+    <nav aria-label="Review steps">
+      <ol className="intake-steps">
+        {[sourceLabel, 'Existing policies'].map((label, index) => (
+          <li key={label} data-complete={index + 1 < step}>
+            <button type="button" className="intake-step-control" aria-current={step === index + 1 ? 'step' : undefined}
+              disabled={busy || (index === 1 && !policiesUnlocked)} onClick={() => onSelect(index + 1)}>
+              <span className="intake-step-number" aria-hidden="true">
+                {index + 1 < step ? <Check size={12} /> : index + 1}
+              </span>
+              <span className="intake-step-text">
+                {label}
+                {index === 0 && step === 2 && <small>{sourceDescription}</small>}
+                {index === 1 && <small>{isGuide ? 'Optional' : 'Required'}</small>}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </nav>
   );
 }
 
@@ -303,16 +309,25 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
     }
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (busy) return;
+  function selectStep(target: number) {
+    if (busy || target === step) return;
     setError('');
-    if (step === 1) {
+    if (target === 2) {
       if (validationError) { setError(validationError); return; }
       window.history.pushState({ folioIntakeSource: sourcePath }, '', sourcePath + '/policies');
       window.dispatchEvent(new HashChangeEvent('hashchange'));
-      return;
+    } else if (window.history.state?.folioIntakeSource === sourcePath) {
+      window.history.back();
+    } else {
+      window.location.replace(sourcePath);
     }
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (step === 1) return selectStep(2);
+    if (busy) return;
+    setError('');
     review.start(() => prepareReview(snapshot));
   }
 
@@ -329,18 +344,13 @@ export function Setup({ initialMode, policyStep, onClose, onDone }: SetupProps) 
         className="intake-back"
         type="button"
         disabled={Boolean(busy)}
-        onClick={() => {
-          setError('');
-          if (review.view.kind === 'running' && review.view.foreground) review.cancel();
-          if (step === 1) onClose();
-          else if (window.history.state?.folioIntakeSource === sourcePath) window.history.back();
-          else window.location.replace(sourcePath);
-        }}
+        onClick={() => step === 1 ? onClose() : selectStep(1)}
       >
         <ArrowLeft size={15} aria-hidden="true" /> Back
       </button>
       <div className="intake-layout">
         <IntakeSteps step={step} isGuide={isGuide} sourceLabel={copy.sourceLabel}
+          busy={Boolean(busy)} policiesUnlocked={!validationError} onSelect={selectStep}
           sourceDescription={source.name || (isGuide ? 'Guide text' : questions.length + (questions.length === 1 ? ' question' : ' questions'))} />
         <div className="intake-sheet">
           <h1 id="intake-title" ref={heading} tabIndex={-1}>

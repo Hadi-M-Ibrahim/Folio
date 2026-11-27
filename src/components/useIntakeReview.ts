@@ -22,8 +22,13 @@ export function useIntakeReview(policyStep: boolean, onDone: (review: Review) =>
     setView({ kind: started.current ? 'idle' : 'fresh' });
   }, []);
   useLayoutEffect(() => {
-    if (!policyStep && current.current?.foreground) cancel();
-  }, [policyStep, cancel]);
+    const run = current.current;
+    if (!policyStep && run?.foreground) {
+      // Returning to the source keeps the review available without opening its results over the form.
+      run.foreground = false;
+      setView(state => state.kind === 'running' ? { ...state, foreground: false } : state);
+    }
+  }, [policyStep]);
   useEffect(() => {
     window.addEventListener('pagehide', cancel);
     return () => {
