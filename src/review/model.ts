@@ -142,6 +142,11 @@ export type ReviewRow = {
   decision: Decision | undefined;
 };
 
+export type FindingState = {
+  decision?: Decision;
+  resolved?: boolean;
+};
+
 export type SavedResponse = ReviewRow & { decision: Decision };
 
 export function samePassage(left: Evidence, right: Evidence): boolean {

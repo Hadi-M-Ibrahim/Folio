@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { PageFrame, workflows } from './components/PageFrame';
-import { modeLabels, type Decision, type Review } from './review/model';
+import { modeLabels, type FindingState, type Review } from './review/model';
 
 function onHashChange(notify: () => void) {
   window.addEventListener('hashchange', notify);
@@ -14,7 +14,7 @@ function currentPath() {
 export default function App() {
   const path = useSyncExternalStore(onHashChange, currentPath, () => '');
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [decisions, setDecisions] = useState(() => new Map<string, Decision>());
+  const [findingStates, setFindingStates] = useState(() => new Map<string, FindingState>());
   const [screens, setScreens] = useState<typeof import('./components/reviewScreens')>();
   const [loadFailed, setLoadFailed] = useState(false);
   const setupMode = workflows.find(({ mode }) => path === '/new/' + mode || path === '/new/' + mode + '/policies')?.mode;
@@ -59,10 +59,15 @@ export default function App() {
     window.location.hash = '/review/' + newReview.key;
   }
 
-  function saveDecision(key: string, decision?: Decision) {
-    setDecisions((current) => {
+  function updateFinding(key: string, changes: FindingState) {
+    setFindingStates((current) => {
+      const previous = current.get(key);
+      const state = { ...previous, ...changes };
+      if (state.decision?.value !== previous?.decision?.value) {
+        state.resolved = !!state.decision?.value;
+      }
       const next = new Map(current);
-      if (decision) next.set(key, decision);
+      if (state.decision || state.resolved) next.set(key, state);
       else next.delete(key);
       return next;
     });
@@ -78,7 +83,7 @@ export default function App() {
       ) : setupMode ? (
         <screens.Setup key={setupMode} initialMode={setupMode} policyStep={path.endsWith('/policies')} onClose={() => { window.location.hash = 'review-options'; }} onDone={openReview} />
       ) : review && (
-        <screens.ReviewWorkspace key={review.key} review={review} decisions={decisions} onDecisionChange={saveDecision} />
+        <screens.ReviewWorkspace key={review.key} review={review} findingStates={findingStates} onUpdateFinding={updateFinding} />
       )}
     </PageFrame>
   );
