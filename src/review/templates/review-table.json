@@ -1,0 +1,9 @@
+{
+ "pageWidth": 612, "pageHeight": 792,
+ "inset": 44, "top": 44, "bottom": 48,
+ "columns": [157.202, 204.36, 130.439],
+ "gutter": 16, "rowSpace": 8,
+ "heavyRule": 0.65, "lightRule": 0.35,
+ "ink": "191915", "muted": "645F58", "rule": "CDCAC4",
+ "heading": 34, "body": 10, "detail": 9, "label": 8.5
+}

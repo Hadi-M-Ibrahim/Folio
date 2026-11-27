@@ -1,80 +1,102 @@
 import pdfMake from 'pdfmake/build/pdfmake';
-import regularFont from 'pdfmake/fonts/Roboto/Roboto-Regular.ttf?inline';
-import mediumFont from 'pdfmake/fonts/Roboto/Roboto-Medium.ttf?inline';
-import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces';
+import serif from '@fontsource/instrument-serif/files/instrument-serif-latin-400-normal.woff?inline';
+import regular from 'pdfmake/fonts/Roboto/Roboto-Regular.ttf?inline';
+import medium from 'pdfmake/fonts/Roboto/Roboto-Medium.ttf?inline';
+import type { Content, CustomTableLayout, TableCell, TDocumentDefinitions } from 'pdfmake/interfaces';
 import { downloadFile } from './downloadFile';
 import { guideCitation } from './guideSource';
-import { decisionStatusLabel, policyActionLabels, type Evidence, type Mode, type Review, type SavedResponse } from './model';
+import { decisionStatusLabel, policyActionLabels, type Evidence, type Review, type SavedResponse } from './model';
+import sheet from './templates/review-table.json';
 
 pdfMake.addVirtualFileSystem({
-  'Roboto-Regular.ttf': regularFont.split(',')[1],
-  'Roboto-Medium.ttf': mediumFont.split(',')[1],
+  'InstrumentSerif.woff': serif.split(',')[1],
+  'Roboto-Regular.ttf': regular.split(',')[1],
+  'Roboto-Medium.ttf': medium.split(',')[1],
 });
+pdfMake.addFonts({ Instrument: { normal: 'InstrumentSerif.woff' } });
 
-function entryHeading(mode: Mode, { finding, decision, index }: SavedResponse, source?: string): Content {
-  const item = mode === 'guide' ? 'Obligation' : 'Question';
-  const status = decisionStatusLabel(decision, mode);
-  const stack: Content[] = [
-    { text: `${item} ${index + 1}   ·   ${status}`, fontSize: 9, color: '#645f58', marginBottom: 3 },
-    { text: finding.question, fontSize: 13, bold: true },
+const ink = '#' + sheet.ink;
+const muted = '#' + sheet.muted;
+const rule = '#' + sheet.rule;
+
+const booktabs: CustomTableLayout = {
+  vLineWidth: () => 0,
+  hLineWidth: (i, node) => i === 0 || i === node.table.body.length ? sheet.heavyRule : sheet.lightRule,
+  hLineColor: (i, node) => i < 2 || i === node.table.body.length ? ink : rule,
+  paddingLeft: () => 0,
+  paddingRight: i => i < 2 ? sheet.gutter : 0,
+  paddingTop: () => sheet.rowSpace,
+  paddingBottom: () => sheet.rowSpace,
+};
+
+function citationsCell(citations: Evidence[] = []): TableCell {
+  if (!citations.length) return { text: '—', color: muted };
+  return { stack: citations.map((item, i) => ({
+    stack: [
+      { text: `${item.title} · p. ${item.page}`, bold: true, marginBottom: 2 },
+      { text: item.quote, color: muted },
+    ],
+    fontSize: sheet.detail, marginTop: i ? sheet.rowSpace : 0,
+  })) };
+}
+
+function reviewRow({ finding, decision, index }: SavedResponse, guide?: Review): TableCell[] {
+  const status = decisionStatusLabel(decision, guide ? 'guide' : 'questionnaire');
+  const subject: Content[] = [
+    { text: `${guide ? 'Obligation' : 'Question'} ${index + 1}  ·  ${status}`, style: 'label', marginBottom: 3 },
+    { text: finding.question },
   ];
-  if (source) stack.push({ text: source, fontSize: 9.5, color: '#645f58', marginTop: 3 });
-  return { stack, margin: [0, 16, 0, 5], unbreakable: true };
+  const answer: Content[] = [];
+  if (guide) {
+    subject.push({ text: guideCitation(guide, finding), style: 'label', marginTop: 5 });
+    if (finding.criterionSource && finding.criterionSource !== finding.question) {
+      subject.push({ text: finding.criterionSource, style: 'detail', marginTop: 2 });
+    }
+    if (decision.action || !decision.answer?.trim()) {
+      answer.push({ text: decision.action ? policyActionLabels[decision.action] : 'Action pending', bold: true, marginBottom: 3 });
+    }
+  }
+  answer.push({ text: decision.answer?.trim() || (guide ? 'No action text entered.' : 'No response entered.') });
+  if (guide && decision.note?.trim()) {
+    answer.push({ text: [{ text: 'Analyst note. ', bold: true }, decision.note.trim()], style: 'detail', marginTop: 5 });
+  }
+  return [{ stack: subject }, { stack: answer }, citationsCell(decision.citations)];
 }
 
-function citationBlock(citation: Evidence): Content {
-  return {
-    text: [{ text: `${citation.title} · p. ${citation.page}\n`, bold: true }, citation.quote],
-    fontSize: 9.5, color: '#514d48', margin: [12, 7, 0, 0],
-  };
-}
-
-async function downloadPdf(heading: string, title: string, content: Content[], filename: string) {
+async function downloadTable(title: string, entries: readonly SavedResponse[], guide?: Review) {
+  const heading = guide ? 'Policy action list' : 'Questionnaire responses';
+  const columns = guide ? ['Obligation', 'Action', 'Citations'] : ['Question', 'Response', 'Citations'];
   const document: TDocumentDefinitions = {
     info: { title: heading + ' — ' + title, creator: 'Folio' },
-    pageSize: 'LETTER', pageMargins: [48, 46, 48, 52],
-    defaultStyle: { font: 'Roboto', fontSize: 11, lineHeight: 1.22, color: '#191915' },
+    pageSize: { width: sheet.pageWidth, height: sheet.pageHeight },
+    pageMargins: [sheet.inset, sheet.top, sheet.inset, sheet.bottom],
+    defaultStyle: { font: 'Roboto', fontSize: sheet.body, lineHeight: 1.16, color: ink },
+    styles: {
+      detail: { fontSize: sheet.detail, color: muted },
+      label: { fontSize: sheet.label, color: muted },
+    },
     content: [
-      { text: heading, fontSize: 25, bold: true, marginBottom: 6 },
-      { text: title, color: '#645f58', marginBottom: 10 },
-      ...content,
+      { text: heading, font: 'Instrument', fontSize: sheet.heading, lineHeight: 1.02 },
+      { text: title, color: muted, marginTop: 4 },
+      ...(guide?.sourceSelection ? [{ text: guide.sourceSelection, style: 'detail', marginTop: 2 }] : []),
+      { marginTop: 20, table: {
+        headerRows: 1, widths: sheet.columns,
+        body: [columns.map(text => ({ text, bold: true, fontSize: sheet.detail })), ...entries.map(entry => reviewRow(entry, guide))],
+      }, layout: booktabs },
     ],
-    footer: (number, total) => ({
-      columns: ['Folio', { text: `${number} / ${total}`, alignment: 'right' }],
-      fontSize: 9, color: '#645f58', margin: [48, 14, 48, 0],
+    footer: (page, total) => ({
+      columns: ['Folio', { text: `${page} / ${total}`, alignment: 'right' }],
+      style: 'label', margin: [sheet.inset, 16, sheet.inset, 0],
     }),
   };
   const pdf = await pdfMake.createPdf(document).getBlob();
-  downloadFile(pdf, filename);
+  downloadFile(pdf, guide ? 'folio-policy-action-list.pdf' : 'folio-questionnaire-responses.pdf');
 }
 
 export function exportResponsePdf(title: string, entries: readonly SavedResponse[]) {
-  const content = entries.flatMap(entry => [
-    entryHeading('questionnaire', entry),
-    { text: entry.decision.answer?.trim() || 'No response entered.' },
-    ...(entry.decision.citations ?? []).map(citationBlock),
-  ]);
-  return downloadPdf('Questionnaire responses', title, content, 'folio-questionnaire-responses.pdf');
+  return downloadTable(title, entries);
 }
 
 export function exportActionListPdf(review: Review, entries: readonly SavedResponse[]) {
-  const content: Content[] = [];
-  if (review.sourceSelection) content.push({ text: review.sourceSelection, fontSize: 9.5, color: '#645f58' });
-  for (const entry of entries) {
-    const { finding, decision } = entry;
-    content.push(entryHeading('guide', entry, guideCitation(review, finding)));
-    if (finding.criterionSource && finding.criterionSource !== finding.question) {
-      content.push({ text: finding.criterionSource, fontSize: 9.5, color: '#514d48', marginBottom: 5 });
-    }
-    const action = decision.action ? policyActionLabels[decision.action] : 'Action pending';
-    const answer = decision.answer?.trim();
-    content.push({ text: !decision.action && answer ? answer : [
-      { text: action + '\n', bold: true }, answer || 'No action text entered.',
-    ] });
-    if (decision.note?.trim()) {
-      content.push({ text: [{ text: 'Analyst note   ', bold: true }, decision.note.trim()], marginTop: 5 });
-    }
-    content.push(...(decision.citations ?? []).map(citationBlock));
-  }
-  return downloadPdf('Policy action list', review.title, content, 'folio-policy-action-list.pdf');
+  return downloadTable(review.title, entries, review);
 }
