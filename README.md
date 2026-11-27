@@ -13,7 +13,9 @@ Folio can start an Anthropic review in the background once both the source and t
 
 Keep the tab open while Folio reviews a long document. The progress bar tracks completed work, and the findings appear in document order. Use the range controls to choose questions or physical pages. A question spanning two pages includes both pages. Other questions printed on the same page remain visible in the attachment. Changing the selection cannot recall pages already sent to Anthropic.
 
-Each section sends the corresponding source PDF pages to Anthropic. Folio searches every selected policy page before assessing a question. For larger PDF packets, it attaches the policy pages containing candidate evidence, including exceptions and follow-up matches. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. The form keeps your inputs and completed sections available for retry in the same tab. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section sent to Folio and must fit its 4 MB request budget. Download the final review before refreshing or closing it.
+Each section sends the corresponding source PDF pages to Anthropic. Folio searches every selected policy page before assessing a question. For larger PDF packets, it attaches the policy pages containing candidate evidence, including exceptions and follow-up matches. Citations and exports use original page numbers. For scans, check machine-read quotations against the cited page. Source files can contain up to 1,200 pages and 32 MiB. Comparison policies accompany each section sent to Folio and must fit its 4 MB request budget.
+
+Folio saves uploaded files, page selections, responses, and decisions in this browser. After a refresh, choose **Resume review** to continue an interrupted run from its last finished section. The **Reviews** list has a menu on each row to rename, move, or delete it. Clearing this site’s browser data removes the saved copies.
 
 ## Repository layout
 

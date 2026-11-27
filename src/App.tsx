@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { useReviewState, type ReviewJob } from './review/reviewJob';
+import { useReviewLibrary } from './review/reviewLibrary';
+import { useReviewState } from './review/reviewJob';
 import { PageFrame, workflows } from './components/PageFrame';
-import { modeLabels, type FindingState } from './review/model';
+import { modeLabels } from './review/model';
 
 function onHashChange(notify: () => void) {
   window.addEventListener('hashchange', notify);
@@ -12,17 +13,28 @@ function currentPath() {
   return window.location.hash.slice(1);
 }
 
+function OpeningReview({ failed }: { failed: boolean }) {
+  return (
+    <div className="page-heading">
+      <p><output>{failed ? 'The review tools couldn’t load.' : 'Opening review…'}</output></p>
+      {failed && <button className="secondary" onClick={() => window.location.reload()}>Reload review</button>}
+    </div>
+  );
+}
+
 export default function App() {
   const path = useSyncExternalStore(onHashChange, currentPath, () => '');
-  const [reviews, setReviews] = useState<ReviewJob[]>([]);
-  const [findingStates, setFindingStates] = useState(() => new Map<string, FindingState>());
+  const reviewKey = path.startsWith('/review/') ? path.slice('/review/'.length) : undefined;
+  const library = useReviewLibrary(reviewKey);
   const [screens, setScreens] = useState<typeof import('./components/reviewScreens')>();
   const [loadFailed, setLoadFailed] = useState(false);
   const setupMode = workflows.find(({ mode }) => ['', '/source', '/policies'].some(suffix => path === '/new/' + mode + suffix))?.mode;
   const lastView = useRef({ path, screens });
-  const review = reviews.find((item) => path === '/review/' + item.key);
+  const review = library.job(reviewKey);
+  const listed = library.items.find(item => item.key === reviewKey);
   const reviewState = useReviewState(review);
-  const home = !setupMode && !review;
+  const opening = Boolean(reviewKey && !review && (!library.ready || listed));
+  const home = !setupMode && !review && !opening;
 
   useLayoutEffect(() => {
     if (path === currentPath()) document.documentElement.classList.remove('opening-review');
@@ -39,7 +51,7 @@ export default function App() {
   }, [home, screens, loadFailed]);
 
   useEffect(() => {
-    const title = review?.title ?? (setupMode ? modeLabels[setupMode] : 'Policy review');
+    const title = listed?.title ?? (setupMode ? modeLabels[setupMode] : 'Policy review');
     document.title = title + ' · Folio';
     // The browser may already have followed an anchor or restored scroll before hydration.
     const previous = lastView.current;
@@ -54,41 +66,18 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' });
     const heading = document.querySelector<HTMLElement>('main h1');
     heading?.focus({ preventScroll: true });
-  }, [home, path, review, reviewState.kind, setupMode, screens]);
-
-  function trackReview(job: ReviewJob) {
-    if (job.submitted) return;
-    job.track(() => setReviews(current => current.filter(item => item !== job)));
-    setReviews(current => [job, ...current]);
-  }
-
-  function updateFinding(key: string, changes: FindingState) {
-    setFindingStates((current) => {
-      const previous = current.get(key);
-      const state = { ...previous, ...changes };
-      if (state.decision?.value !== previous?.decision?.value) {
-        state.resolved = !!state.decision?.value;
-      }
-      const next = new Map(current);
-      if (state.decision || state.resolved) next.set(key, state);
-      else next.delete(key);
-      return next;
-    });
-  }
+  }, [home, path, listed?.title, reviewState.kind, setupMode, screens]);
 
   return (
-    <PageFrame reviews={reviews}>
-      {home ? undefined : !screens ? (
-        <div className="page-heading">
-          <p><output>{loadFailed ? 'The review tools couldn’t load.' : 'Opening review…'}</output></p>
-          {loadFailed && <button className="secondary" onClick={() => window.location.reload()}>Reload review</button>}
-        </div>
+    <PageFrame reviews={library.items} reviewActions={library} storageWarning={library.warning}>
+      {home ? undefined : !screens || opening ? (
+        <OpeningReview failed={loadFailed || Boolean(opening && library.warning)} />
       ) : setupMode ? (
-        <screens.Setup key={setupMode} initialMode={setupMode} sourceStep={path.endsWith('/source')} onClose={() => { window.location.hash = 'review-options'; }} onSubmit={trackReview} />
+        <screens.Setup key={setupMode} initialMode={setupMode} sourceStep={path.endsWith('/source')} onClose={() => { window.location.hash = 'review-options'; }} onSubmit={library.submit} />
       ) : reviewState.kind === 'complete' ? (
-        <screens.ReviewWorkspace key={reviewState.review.key} review={reviewState.review} findingStates={findingStates} onUpdateFinding={updateFinding} />
+        <screens.ReviewWorkspace key={reviewState.review.key} review={reviewState.review} findingStates={library.findings(reviewKey)} onUpdateFinding={library.updateFinding} />
       ) : review && (
-        <screens.PendingReview job={review} state={reviewState} />
+        <screens.PendingReview job={review} state={reviewState} onStart={() => void library.resume(review)} />
       )}
     </PageFrame>
   );

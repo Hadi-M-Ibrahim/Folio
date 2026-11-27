@@ -4,7 +4,7 @@ import type { ReviewProgressState } from '../review/reviewProgress';
 
 type View = { kind: 'idle' | 'changed' } | { kind: 'running'; progress: ReviewProgressState };
 
-export function useIntakeReview(sourceStep: boolean, onSubmit: (job: ReviewJob) => void, onError: (cause: unknown) => void) {
+export function useIntakeReview(sourceStep: boolean, onSubmit: (job: ReviewJob) => Promise<boolean>, onError: (cause: unknown) => void, onReopen: () => void) {
   const current = useRef<ReviewJob>(undefined);
   const started = useRef<'early' | 'submitted' | undefined>(undefined);
   const [job, setJob] = useState<ReviewJob>();
@@ -14,7 +14,7 @@ export function useIntakeReview(sourceStep: boolean, onSubmit: (job: ReviewJob) 
 
   if (!sourceStep && submittedFrom) setSubmittedFrom('');
   useEffect(() => () => {
-    // Submitted jobs belong to the tab. Only speculative work belongs to the form.
+    // The library owns submitted jobs. The form owns speculative work.
     if (!current.current?.submitted) current.current?.cancel();
   }, []);
   useEffect(() => {
@@ -24,11 +24,13 @@ export function useIntakeReview(sourceStep: boolean, onSubmit: (job: ReviewJob) 
   }, [state, submittedFrom, sourceStep]);
 
   function cancel() {
+    if (current.current?.submitted) onReopen();
     current.current?.cancel();
     setSubmittedFrom('');
   }
 
   function edit() {
+    if (current.current?.submitted) onReopen();
     if (current.current?.snapshot().kind !== 'complete') current.current?.cancel();
     current.current = undefined;
     setJob(undefined);
@@ -44,9 +46,12 @@ export function useIntakeReview(sourceStep: boolean, onSubmit: (job: ReviewJob) 
       setJob(next);
       started.current = early ? 'early' : 'submitted';
       setChanged(false);
-      setSubmittedFrom(early ? '' : window.location.hash);
-      if (!early) onSubmit(next);
-      void next.start();
+      setSubmittedFrom('');
+      if (early) void next.start();
+      else {
+        const path = window.location.hash;
+        void onSubmit(next).then(active => { if (active) setSubmittedFrom(path); }, onError);
+      }
     } catch (cause) {
       if (!early) onError(cause);
     }

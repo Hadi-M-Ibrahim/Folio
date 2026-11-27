@@ -6,7 +6,7 @@ import {
   type Mode, type PdfAttachment, type Policy, type ReviewInput, type Scope,
 } from '../review/model';
 import type { IntakeSource } from './SourceFields';
-import { ReviewJob } from '../review/reviewJob';
+import { ReviewJob, type ReviewRecipe, type ReviewWork } from '../review/reviewJob';
 
 export type IntakePolicy = Policy & { pasted?: true };
 
@@ -14,7 +14,7 @@ export function needsPolicyFile(mode: Mode, originals: IntakePolicy[]) {
   return mode === 'guide' && !originals.some(policy => !policy.pasted);
 }
 
-async function attachPolicies(input: ReviewInput, originals: Policy[], hasSourcePdf: boolean, signal: AbortSignal) {
+async function attachPolicies(input: ReviewInput, hasSourcePdf: boolean, signal: AbortSignal) {
   const pdfs = input.documents.filter(doc => doc.pdfFile);
   const availablePages = MAX_PDF_ATTACHMENT_PAGES - (hasSourcePdf ? 1 : 0);
   if (pdfs.reduce((count, doc) => count + doc.pages.length, 0) > availablePages) {
@@ -24,8 +24,7 @@ async function attachPolicies(input: ReviewInput, originals: Policy[], hasSource
   let encodedBytes = 0;
   for (const doc of pdfs) {
     signal.throwIfAborted();
-    const original = originals.find(item => item.id === doc.id) ?? doc;
-    const attachment = await makePdfAttachment(original, 'policy', doc.pages.map(page => page.number), signal);
+    const attachment = await makePdfAttachment(doc, 'policy', doc.pages.map(page => page.number), signal);
     encodedBytes += attachment.data.length;
     if (encodedBytes > MAX_REQUEST_BYTES) {
       throw Error('The selected policy PDFs exceed the 4 MB request limit. Select fewer policy pages.');
@@ -61,27 +60,34 @@ export function prepareReview({ mode, source, questions, documents, originals, s
   if (needsPolicyFile(mode, originals)) throw Error(guidePolicyRequired);
   const input = { ...reviewInput(mode, source, questions, documents), allowModel: true, modelSharingConsent: true };
   checkInput(input);
-  let policyAttachments: PdfAttachment[] | undefined;
-
   const title = source.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || modeLabels[mode] + ' review';
-  return new ReviewJob(mode, title, async (signal, onProgress, mayWaitForQuota) => {
+  const recipe = {
+    input, sourceDocument: source.document, sourceSelection: source.selection, scope,
+    questionPages: source.questionPages, renderItemSubset: source.range?.unit === 'question' && Boolean(source.selection),
+  };
+  return ReviewJob.prepare(title, recipe, createReviewWork(recipe));
+}
+
+export function createReviewWork(recipe: ReviewRecipe): ReviewWork {
+  const { input, sourceDocument, sourceSelection, scope, questionPages, renderItemSubset } = recipe;
+  let policyAttachments: PdfAttachment[] | undefined;
+  return async (signal, onProgress, mayWaitForQuota, checkpoint, onCheckpoint) => {
     if (!policyAttachments) {
-      const attachments = await attachPolicies(input, originals, Boolean(source.document?.pdfFile), signal);
+      const attachments = await attachPolicies(input, Boolean(sourceDocument?.pdfFile), signal);
       signal.throwIfAborted();
       policyAttachments = attachments;
     }
     const result = await executeWholeReview({
-      input, sourceDocument: source.document, sourceOriginal: source.range?.original ?? source.document,
-      questionPages: source.questionPages, renderItemSubset: source.range?.unit === 'question' && Boolean(source.selection),
-      policyAttachments, signal, onProgress, mayWaitForQuota,
+      input, sourceDocument, questionPages, renderItemSubset, policyAttachments, signal, onProgress, mayWaitForQuota,
+      checkpoint, onCheckpoint,
     });
     return {
       input: {
         ...input, ...(result.guide !== undefined && { guide: result.guide }), ...(result.questions && { questions: result.questions }),
-        documents: documents.map(doc => withReturnedPages(doc, result.policyPageText?.find(record => record.documentId === doc.id)?.pages)),
+        documents: input.documents.map(doc => withReturnedPages(doc, result.policyPageText?.find(record => record.documentId === doc.id)?.pages)),
       },
-      result, sourceDocument: source.document && withReturnedPages(source.document, result.sourcePages),
-      sourceSelection: source.selection, scope,
+      result, sourceDocument: sourceDocument && withReturnedPages(sourceDocument, result.sourcePages),
+      sourceSelection, scope,
     };
-  });
+  };
 }
