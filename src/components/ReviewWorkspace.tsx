@@ -5,20 +5,20 @@ import {
 import { exportReview } from '../review/exportReview';
 import { guideCitation, guideLocation, submittedSource, type SourceLocation } from '../review/guideSource';
 import {
-  modeLabels, policyActionLabels, responseLabels, type Decision,
-  type Evidence, type Review, type SavedResponse,
+  modeLabels, policyActionLabels, responseLabels, type FindingState,
+  type Evidence, type Review, type ReviewRow, type SavedResponse,
 } from '../review/model';
-import { FindingQueue, type QueueOptions } from './FindingQueue';
+import { FindingQueue, ResolutionButton, type QueueOptions } from './FindingQueue';
 import { Inspector } from './Inspector';
 import { SourceDialog } from './SourceDialog';
 
 type Props = {
   review: Review;
-  decisions: ReadonlyMap<string, Decision>;
-  onDecisionChange: (key: string, decision?: Decision) => void;
+  findingStates: ReadonlyMap<string, FindingState>;
+  onUpdateFinding: (key: string, changes: FindingState) => void;
 };
 
-export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) {
+export function ReviewWorkspace({ review, findingStates, onUpdateFinding }: Props) {
   const [nav, setNav] = useState<'findings' | 'documents' | 'decisions'>('findings');
   const [source, setSource] = useState<SourceLocation | null>(null);
   const [selected, setSelected] = useState(0);
@@ -27,15 +27,16 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   const { mode, documents } = review.input;
   const findings = review.result.findings;
   const isGuide = mode === 'guide';
+  const resolveQuestion = isGuide ? undefined : changeResolution;
   const hasPolicies = documents.length > 0;
-  const itemLabel = isGuide ? 'obligation' : 'question';
   const groupLabel = isGuide ? 'Obligations' : 'Questions';
   const outputLabel = isGuide ? 'Action list' : 'Responses';
   const notice = review.result.notice;
   const scopeNote = review.scope ? `Search covers ${review.scope.selectedPages} selected pages of ${review.scope.sourcePages.toLocaleString()}.` : '';
   const rows = findings.map((finding, index) => {
     const key = review.key + '/' + finding.id;
-    return { finding, index, key, decision: decisions.get(key) };
+    const state = findingStates.get(key);
+    return { finding, index, key, decision: state?.decision, resolved: !!state?.resolved };
   });
   const query = queue.search.trim().toLowerCase();
   const visible = rows.filter(({ finding }) =>
@@ -47,8 +48,12 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   const previous = visible[position - 1];
   const next = visible[position + 1];
   const entries = rows.flatMap(({ finding, index, decision }) => decision ? [{ finding, index, decision }] : []);
-  const reviewed = entries.filter(({ decision }) => isGuide ? decision.action : decision.value).length;
+  const reviewed = rows.filter(row => isGuide ? row.decision?.action : row.resolved).length;
   const downloadReview = () => exportReview(review, rows);
+
+  function changeResolution(index: number, resolved: boolean) {
+    onUpdateFinding(rows[index].key, { resolved });
+  }
 
   function updateQueue(changes: Partial<QueueOptions>) {
     setQueue((options) => ({ ...options, ...changes }));
@@ -92,7 +97,8 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
           <div className="work-grid">
             {findings.length > 1 && <FindingQueue rows={visible} currentIndex={current?.index} label={groupLabel}
               total={findings.length} hasPolicies={hasPolicies}
-              options={queue} onChange={updateQueue} onSelect={selectFinding} />}
+              options={queue} onChange={updateQueue} onSelect={selectFinding}
+              onResolve={resolveQuestion} />}
             <div ref={detailRef} className="detail-wrap">
               {current ? (
                 <>
@@ -105,14 +111,12 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
                     onOpen={openEvidence}
                     onGuide={() => setSource(guideLocation(review, current.finding))}
                     guideCitation={isGuide && review.sourceDocument ? guideCitation(review, current.finding) : undefined}
-                    onDecisionChange={(decision) => onDecisionChange(current.key, decision)}
+                    onDecisionChange={(decision) => onUpdateFinding(current.key, { decision })}
                   />
-                  <nav className="finding-navigation" aria-label={groupLabel}>
-                    {previous && <button onClick={() => selectFinding(previous.index, true)}><ArrowLeft size={15} />Previous {itemLabel}</button>}
-                    <button onClick={() => next ? selectFinding(next.index, true) : openOutput()}>
-                      {next ? 'Next ' + itemLabel : 'View ' + outputLabel.toLowerCase()}<ArrowRight size={15} />
-                    </button>
-                  </nav>
+                  <FindingNavigation guide={isGuide} previous={previous} next={next}
+                    onSelect={index => selectFinding(index, true)} onOutput={openOutput}>
+                    {findings.length === 1 && resolveQuestion && <ResolutionButton row={current} onResolve={resolveQuestion} showLabel />}
+                  </FindingNavigation>
                 </>
               ) : (
                 <div className="empty-list">
@@ -140,6 +144,22 @@ export function ReviewWorkspace({ review, decisions, onDecisionChange }: Props) 
   );
 }
 
+function FindingNavigation({ guide, previous, next, onSelect, onOutput, children }: {
+  guide: boolean; previous?: ReviewRow; next?: ReviewRow; onSelect: (index: number) => void;
+  onOutput: () => void; children: React.ReactNode;
+}) {
+  const item = guide ? 'obligation' : 'question';
+  return (
+    <nav className="finding-navigation" aria-label={guide ? 'Obligations' : 'Questions'}>
+      {children}
+      {previous && <button onClick={() => onSelect(previous.index)}><ArrowLeft size={15} />Previous {item}</button>}
+      <button onClick={() => next ? onSelect(next.index) : onOutput()}>
+        {next ? 'Next ' + item : guide ? 'View action list' : 'View responses'}<ArrowRight size={15} />
+      </button>
+    </nav>
+  );
+}
+
 function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
   review: Review; reviewed: number; showingOutput: boolean; onDownload: () => void;
 }) {
@@ -148,7 +168,7 @@ function ReviewHeading({ review, reviewed, showingOutput, onDownload }: {
     review.sourceDocument?.title,
     review.sourceSelection,
     isGuide && !review.input.documents.length ? 'Guide only' : undefined,
-    reviewed + ' of ' + review.result.findings.length + ' reviewed',
+    reviewed + ' of ' + review.result.findings.length + (isGuide ? ' reviewed' : ' resolved'),
   ];
   return (
     <header className="page-heading">

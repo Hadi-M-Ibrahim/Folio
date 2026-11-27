@@ -664,6 +664,7 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   const reopen = page.getByRole('button', { name: 'Edit response', exact: true });
   await expect(reopen).toBeFocused();
   await expect(reopen).toHaveAccessibleDescription('Response confirmed');
+  await expect(page.getByRole('button', { name: 'Reopen question 1', exact: true })).toBeVisible();
   await expect(reopen).toHaveAttribute('aria-expanded', 'false');
   await expect(editor).toBeHidden();
   await expect(tools).toBeHidden();
@@ -692,6 +693,71 @@ test('an analyst answers a question with an explicitly selected quotation', asyn
   await page.getByRole('button', { name: 'Remove flag', exact: true }).click();
   await expect(editor).toBeVisible();
   await expect(reopen).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Resolve question 1', exact: true })).toBeVisible();
+});
+
+test('The question queue resolves and reopens questions independently of saved responses', async ({ page }) => {
+  const questions = ['Who checks the gate?', 'Who keeps the log?', 'Who signs the declaration?',
+    'Who records exceptions?', 'Who checks permits?', 'Who reviews access?'];
+  await page.goto('/#/new/questionnaire');
+  await pasteSource(page, 'questionnaire', questions.join('\n'));
+  await page.getByRole('button', { name: 'Continue to policies' }).click();
+  await addPolicy(page, 'Records.txt', 'The coordinator keeps the log and reviews access each month.');
+  await clickReview(page, 'questionnaire');
+
+  const queue = page.getByRole('complementary', { name: 'Review queue' });
+  const showList = queue.getByRole('button', { name: /Show list/ });
+  async function showQueue() {
+    await expect(queue).toBeVisible();
+    if (await showList.isVisible()) await showList.click();
+  }
+  const open = queue.getByRole('region', { name: 'Open questions' });
+  const resolved = queue.getByRole('region', { name: 'Resolved questions' });
+  const disclosure = queue.getByRole('button', { name: /^Resolved \d+$/ });
+  const responses = page.getByRole('region', { name: 'Responses', exact: true });
+  const heading = page.getByRole('heading', { name: questions[0], exact: true });
+  await expect(heading).toBeVisible();
+  await showQueue();
+  await open.getByRole('button', { name: 'Resolve question 1', exact: true }).click();
+  await expect(heading).toBeVisible();
+  await expect(open.locator('.row-name')).toHaveText(questions.slice(1));
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: 'Responses', exact: true }).click();
+  await expect(responses.getByRole('button', { name: 'Download PDF' })).toBeDisabled();
+  await page.getByRole('navigation', { name: 'This review' }).getByRole('button', { name: 'Review questions' }).click();
+  await showQueue();
+  await queue.getByRole('textbox', { name: 'Search questions' }).fill('gate');
+  await expect(resolved.locator('.row-name')).toHaveText([questions[0]]);
+  await queue.getByRole('button', { name: 'Clear search' }).click();
+
+  await open.getByRole('button', { name: /Who keeps the log/ }).click();
+  await page.getByLabel('Response for submission').fill('The coordinator keeps the log.');
+  await showQueue();
+  await expect(open.locator('.row-name')).toContainText([questions[1]]);
+  await page.getByRole('button', { name: 'Cite in response', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Confirm response', exact: true }).click();
+  await showQueue();
+  await expect(open.locator('.row-name')).toHaveText(questions.slice(2));
+  await page.getByRole('button', { name: 'Next question' }).click();
+  await page.getByRole('button', { name: 'Flag for follow-up', exact: true }).click();
+  await page.getByRole('link', { name: 'All reviews' }).click();
+  await page.locator('.session-review').click();
+  await showQueue();
+  await expect(disclosure).toHaveText('Resolved 3');
+  await disclosure.click();
+  await expect(resolved.locator('.row-name')).toHaveText(questions.slice(0, 3));
+  await resolved.getByRole('button', { name: 'Reopen question 2', exact: true }).click();
+  await resolved.getByRole('button', { name: 'Reopen question 3', exact: true }).click();
+  await expect(open.locator('.row-name')).toHaveText(questions.slice(1));
+  await expect(open.getByRole('button', { name: /Who keeps the log/ })).toContainText('Confirmed');
+  await expect(open.getByRole('button', { name: /Who signs the declaration/ })).toContainText('Flagged for follow-up');
+  await resolved.getByRole('button', { name: 'Reopen question 1', exact: true }).click();
+  await expect(disclosure).toHaveCount(0);
+  await expect(open.locator('.row-name')).toHaveText(questions);
+  await page.getByRole('button', { name: 'Responses', exact: true }).click();
+  await expect(responses.locator('.decision-entry')).toHaveText([
+    /Confirmed.*Who keeps the log.*The coordinator keeps the log/, /Flagged for follow-up.*Who signs the declaration/,
+  ]);
 });
 
 test('Responses downloads a paginated PDF of saved answers and selected citations', async ({ page }) => {

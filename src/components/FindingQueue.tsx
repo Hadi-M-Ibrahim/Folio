@@ -1,4 +1,5 @@
-import { Check, Flag, Search, SlidersHorizontal, X } from 'lucide-react';
+import { Check, ChevronRight, Circle, CircleCheck, Search, SlidersHorizontal, X } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { policyActionLabels, responseLabels, statusLabels, type ReviewRow, type Status } from '../review/model';
 
 export type QueueOptions = {
@@ -8,19 +9,26 @@ export type QueueOptions = {
   expanded: boolean;
 };
 
-type Props = {
-  rows: readonly ReviewRow[];
+type QueueRow = ReviewRow & { resolved: boolean };
+type ChangeResolution = (index: number, resolved: boolean) => void;
+type ListProps = {
+  rows: readonly QueueRow[];
   currentIndex?: number;
-  label: string;
-  total: number;
   hasPolicies: boolean;
-  options: QueueOptions;
-  onChange: (changes: Partial<QueueOptions>) => void;
   onSelect: (index: number) => void;
 };
+type Props = ListProps & {
+  label: string;
+  total: number;
+  options: QueueOptions;
+  onChange: (changes: Partial<QueueOptions>) => void;
+  onResolve?: ChangeResolution;
+};
 
-export function FindingQueue({ rows, currentIndex, label, total, hasPolicies, options, onChange, onSelect }: Props) {
+export function FindingQueue({ rows, currentIndex, label, total, hasPolicies, options, onChange, onSelect, onResolve }: Props) {
   const { search, status, showStatuses, expanded } = options;
+  const list = { currentIndex, hasPolicies, onSelect };
+  const filtered = Boolean(search.trim()) || status !== 'all';
   return (
     <aside className="queue" aria-label="Review queue" data-expanded={expanded}>
       <button
@@ -76,26 +84,9 @@ export function FindingQueue({ rows, currentIndex, label, total, hasPolicies, op
             </label>
           )}
         </div>
-        {rows.map(({ finding, index, decision }) => (
-          <button
-            className="queue-row"
-            key={finding.id}
-            aria-pressed={index === currentIndex}
-            onClick={() => onSelect(index)}
-          >
-            <span className="row-top">
-              <span className="row-name">{finding.question}</span>
-              {(decision?.value || decision?.action) &&
-                (decision.value === 'flagged'
-                  ? <Flag size={13} aria-label="Flagged" />
-                  : <Check size={13} aria-label="Reviewed" />)}
-            </span>
-            <span className="row-status">
-              {decision?.action ? policyActionLabels[decision.action] : decision?.value ? responseLabels[decision.value]
-                : hasPolicies ? statusLabels[finding.status] : 'Action pending'}
-            </span>
-          </button>
-        ))}
+        {onResolve
+          ? <QuestionList key={String(filtered)} {...list} rows={rows} onResolve={onResolve} filtered={filtered} />
+          : <QueueItems {...list} rows={rows} />}
         {!rows.length && (
           <div className="empty-list">
             <Search size={20} />
@@ -112,5 +103,75 @@ export function FindingQueue({ rows, currentIndex, label, total, hasPolicies, op
         )}
       </div>
     </aside>
+  );
+}
+
+export function ResolutionButton({ row, onResolve, showLabel }: {
+  row: QueueRow; onResolve: ChangeResolution; showLabel?: boolean;
+}) {
+  const label = row.resolved ? 'Reopen question' : 'Resolve question';
+  const Icon = row.resolved ? CircleCheck : Circle;
+  return (
+    <button type="button" id={'resolve-question-' + row.index} className="resolution-button"
+      aria-label={label + ' ' + (row.index + 1)} title={label}
+      onClick={() => onResolve(row.index, !row.resolved)}>
+      <Icon size={18} aria-hidden="true" />{showLabel && label}
+    </button>
+  );
+}
+
+function QueueItems({ rows, currentIndex, hasPolicies, onSelect, onResolve }: ListProps & { onResolve?: ChangeResolution }) {
+  return rows.map(row => {
+    const { finding, index, decision } = row;
+    const status = decision?.action ? policyActionLabels[decision.action] : decision?.value ? responseLabels[decision.value]
+      : hasPolicies ? statusLabels[finding.status] : 'Action pending';
+    return (
+      <div className="queue-item" key={finding.id}>
+        <button className="queue-row" aria-pressed={index === currentIndex} onClick={() => onSelect(index)}>
+          <span className="row-top">
+            <span className="row-name">{finding.question}</span>
+            {decision?.action && <Check size={13} aria-label="Reviewed" />}
+          </span>
+          <span className="row-status">{status}</span>
+        </button>
+        {onResolve && <ResolutionButton row={row} onResolve={onResolve} />}
+      </div>
+    );
+  });
+}
+
+function QuestionList({ rows, filtered, onResolve, ...list }: ListProps & { filtered: boolean; onResolve: ChangeResolution }) {
+  const [expanded, setExpanded] = useState(filtered);
+  const disclosure = useRef<HTMLButtonElement>(null);
+  const open = rows.filter(row => !row.resolved);
+  const resolved = rows.filter(row => row.resolved);
+
+  function moveQuestion(index: number, resolve: boolean) {
+    const group = resolve ? open : resolved;
+    const position = group.findIndex(row => row.index === index);
+    const neighbor = group[position + 1] ?? group[position - 1];
+    onResolve(index, resolve);
+    // The old control unmounts when its question moves between groups.
+    requestAnimationFrame(() => {
+      const target = !neighbor && resolve ? disclosure.current : document.getElementById('resolve-question-' + (neighbor?.index ?? index));
+      target?.focus();
+    });
+  }
+
+  return (
+    <>
+      <section aria-label="Open questions"><QueueItems {...list} rows={open} onResolve={moveQuestion} /></section>
+      {resolved.length > 0 && (
+        <>
+          <button type="button" className="resolved-disclosure" ref={disclosure} aria-expanded={expanded}
+            aria-controls="resolved-questions" onClick={() => setExpanded(!expanded)}>
+            <ChevronRight size={15} aria-hidden="true" /> Resolved <span>{resolved.length}</span>
+          </button>
+          <section id="resolved-questions" aria-label="Resolved questions" hidden={!expanded}>
+            <QueueItems {...list} rows={resolved} onResolve={moveQuestion} />
+          </section>
+        </>
+      )}
+    </>
   );
 }

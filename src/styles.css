@@ -286,12 +286,50 @@ h1 {
   padding: 13px 14px;
   border-left: 2px solid transparent;
 }
-.queue-row:hover {
+.queue-item {
+  display: flex;
+  align-items: center;
+}
+.queue-item:hover {
   background: var(--paper);
+}
+.queue-item:has(.queue-row[aria-pressed='true']) {
+  background: #f2f3ee;
 }
 .queue-row[aria-pressed='true'] {
   border-left-color: var(--ink);
-  background: #f2f3ee;
+}
+.resolution-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 40px;
+  min-height: 44px;
+  color: var(--muted);
+}
+.resolution-button:hover {
+  color: var(--ink);
+}
+.resolved-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  font-weight: 550;
+}
+.resolved-disclosure span {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.resolved-disclosure[aria-expanded='true'] svg {
+  transform: rotate(90deg);
 }
 .row-name {
   display: -webkit-box;
