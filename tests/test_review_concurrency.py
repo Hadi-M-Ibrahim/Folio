@@ -101,6 +101,19 @@ class ConcurrentReviewTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.check_parallel_registers(mode)
 
+    def test_a_service_limit_wins_over_a_siblings_split_request(self):
+        rows = [{"id": f"q{n}"} for n in range(15)]
+
+        def fail(group, **kwargs):
+            if group[0]["id"] == "q0":
+                raise model.OutputTruncated
+            raise model.ProviderServiceError("Provider limit")
+
+        with patch.object(model, "assess_batch", side_effect=fail) as assess:
+            with self.assertRaisesRegex(model.ProviderServiceError, "Provider limit"):
+                model.assess_findings(rows, {}, "test-key", 100, require_complete=True)
+        self.assertCountEqual([call.args[0][0]["id"] for call in assess.call_args_list], ["q0", "q5"])
+
     def check_parallel_registers(self, mode):
         payload = register_review(mode)
         with (patch.object(model, "MAX_CONCURRENT_CALLS", 1),
